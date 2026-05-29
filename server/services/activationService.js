@@ -1,0 +1,1270 @@
+import { query } from '../db/client.js';
+import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
+import * as activationDispatchRepo from '../repositories/activationDispatchRepository.js';
+import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
+import * as activationOrigemRepo from '../repositories/activationOrigemRepository.js';
+import { loadTerms, findTermByMatriculaDate, resolveLimbo } from './termResolverService.js';
+import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
+import { loadBbAccessMap, classifyBbSubgroup } from './bbSubgroupService.js';
+import {
+  resolveMessageTier,
+  resolveTemplateForActivation,
+  tierLabel,
+} from '../config/activationMessages.js';
+import { getActivationTemplateConfig } from './activationTemplateConfigService.js';
+import { masterKeyFromActivationItem } from '../utils/activationIdentity.js';
+import {
+  buildIdentityLookup,
+  buildPersonIndexFromSnapshot,
+  matchMatriculadoToOtherIndex,
+} from './baseComparisonService.js';
+import { compareCicloSets, normalizeCiclo } from '../utils/cicloFromRow.js';
+import { pickDisplayRgm } from '../utils/rgmDisplay.js';
+import {
+  datacrazyClient,
+  ORIGEM_ATIVACAO_BLOCK_MESSAGE,
+} from './datacrazyClient.js';
+import { messagingProvider } from './messagingProvider.js';
+import { whatsappClient } from './whatsappClient.js';
+import {
+  caaCancelamentoSqlWhere,
+  isCaaCancelamentoSolicitacao,
+} from '../utils/caaRowFilters.js';
+import { parseFlexibleDate } from '../utils/dateParser.js';
+
+export const URGENCY_HIGH_DAYS = 30;
+export const URGENCY_MEDIUM_DAYS = 14;
+
+const ACTIVATION_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROSTER_CACHE_TTL_MS = ACTIVATION_CACHE_TTL_MS;
+
+export const ACTIVATION_CATEGORIES = /** @type {const} */ ([
+  'docs-pendentes',
+  'financeiro',
+  'provavel-evasao',
+  'acessos-blackboard',
+  'processos-caa',
+  'aguardando-inicio',
+]);
+
+/** @type {Map<string, { expires: number, data: object }>} */
+const activationListCaches = new Map();
+
+/** @type {Map<string, { expires: number, rows: object[], total_unfiltered: number }>} */
+const activationRosterCaches = new Map();
+
+/** @type {Map<string, { expires: number, map: Map<string, number> }>} */
+const priorCountCaches = new Map();
+
+/** @type {Map<string, { expires: number, data: Awaited<ReturnType<typeof buildPersonIndexWithSampleRow>> }>} */
+const personIndexCaches = new Map();
+
+/** @type {Map<string, Promise<object[]>>} */
+const rosterBuildInFlight = new Map();
+
+export function invalidateActivationRosterCache(category) {
+  if (category) {
+    for (const key of activationRosterCaches.keys()) {
+      if (key.startsWith(`${category}:`)) activationRosterCaches.delete(key);
+    }
+    for (const key of personIndexCaches.keys()) {
+      if (key.startsWith(`${category}:`) || key.startsWith('matriculados:')) {
+        personIndexCaches.delete(key);
+      }
+    }
+    priorCountCaches.delete(category);
+    return;
+  }
+  activationRosterCaches.clear();
+  priorCountCaches.clear();
+  personIndexCaches.clear();
+}
+
+/**
+ * @param {string} category
+ */
+async function getPriorCountMap(category) {
+  const cached = priorCountCaches.get(category);
+  if (cached && cached.expires > Date.now()) {
+    return cached.map;
+  }
+  const map = await activationDispatchRepo.countAllSentByCategory(category);
+  priorCountCaches.set(category, {
+    expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
+    map,
+  });
+  return map;
+}
+
+/**
+ * @param {string} category
+ * @param {string} snapshotId
+ */
+async function buildPersonIndexCached(category, snapshotId, opts = {}) {
+  const variant = opts.caaOnlyPending ? 'pend' : 'all';
+  const key = `${category}:${snapshotId}:${variant}`;
+  const hit = personIndexCaches.get(key);
+  if (hit && hit.expires > Date.now()) {
+    return hit.data;
+  }
+  const data = await buildPersonIndexFromSnapshot(category, snapshotId, {
+    keepSampleRow: true,
+    caaOnlyPending: opts.caaOnlyPending === true,
+  });
+  personIndexCaches.set(key, { expires: Date.now() + ACTIVATION_CACHE_TTL_MS, data });
+  return data;
+}
+
+/**
+ * @param {string} category
+ * @param {string} matSnapId
+ * @param {string} otherSnapId
+ */
+async function buildRosterRowsCached(category, matSnapId, otherSnapId) {
+  const rosterCacheKey = `${category}:${matSnapId}:${otherSnapId}`;
+  const hit = activationRosterCaches.get(rosterCacheKey);
+  if (hit && hit.expires > Date.now()) {
+    return { rows: hit.rows, meta: hit.meta };
+  }
+
+  let inflight = rosterBuildInFlight.get(rosterCacheKey);
+  if (!inflight) {
+    inflight = (async () => {
+      const storedTemplates = await getActivationTemplateConfig();
+      const list = await getIntersectionActivationList(category, { excludeDispatched: false });
+      const countMap = await getPriorCountMap(category);
+
+      const rows = list.items.map((item) => {
+        const prior = item.master_key ? countMap.get(item.master_key) || 0 : 0;
+        const message_tier = resolveMessageTier(prior);
+        const template_name = resolveTemplateForActivation(category, prior, storedTemplates);
+        return {
+          ...item,
+          prior_activation_count: prior,
+          message_tier,
+          message_tier_label: tierLabel(message_tier),
+          template_name,
+          template_configured: Boolean(template_name),
+        };
+      });
+
+      const meta = {
+        skipped_bb_limbo: list.skipped_bb_limbo || 0,
+        skipped_ciclo_divergente: list.skipped_ciclo_divergente || 0,
+        bb_urgency_counts: list.bb_urgency_counts,
+        bb_subgrupo_counts: list.bb_subgrupo_counts,
+      };
+
+      activationRosterCaches.set(rosterCacheKey, {
+        expires: Date.now() + ROSTER_CACHE_TTL_MS,
+        rows,
+        total_unfiltered: rows.length,
+        meta,
+      });
+      return { rows, meta };
+    })().finally(() => {
+      rosterBuildInFlight.delete(rosterCacheKey);
+    });
+    rosterBuildInFlight.set(rosterCacheKey, inflight);
+  }
+
+  return inflight;
+}
+
+/** Evita trabalho pesado em paralelo; só responde se o cache já estiver pronto. */
+export async function warmActivationRoster(category) {
+  assertActivationCategory(category);
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) return { ok: false, category, reason: 'missing_snapshot' };
+  const otherSnap = category === 'aguardando-inicio'
+    ? null
+    : await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap && category !== 'aguardando-inicio') {
+    return { ok: false, category, reason: 'missing_snapshot' };
+  }
+  const otherSnapId = otherSnap?.id ?? 'none';
+  const rosterCacheKey = `${category}:${matSnap.id}:${otherSnapId}`;
+  const hit = activationRosterCaches.get(rosterCacheKey);
+  if (hit && hit.expires > Date.now()) {
+    return { ok: true, category, already_cached: true };
+  }
+  if (rosterBuildInFlight.has(rosterCacheKey)) {
+    return { ok: true, category, already_building: true };
+  }
+  void buildRosterRowsCached(category, matSnap.id, otherSnapId).catch((err) => {
+    console.error('[activation] warm roster:', err.message);
+  });
+  return { ok: true, category, warming: true };
+}
+
+/** @param {string} category */
+export function assertActivationCategory(category) {
+  if (!ACTIVATION_CATEGORIES.includes(category)) {
+    const err = new Error(`Categoria de ativação inválida: ${category}`);
+    err.status = 400;
+    throw err;
+  }
+}
+
+/**
+ * Linha da outra base alinhada ao matriculado (para RGM/e-mail da planilha de pendência).
+ * @param {{ ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }} matEntry
+ * @param {Map<string, { ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }>} otherByCanon
+ * @param {Map<string, { ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }[]>} otherLookup
+ */
+function findAlignedOtherEntry(matEntry, otherByCanon, otherLookup) {
+  /** @type {Set<{ ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }>} */
+  const candidates = new Set();
+  for (const id of matEntry.ids) {
+    const list = otherLookup.get(id);
+    if (list) for (const e of list) candidates.add(e);
+  }
+  if (!candidates.size) {
+    for (const other of otherByCanon.values()) {
+      for (const id of matEntry.ids) {
+        if (other.ids.has(id)) candidates.add(other);
+      }
+    }
+  }
+  for (const c of candidates) {
+    const cmp = compareCicloSets(matEntry.ciclos, c.ciclos);
+    if (cmp === 'aligned' || cmp === 'missing') return c;
+  }
+  return null;
+}
+
+/** @param {Record<string, unknown>} matRow @param {Record<string, unknown>} [otherRow] @param {string} [otherCategory] */
+function rowToActivationItem(matRow, otherRow, otherCategory) {
+  const nome = String(
+    otherRow?.Aluno ?? otherRow?.Nome ?? matRow.Nome ?? matRow.Aluno ?? matRow.nome ?? ''
+  ).trim();
+  const email = String(
+    otherRow?.Email ?? otherRow?.['E-mail'] ?? matRow.Email ?? matRow['E-mail'] ?? ''
+  ).trim();
+  const telefone = String(
+    otherRow?.Celular ??
+      otherRow?.['Fone celular'] ??
+      matRow['Fone celular'] ??
+      matRow.Celular ??
+      matRow.Telefone ??
+      ''
+  ).trim();
+  const rgm = pickDisplayRgm(matRow, otherRow, otherCategory);
+
+  const src = otherRow || matRow;
+  return {
+    nome,
+    email,
+    telefone,
+    rgm,
+    cpf: String(src.CPF ?? matRow.CPF ?? '').trim(),
+    polo: String(src.Polo ?? matRow.Polo ?? '').trim(),
+    curso: String(src.Curso ?? matRow.Curso ?? '').trim(),
+    ciclo: String(src.Ciclo ?? matRow.Ciclo ?? '').trim(),
+    situacao_matricula: String(
+      src['Faixa Risco Evasão'] ??
+        src['Faixa Risco Evasao'] ??
+        src['Situação Matrícula'] ??
+        matRow['Situação Matrícula'] ??
+        matRow['Situação Atendimento'] ??
+        matRow.Situacao ??
+        ''
+    ).trim(),
+    subprocesso_caa: String(src.Subprocesso ?? matRow.Subprocesso ?? '').trim(),
+  };
+}
+
+/**
+ * @param {object|null} term
+ * @param {Date} today
+ * @returns {{ urgency: 'alta'|'media'|'normal'|'limbo'|'sem_turma', dias_apos_inicio: number|null }}
+ */
+function computeBbUrgency(term, today) {
+  if (!term?.inicio_conteudo) return { urgency: 'sem_turma', dias_apos_inicio: null };
+  const raw = String(term.inicio_conteudo || '').trim();
+  const inicioDate = parseFlexibleDate(raw.includes('T') ? raw : `${raw}T00:00:00Z`);
+  if (!inicioDate) return { urgency: 'sem_turma', dias_apos_inicio: null };
+  const inicio = inicioDate.getTime();
+  const ambientacaoMs = term.tem_ambientacao ? Number(term.dias_ambientacao || 0) * 86400000 : 0;
+  const efetivoMs = inicio - ambientacaoMs;
+  const diff = today.getTime() - efetivoMs;
+  if (diff < 0) return { urgency: 'limbo', dias_apos_inicio: Math.ceil(diff / 86400000) };
+  const dias = Math.floor(diff / 86400000);
+  if (dias >= URGENCY_HIGH_DAYS) return { urgency: 'alta', dias_apos_inicio: dias };
+  if (dias >= URGENCY_MEDIUM_DAYS) return { urgency: 'media', dias_apos_inicio: dias };
+  return { urgency: 'normal', dias_apos_inicio: dias };
+}
+
+/**
+ * Matriculados que também estão na outra base (interseção).
+ * @param {string} category
+ * @param {{ excludeDispatched?: boolean }} [opts] — padrão: true (não repetir mesma ativação)
+ */
+export async function getIntersectionActivationList(category, opts = {}) {
+  const excludeDispatched = opts.excludeDispatched !== false;
+  assertActivationCategory(category);
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) {
+    const err = new Error('Nenhum snapshot de matriculados.');
+    err.status = 404;
+    throw err;
+  }
+
+  // aguardando-inicio não tem export próprio — só usa matriculados + turmas.
+  if (category === 'aguardando-inicio') {
+    return _buildAguardandoInicioList(category, matSnap, excludeDispatched);
+  }
+
+  const otherSnap = await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap) {
+    const err = new Error(`Nenhum snapshot de ${category}.`);
+    err.status = 404;
+    throw err;
+  }
+
+  const cacheKey = `${category}:${matSnap.id}:${otherSnap.id}:${excludeDispatched ? 'ex' : 'all'}`;
+  const cached = activationListCaches.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return cached.data;
+  }
+
+  const [matIndex, otherIndex] = await Promise.all([
+    buildPersonIndexCached('matriculados', matSnap.id),
+    buildPersonIndexCached(category, otherSnap.id, {
+      caaOnlyPending: category === 'processos-caa',
+    }),
+  ]);
+  const otherLookup = buildIdentityLookup(otherIndex.byCanon);
+
+  /** BB: quem está no export no mesmo ciclo já acessou — fila = sem linha alinhada ao ciclo. */
+  const matriculadosSemNaOutraBase = category === 'acessos-blackboard';
+  const dispatched = await activationDispatchRepo.getDispatchedMasterKeys(category);
+
+  // BB: alunos cuja turma ainda não começou ficam de fora (regra "limbo").
+  const filterBbLimbo = category === 'acessos-blackboard';
+  const terms = filterBbLimbo ? await loadTerms() : [];
+  const today = new Date();
+
+  // BB: mapa de acessos e thresholds para classificação de subgrupo.
+  let bbAccessMap = null;
+  let bbThresholds = null;
+  if (category === 'acessos-blackboard') {
+    const [accessMap, globalSettings] = await Promise.all([
+      loadBbAccessMap(),
+      journeySettingsRepo.resolveForTerm(null),
+    ]);
+    bbAccessMap = accessMap;
+    bbThresholds = {
+      bb_nao_acessa_dias: globalSettings?.bb_nao_acessa_dias ?? 14,
+      bb_acessou_pouco_minutos: globalSettings?.bb_acessou_pouco_minutos ?? 60,
+      bb_acessou_pouco_interacoes: globalSettings?.bb_acessou_pouco_interacoes ?? 10,
+    };
+  }
+
+  /** @type {(ReturnType<typeof rowToActivationItem> & { master_key?: string })[]} */
+  const items = [];
+  const seenMaster = new Set();
+  let skipped_already_dispatched = 0;
+  let skipped_duplicate_key = 0;
+  let skipped_ciclo_divergente = 0;
+  let skipped_bb_limbo = 0;
+  let intersection_raw = 0;
+
+  for (const entry of matIndex.byCanon.values()) {
+    const matchKind = matchMatriculadoToOtherIndex(entry, otherIndex.byCanon, otherLookup);
+    const alignedHit = matchKind === 'aligned';
+    if (matchKind === 'cross_cycle') skipped_ciclo_divergente += 1;
+    if (matriculadosSemNaOutraBase ? alignedHit : !alignedHit) continue;
+    intersection_raw += 1;
+    const row = entry.row;
+    if (!row) continue;
+
+    let bbUrgency = 'sem_turma';
+    let bbDiasAposInicio = null;
+    let bbTermCodigo = null;
+    let bbSubgrupo = null;
+
+    if (filterBbLimbo) {
+      const dataMat =
+        row['Data Matrícula'] ??
+        row['Data Matricula'] ??
+        row['Data da Matricula'] ??
+        row['Data de Matrícula'];
+      const term = dataMat && terms.length > 0 ? findTermByMatriculaDate(terms, dataMat) : null;
+      const { urgency, dias_apos_inicio } = computeBbUrgency(term, today);
+      if (urgency === 'limbo') {
+        skipped_bb_limbo += 1;
+        continue;
+      }
+      bbUrgency = urgency;
+      bbDiasAposInicio = dias_apos_inicio;
+      bbTermCodigo = term?.codigo ?? null;
+    }
+
+    const otherEntry = findAlignedOtherEntry(entry, otherIndex.byCanon, otherLookup);
+    const item = rowToActivationItem(row, otherEntry?.row, category);
+    const master_key = masterKeyFromActivationItem(item) ?? undefined;
+
+    // BB subgrupo: classifica antes de fazer dedup para não perder contagem.
+    if (category === 'acessos-blackboard' && bbAccessMap && bbThresholds) {
+      const canonRgm = master_key ? master_key.replace(/^RGM:/, '') : '';
+      const accessRow = canonRgm ? bbAccessMap.get(canonRgm) ?? null : null;
+      bbSubgrupo = classifyBbSubgroup({ accessRow, thresholds: bbThresholds, today });
+      if (bbSubgrupo === 'ok') {
+        // Aluno com acesso suficiente — não entra na fila.
+        continue;
+      }
+    }
+
+    if (master_key) {
+      if (seenMaster.has(master_key)) {
+        skipped_duplicate_key += 1;
+        continue;
+      }
+      seenMaster.add(master_key);
+      if (dispatched.has(master_key)) {
+        skipped_already_dispatched += 1;
+        if (excludeDispatched) continue;
+      }
+    }
+    const baseItem = master_key ? { ...item, master_key } : item;
+    if (category === 'acessos-blackboard') {
+      items.push({
+        ...baseItem,
+        bb_urgency: bbUrgency,
+        bb_dias_apos_inicio: bbDiasAposInicio,
+        bb_term_codigo: bbTermCodigo,
+        bb_subgrupo: bbSubgrupo,
+      });
+    } else {
+      items.push(baseItem);
+    }
+  }
+
+  const SUBGRUPO_ORDER = { podia_e_nao_acessou: 0, nao_acessa_faz_tempo: 1, acessou_pouco: 2 };
+  const URGENCY_ORDER = { alta: 0, media: 1, normal: 2, sem_turma: 3 };
+  items.sort((a, b) => {
+    if (category === 'acessos-blackboard') {
+      const sa = SUBGRUPO_ORDER[a.bb_subgrupo ?? 'acessou_pouco'] ?? 9;
+      const sb = SUBGRUPO_ORDER[b.bb_subgrupo ?? 'acessou_pouco'] ?? 9;
+      if (sa !== sb) return sa - sb;
+      const ua = URGENCY_ORDER[a.bb_urgency ?? 'sem_turma'] ?? 9;
+      const ub = URGENCY_ORDER[b.bb_urgency ?? 'sem_turma'] ?? 9;
+      if (ua !== ub) return ua - ub;
+      const da = a.bb_dias_apos_inicio ?? -1;
+      const db = b.bb_dias_apos_inicio ?? -1;
+      if (da !== db) return db - da;
+    }
+    return a.nome.localeCompare(b.nome, 'pt-BR');
+  });
+
+  const bb_urgency_counts = category === 'acessos-blackboard' ? {
+    alta: items.filter((i) => i.bb_urgency === 'alta').length,
+    media: items.filter((i) => i.bb_urgency === 'media').length,
+    normal: items.filter((i) => i.bb_urgency === 'normal').length,
+    sem_turma: items.filter((i) => i.bb_urgency === 'sem_turma').length,
+  } : undefined;
+
+  const bb_subgrupo_counts = category === 'acessos-blackboard' ? {
+    podia_e_nao_acessou: items.filter((i) => i.bb_subgrupo === 'podia_e_nao_acessou').length,
+    nao_acessa_faz_tempo: items.filter((i) => i.bb_subgrupo === 'nao_acessa_faz_tempo').length,
+    acessou_pouco: items.filter((i) => i.bb_subgrupo === 'acessou_pouco').length,
+  } : undefined;
+
+  const result = {
+    category,
+    total: items.length,
+    items,
+    intersection_raw,
+    already_dispatched_in_db: dispatched.size,
+    skipped_already_dispatched,
+    skipped_duplicate_key,
+    skipped_ciclo_divergente,
+    skipped_bb_limbo,
+    bb_urgency_counts,
+    bb_subgrupo_counts,
+    exclude_dispatched: excludeDispatched,
+    matriculados_snapshot_id: matSnap.id,
+    other_snapshot_id: otherSnap.id,
+    generated_at: new Date().toISOString(),
+  };
+
+  activationListCaches.set(cacheKey, {
+    expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
+    data: result,
+  });
+
+  return result;
+}
+
+/**
+ * Fila "aguardando-inicio": alunos matriculados cuja turma ainda não começou (limbo).
+ * Não cruza com nenhum export externo.
+ */
+async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) {
+  const cacheKey = `${category}:${matSnap.id}:none:${excludeDispatched ? 'ex' : 'all'}`;
+  const cached = activationListCaches.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
+  const [matIndex, dispatched, terms] = await Promise.all([
+    buildPersonIndexCached('matriculados', matSnap.id),
+    activationDispatchRepo.getDispatchedMasterKeys(category),
+    loadTerms(),
+  ]);
+  const today = new Date();
+
+  /** @type {Array<object>} */
+  const items = [];
+  const seenMaster = new Set();
+  let skipped_already_dispatched = 0;
+  let skipped_duplicate_key = 0;
+
+  for (const entry of matIndex.byCanon.values()) {
+    const row = entry.row;
+    if (!row) continue;
+    const dataMat =
+      row['Data Matrícula'] ??
+      row['Data Matricula'] ??
+      row['Data da Matricula'] ??
+      row['Data de Matrícula'];
+    const { limbo, daysUntilStart, term } = resolveLimbo(terms, dataMat, today);
+    if (!limbo) continue;
+
+    const item = rowToActivationItem(row, null, category);
+    const master_key = masterKeyFromActivationItem(item) ?? undefined;
+
+    if (master_key) {
+      if (seenMaster.has(master_key)) {
+        skipped_duplicate_key += 1;
+        continue;
+      }
+      seenMaster.add(master_key);
+      if (dispatched.has(master_key)) {
+        skipped_already_dispatched += 1;
+        if (excludeDispatched) continue;
+      }
+    }
+
+    const baseItem = master_key ? { ...item, master_key } : item;
+    items.push({
+      ...baseItem,
+      dias_ate_inicio: daysUntilStart ?? null,
+      bb_term_codigo: term?.codigo ?? null,
+    });
+  }
+
+  items.sort((a, b) => {
+    const da = a.dias_ate_inicio ?? 9999;
+    const db = b.dias_ate_inicio ?? 9999;
+    if (da !== db) return da - db;
+    return a.nome.localeCompare(b.nome, 'pt-BR');
+  });
+
+  const result = {
+    category,
+    total: items.length,
+    items,
+    intersection_raw: items.length,
+    already_dispatched_in_db: dispatched.size,
+    skipped_already_dispatched,
+    skipped_duplicate_key,
+    skipped_ciclo_divergente: 0,
+    skipped_bb_limbo: 0,
+    exclude_dispatched: excludeDispatched,
+    matriculados_snapshot_id: matSnap.id,
+    other_snapshot_id: null,
+    generated_at: new Date().toISOString(),
+  };
+
+  activationListCaches.set(cacheKey, {
+    expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
+    data: result,
+  });
+
+  return result;
+}
+
+export async function getDocsPendentesActivationList() {
+  return getIntersectionActivationList('docs-pendentes');
+}
+
+export function invalidateActivationListCache(category) {
+  if (category) {
+    for (const key of activationListCaches.keys()) {
+      if (key.startsWith(`${category}:`)) activationListCaches.delete(key);
+    }
+    invalidateActivationRosterCache(category);
+    return;
+  }
+  activationListCaches.clear();
+  invalidateActivationRosterCache();
+}
+
+/**
+ * Marca pessoas como já ativadas nesta categoria (outras categorias não são afetadas).
+ * @param {string} category
+ * @param {{ masterKeys?: string[], markAllEligible?: boolean }} opts
+ */
+export async function markActivationDispatched(category, opts = {}) {
+  assertActivationCategory(category);
+  let keys = opts.masterKeys || [];
+  if (opts.markAllEligible) {
+    const list = await getIntersectionActivationList(category, { excludeDispatched: true });
+    keys = list.items.map((i) => i.master_key).filter(Boolean);
+  }
+  let registered = 0;
+  for (const key of keys) {
+    await activationDispatchRepo.recordDispatchEvent({
+      category,
+      masterKey: key,
+      status: 'sent',
+      channel: 'manual',
+    });
+    registered += 1;
+  }
+  invalidateActivationListCache(category);
+  return { category, registered, keys_submitted: keys.length };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function wasTemplateSentInCategory(category, masterKey, templateName) {
+  if (!masterKey || !templateName) return false;
+  const { rows } = await query(
+    `select 1 from activation_dispatch_events
+      where category = $1 and master_key = $2 and status = 'sent' and template_name = $3
+      limit 1`,
+    [category, masterKey, templateName]
+  );
+  return rows.length > 0;
+}
+
+/** @typedef {'all'|'first'|'repeat'|'fifth'} ActivationStageFilter */
+
+/**
+ * @param {number} priorCount — vezes já ativado nesta categoria
+ * @param {ActivationStageFilter} stage
+ */
+export function matchesActivationStageFilter(priorCount, stage) {
+  if (!stage || stage === 'all') return true;
+  const tier = resolveMessageTier(priorCount);
+  if (stage === 'first') return tier === 'first';
+  if (stage === 'repeat') return tier === 'repeat';
+  if (stage === 'fifth') return tier === 'fifth';
+  return true;
+}
+
+/**
+ * @param {string} raw
+ * @returns {ActivationStageFilter}
+ */
+export function parseActivationStageFilter(raw) {
+  const s = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'first' || s === '1') return 'first';
+  if (s === 'repeat' || s === '2' || s === '3' || s === '4' || s === 'reativacao') {
+    return 'repeat';
+  }
+  if (s === 'fifth' || s === '5plus' || s === '5+' || s === '5') return 'fifth';
+  return 'all';
+}
+
+/**
+ * Lista de matriculados na fila de ativação com contagem e template sugerido.
+ */
+export async function getActivationRoster(category, opts = {}) {
+  assertActivationCategory(category);
+  const stageFilter = parseActivationStageFilter(opts.activationStage);
+
+  if (opts.countOnly) {
+    const list = await getIntersectionActivationList(category, {
+      excludeDispatched: opts.excludeDispatched !== false,
+    });
+    return {
+      category,
+      total: list.total,
+      total_unfiltered: list.total,
+      activation_stage: stageFilter,
+      items: [],
+      offset: 0,
+      limit: 0,
+      generated_at: new Date().toISOString(),
+      count_only: true,
+    };
+  }
+
+  const bbSubgrupoFilter = opts.bbSubgrupo || null;
+  const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
+
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) {
+    const err = new Error('Snapshots de matriculados não encontrados.');
+    err.status = 404;
+    throw err;
+  }
+  const otherSnap = category === 'aguardando-inicio'
+    ? null
+    : await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap && category !== 'aguardando-inicio') {
+    const err = new Error(`Snapshots de ${category} não encontrados.`);
+    err.status = 404;
+    throw err;
+  }
+  const otherSnapId = otherSnap?.id ?? 'none';
+  const { rows, meta } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
+  const rosterCached = activationRosterCaches.get(`${category}:${matSnap.id}:${otherSnapId}`);
+
+  // Ciclos distintos presentes na fila (antes de qualquer filtro).
+  const cicloSet = new Set();
+  for (const r of rows) {
+    const c = normalizeCiclo(r.ciclo || '');
+    if (c) cicloSet.add(c);
+  }
+  const available_ciclos = [...cicloSet].sort((a, b) => b.localeCompare(a));
+
+  // bb_subgrupo_counts deve refletir o total antes do filtro de subgrupo.
+  const bbSubgrupoCountsUnfiltered = meta?.bb_subgrupo_counts ?? undefined;
+
+  let filtered =
+    stageFilter === 'all'
+      ? rows
+      : rows.filter((row) =>
+          matchesActivationStageFilter(row.prior_activation_count, stageFilter)
+        );
+
+  if (bbSubgrupoFilter && category === 'acessos-blackboard') {
+    filtered = filtered.filter((row) => row.bb_subgrupo === bbSubgrupoFilter);
+  }
+
+  if (cicloFilterRaw) {
+    filtered = filtered.filter((row) => normalizeCiclo(row.ciclo || '') === cicloFilterRaw);
+  }
+
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const limitRaw = Number(opts.limit);
+  const pageItems =
+    limitRaw > 0
+      ? filtered.slice(offset, offset + Math.min(limitRaw, 500))
+      : filtered.slice(offset);
+
+  const masterKeys = pageItems.map((it) => it.master_key).filter(Boolean);
+  const responsesByKey = masterKeys.length
+    ? await activationResponseRepo.findLastByMasterKeys(category, masterKeys)
+    : new Map();
+
+  const items = pageItems.map((it) => {
+    const r = it.master_key ? responsesByKey.get(it.master_key) : null;
+    if (!r) return it;
+    return {
+      ...it,
+      last_response_at: r.received_at,
+      last_response_kind: r.response_kind,
+      last_response_button: r.button_payload,
+    };
+  });
+
+  return {
+    category,
+    total: filtered.length,
+    total_unfiltered: rows.length,
+    activation_stage: stageFilter,
+    items,
+    offset,
+    limit: limitRaw > 0 ? Math.min(limitRaw, 500) : items.length,
+    generated_at: new Date().toISOString(),
+    cached: Boolean(rosterCached && rosterCached.expires > Date.now()),
+    skipped_bb_limbo: meta?.skipped_bb_limbo || 0,
+    skipped_ciclo_divergente: meta?.skipped_ciclo_divergente || 0,
+    bb_urgency_counts: meta?.bb_urgency_counts,
+    bb_subgrupo_counts: bbSubgrupoCountsUnfiltered,
+    available_ciclos,
+  };
+}
+
+/**
+ * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
+ */
+export async function runDatacrazyActivationBatch(category, opts = {}) {
+  if (!process.env.DATACRAZY_API_KEY) {
+    const err = new Error('DATACRAZY_API_KEY não configurada no .env');
+    err.status = 503;
+    throw err;
+  }
+
+  const storedTemplates = await getActivationTemplateConfig();
+  const roster = await getActivationRoster(category);
+  const dispatched = await activationDispatchRepo.getDispatchedMasterKeys(category);
+  const eligibleItems = roster.items.filter(
+    (it) => !it.master_key || !dispatched.has(it.master_key)
+  );
+  const maxProcess =
+    Number(opts.limit) > 0
+      ? Math.min(Number(opts.limit), eligibleItems.length)
+      : eligibleItems.length;
+  const toProcess = eligibleItems.slice(0, maxProcess);
+
+  const neededEmails = new Set();
+  const neededPhones = new Set();
+  for (const item of toProcess) {
+    const e = datacrazyClient.normalizeEmailForMatch(item.email);
+    const p = datacrazyClient.normalizePhoneDigits(item.telefone);
+    if (e) neededEmails.add(e);
+    if (p) neededPhones.add(p);
+  }
+
+  const built = await datacrazyClient.buildLeadsLookupIndex({
+    emails: [...neededEmails],
+    phones: [...neededPhones],
+  });
+  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
+
+  // Pré-voo: confirma que origem_ativacao grava no CRM antes de enviar qualquer template.
+  for (const item of toProcess) {
+    const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
+      email: item.email,
+      phone: item.telefone,
+    });
+    if (!lead?.id) continue;
+    const preflight = await datacrazyClient.verifyOrigemAtivacaoForCategory(
+      lead.id,
+      category
+    );
+    if (preflight.skipped) {
+      const err = new Error(
+        `${ORIGEM_ATIVACAO_BLOCK_MESSAGE} Categoria sem mapeamento de origem_ativacao.`
+      );
+      err.status = 503;
+      err.code = 'origem_ativacao_unavailable';
+      throw err;
+    }
+    if (!preflight.ok) {
+      const err = new Error(
+        `${ORIGEM_ATIVACAO_BLOCK_MESSAGE}${preflight.error ? ` Detalhe: ${preflight.error}` : ''}`
+      );
+      err.status = 503;
+      err.code = 'origem_ativacao_unavailable';
+      throw err;
+    }
+    break;
+  }
+
+  const sendDelay = Math.max(Number(process.env.ACTIVATION_SEND_DELAY_MS) || 400, 0);
+  const sendChannel = messagingProvider.getName();
+  /** @type {Map<string, object[]>} */
+  const templateComponentsByName = new Map();
+  if (sendChannel === 'whatsapp' || sendChannel === 'meta' || sendChannel === 'cloud') {
+    try {
+      const templates = await whatsappClient.listTemplates();
+      for (const tpl of templates) {
+        if (tpl?.name) templateComponentsByName.set(tpl.name, tpl.components || []);
+      }
+    } catch (err) {
+      console.warn('[ativacao] listTemplates WhatsApp:', err.message);
+    }
+  }
+  let sent = 0;
+  let not_found = 0;
+  let failed = 0;
+  let skipped = 0;
+  /** @type {object[]} */
+  const not_found_items = [];
+  /** @type {object[]} */
+  const results = [];
+  let origem_ativacao_blocked = false;
+  /** @type {string|null} */
+  let origem_ativacao_error = null;
+
+  for (const item of toProcess) {
+    if (origem_ativacao_blocked) break;
+    const master_key = item.master_key || masterKeyFromActivationItem(item);
+    const prior = item.prior_activation_count ?? 0;
+    const message_tier = resolveMessageTier(prior);
+    const template_name =
+      item.template_name ||
+      resolveTemplateForActivation(category, prior, storedTemplates);
+
+    if (!template_name) {
+      failed += 1;
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'failed',
+        messageTier: message_tier,
+        nome: item.nome,
+        telefone: item.telefone,
+        email: item.email,
+        rgm: item.rgm,
+        errorMessage: `Template não configurado para ${tierLabel(message_tier)}. Defina ACTIVATION_TEMPLATE_* no .env`,
+      });
+      results.push({ ...item, status: 'failed', error: 'template_nao_configurado' });
+      continue;
+    }
+
+    if (master_key && (await wasTemplateSentInCategory(category, master_key, template_name))) {
+      skipped += 1;
+      results.push({ ...item, status: 'skipped', error: 'template_ja_enviado' });
+      continue;
+    }
+
+    const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
+      email: item.email,
+      phone: item.telefone,
+    });
+
+    if (!lead) {
+      not_found += 1;
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'not_found',
+        messageTier: message_tier,
+        templateName: template_name,
+        nome: item.nome,
+        telefone: item.telefone,
+        email: item.email,
+        rgm: item.rgm,
+      });
+      not_found_items.push({ ...item, message_tier, template_name });
+      results.push({ ...item, status: 'not_found', datacrazy: null });
+      continue;
+    }
+
+    let phone =
+      datacrazyClient.normalizePhoneDigits(lead.rawPhone || lead.phone) ||
+      datacrazyClient.normalizePhoneDigits(item.telefone);
+    if (phone && phone.length <= 11) phone = `55${phone}`;
+    if (!phone) {
+      failed += 1;
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'failed',
+        messageTier: message_tier,
+        templateName: template_name,
+        datacrazyLeadId: String(lead.id ?? ''),
+        nome: item.nome,
+        errorMessage: 'Lead no DataCrazy sem telefone',
+      });
+      results.push({ ...item, status: 'failed', error: 'sem_telefone' });
+      continue;
+    }
+
+    try {
+      const origemResult = await datacrazyClient.verifyOrigemAtivacaoForCategory(
+        lead.id,
+        category
+      );
+      try {
+        await activationOrigemRepo.recordOrigemAtivacaoLog({
+          category,
+          origemValue: origemResult.value ?? null,
+          datacrazyLeadId: String(lead.id ?? ''),
+          masterKey: master_key,
+          cpf: item.cpf || lead.taxId || null,
+          rgm: item.rgm,
+          nome: item.nome,
+          status: origemResult.ok ? 'ok' : origemResult.skipped ? 'skipped' : 'failed',
+          errorMessage: origemResult.error || null,
+        });
+      } catch (logErr) {
+        console.warn('[ativacao] log origem_ativacao:', logErr.message);
+      }
+      if (!origemResult.ok) {
+        failed += 1;
+        origem_ativacao_blocked = true;
+        origem_ativacao_error = origemResult.error || 'origem_ativacao';
+        await activationDispatchRepo.recordDispatchEvent({
+          category,
+          masterKey: master_key,
+          status: 'failed',
+          messageTier: message_tier,
+          templateName: template_name,
+          datacrazyLeadId: String(lead.id ?? ''),
+          nome: item.nome,
+          telefone: item.telefone,
+          email: item.email,
+          rgm: item.rgm,
+          errorMessage: `origem_ativacao: ${origem_ativacao_error}`,
+        });
+        results.push({
+          ...item,
+          status: 'failed',
+          error: 'origem_ativacao',
+          template_name,
+          message_tier,
+          origem_ativacao_error,
+          datacrazy: mapDatacrazyLead(lead),
+        });
+        break;
+      }
+
+      const variables = {
+        nome: item.nome || lead.name || '',
+        polo: item.polo || '',
+        curso: item.curso || '',
+        rgm: item.rgm || '',
+      };
+      await messagingProvider.sendTemplateMessage({
+        phone,
+        templateName: template_name,
+        language: process.env.ACTIVATION_TEMPLATE_LANGUAGE || 'pt_BR',
+        variables,
+        templateComponents: templateComponentsByName.get(template_name) || [],
+      });
+      sent += 1;
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'sent',
+        channel: sendChannel,
+        messageTier: message_tier,
+        templateName: template_name,
+        datacrazyLeadId: String(lead.id ?? ''),
+        nome: item.nome,
+        telefone: item.telefone,
+        email: item.email,
+        rgm: item.rgm,
+      });
+      results.push({
+        ...item,
+        status: 'sent',
+        template_name,
+        message_tier,
+        origem_ativacao: origemResult.value,
+        datacrazy: mapDatacrazyLead(lead),
+      });
+    } catch (err) {
+      failed += 1;
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'failed',
+        messageTier: message_tier,
+        templateName: template_name,
+        datacrazyLeadId: String(lead.id ?? ''),
+        nome: item.nome,
+        telefone: item.telefone,
+        email: item.email,
+        rgm: item.rgm,
+        errorMessage: err.message,
+      });
+      results.push({ ...item, status: 'failed', error: err.message, datacrazy: mapDatacrazyLead(lead) });
+    }
+
+    if (sendDelay > 0) await sleep(sendDelay);
+  }
+
+  invalidateActivationListCache(category);
+
+  return {
+    category,
+    processed: toProcess.length,
+    sent,
+    not_found,
+    failed,
+    skipped,
+    not_found_items,
+    results,
+    datacrazy_pages: built.pages,
+    datacrazy_leads_scanned: built.leadsScanned,
+    origem_ativacao_blocked,
+    origem_ativacao_error,
+    message: origem_ativacao_blocked
+      ? `${ORIGEM_ATIVACAO_BLOCK_MESSAGE}${origem_ativacao_error ? ` Detalhe: ${origem_ativacao_error}` : ''}`
+      : null,
+  };
+}
+
+export function notFoundItemsToCsv(items) {
+  const headers = [
+    'nome',
+    'email',
+    'telefone',
+    'rgm',
+    'cpf',
+    'polo',
+    'curso',
+    'message_tier',
+    'template_name',
+  ];
+  const esc = (v) => {
+    const s = String(v ?? '');
+    if (s.includes('"') || s.includes(',') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+  const lines = [headers.join(',')];
+  for (const row of items) {
+    lines.push(
+      [
+        row.nome,
+        row.email,
+        row.telefone,
+        row.rgm,
+        row.cpf,
+        row.polo,
+        row.curso,
+        row.message_tier,
+        row.template_name,
+      ]
+        .map(esc)
+        .join(',')
+    );
+  }
+  return `\uFEFF${lines.join('\n')}`;
+}
+
+/** @param {unknown} lead */
+function mapDatacrazyLead(lead) {
+  if (!lead || typeof lead !== 'object') return null;
+  const l = /** @type {Record<string, unknown>} */ (lead);
+  const tags = Array.isArray(l.tags) ? l.tags : [];
+  return {
+    id: String(l.id ?? ''),
+    name: String(l.name ?? ''),
+    email: String(l.email ?? ''),
+    phone: String(l.rawPhone ?? l.phone ?? ''),
+    source: String(l.source ?? ''),
+    tags: tags.map((t) => {
+      if (t && typeof t === 'object' && 'name' in t) return String(t.name);
+      return String(t);
+    }),
+  };
+}
+
+/**
+ * @param {string} category
+ * @param {{ offset?: number, limit?: number }} opts — limit 0 = lista inteira
+ */
+export async function enrichActivationWithDatacrazy(category, opts = {}) {
+  if (!process.env.DATACRAZY_API_KEY) {
+    const err = new Error('DATACRAZY_API_KEY não configurada no .env');
+    err.status = 503;
+    throw err;
+  }
+
+  const list = await getIntersectionActivationList(category, { excludeDispatched: true });
+  const limitNum = opts.limit != null ? Number(opts.limit) : 0;
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const items =
+    limitNum === 0
+      ? list.items
+      : list.items.slice(offset, offset + Math.min(Math.max(limitNum, 1), 500));
+
+  const neededEmails = new Set();
+  const neededPhones = new Set();
+  for (const item of items) {
+    const e = datacrazyClient.normalizeEmailForMatch(item.email);
+    const p = datacrazyClient.normalizePhoneDigits(item.telefone);
+    if (e) neededEmails.add(e);
+    if (p) neededPhones.add(p);
+  }
+
+  const built = await datacrazyClient.buildLeadsLookupIndex({
+    emails: [...neededEmails],
+    phones: [...neededPhones],
+  });
+
+  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
+  let found = 0;
+  let notFound = 0;
+  const results = items.map((item) => {
+    const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
+      email: item.email,
+      phone: item.telefone,
+    });
+    if (lead) {
+      found += 1;
+      return {
+        ...item,
+        datacrazy_found: true,
+        datacrazy: mapDatacrazyLead(lead),
+      };
+    }
+    notFound += 1;
+    return {
+      ...item,
+      datacrazy_found: false,
+      datacrazy: null,
+    };
+  });
+
+  return {
+    category,
+    total: list.total,
+    offset: 0,
+    limit: items.length,
+    processed: items.length,
+    found,
+    not_found: notFound,
+    errors: 0,
+    results,
+    has_more: false,
+    next_offset: items.length,
+    mode: 'paged_index',
+    datacrazy_pages: built.pages,
+    datacrazy_leads_scanned: built.leadsScanned,
+    datacrazy_early_stop: built.early_stop,
+    datacrazy_index_reused: built.index_reused,
+  };
+}
+
+export async function enrichDocsPendentesWithDatacrazy(opts = {}) {
+  return enrichActivationWithDatacrazy('docs-pendentes', opts);
+}
+
+/**
+ * @param {Array<Record<string, unknown>>} items
+ */
+export function activationListToCsv(items) {
+  const headers = [
+    'nome',
+    'email',
+    'telefone',
+    'rgm',
+    'cpf',
+    'polo',
+    'curso',
+    'ciclo',
+    'situacao_matricula',
+    'datacrazy_id',
+    'datacrazy_nome',
+    'datacrazy_email',
+    'datacrazy_telefone',
+  ];
+  const esc = (v) => {
+    const s = String(v ?? '');
+    if (s.includes('"') || s.includes(',') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+  const lines = [headers.join(',')];
+  for (const row of items) {
+    const dc = row.datacrazy || {};
+    lines.push(
+      [
+        row.nome,
+        row.email,
+        row.telefone,
+        row.rgm,
+        row.cpf,
+        row.polo,
+        row.curso,
+        row.ciclo,
+        row.situacao_matricula,
+        dc.id,
+        dc.name,
+        dc.email,
+        dc.phone,
+      ]
+        .map(esc)
+        .join(',')
+    );
+  }
+  return `\uFEFF${lines.join('\n')}`;
+}

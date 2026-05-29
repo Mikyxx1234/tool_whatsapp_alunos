@@ -1,0 +1,6 @@
+nome,telefone,email,cpf,curso,polo,data_matricula,data_inicio_conteudo,data_acesso_liberado,ultimo_acesso
+Ana Souza,11999990001,ana@example.com,12345678901,Pós-graduação Direito,São Paulo,01/05/2026,02/05/2026,02/05/2026,
+Bruno Lima,11999990002,bruno@example.com,12345678902,MBA Gestão,Belo Horizonte,15/04/2026,30/04/2026,30/04/2026,
+Carla Pereira,11999990003,carla@example.com,12345678903,Pós-graduação Direito,Rio de Janeiro,01/03/2026,01/06/2026,01/06/2026,
+Daniel Almeida,11999990004,daniel@example.com,12345678904,MBA Gestão,Curitiba,10/04/2026,12/04/2026,12/04/2026,
+Eduarda Castro,11999990005,eduarda@example.com,12345678905,Pós-graduação Educação,Porto Alegre,01/02/2026,01/07/2026,01/07/2026,

@@ -1,0 +1,126 @@
+import './boot-env.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import express from 'express';
+import cors from 'cors';
+
+import templatesRoute from './routes/templates.js';
+import sendMessageRoute from './routes/sendMessage.js';
+import campaignsRoute from './routes/campaigns.js';
+import campaignTypesRoute from './routes/campaignTypes.js';
+import webhooksRoute from './routes/webhooks.js';
+import studentsRoute from './routes/students.js';
+import journeysRoute from './routes/journeys.js';
+import scheduledEventsRoute from './routes/scheduledEvents.js';
+import academicTermsRoute from './routes/academicTerms.js';
+import journeySettingsRoute from './routes/journeySettings.js';
+import reportsRoute from './routes/reports.js';
+import baseUploadsRoute from './routes/baseUploads.js';
+import activationRoute from './routes/activation.js';
+import manualOutcomesRoute from './routes/manualOutcomes.js';
+
+import { isDbConfigured } from './db/client.js';
+import { startScheduler } from './services/schedulerService.js';
+import { isApiKeyEnforced } from './middleware/requireApiKey.js';
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3001;
+
+app.use(cors());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '100mb' }));
+
+app.get('/api/health', (_req, res) => {
+  const payload = {
+    ok: true,
+    service: 'disparador-whatsapp-backend',
+    time: new Date().toISOString(),
+  };
+  if (!isApiKeyEnforced()) {
+    payload.env = {
+      hasDatacrazyKey: Boolean(process.env.DATACRAZY_API_KEY),
+      hasWhatsappKey: Boolean(process.env.WHATSAPP_API_KEY),
+      hasDatabase: isDbConfigured(),
+      templatesProvider: process.env.TEMPLATES_PROVIDER || 'whatsapp',
+    };
+  }
+  res.json(payload);
+});
+
+app.use('/api/templates', templatesRoute);
+app.use('/api/send-message', sendMessageRoute);
+app.use('/api/campaigns', campaignsRoute);
+app.use('/api/campaign-types', campaignTypesRoute);
+app.use('/api/webhooks', webhooksRoute);
+app.use('/api/students', studentsRoute);
+app.use('/api/journeys', journeysRoute);
+app.use('/api/scheduled-events', scheduledEventsRoute);
+app.use('/api/academic-terms', academicTermsRoute);
+app.use('/api/journey-settings', journeySettingsRoute);
+app.use('/api/reports', reportsRoute);
+app.use('/api/base-uploads', baseUploadsRoute);
+app.use('/api/activation', activationRoute);
+app.use('/api/manual-outcomes', manualOutcomesRoute);
+
+// Em produção (container Docker), o mesmo processo serve o build estático
+// do frontend (Vite -> dist/). Em dev, o Vite roda na porta 5173 e proxy-a
+// /api para este backend, então este bloco é ignorado.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+fs.mkdirSync(path.resolve(__dirname, 'uploads/manual_outcomes'), { recursive: true });
+
+const distDir = path.resolve(__dirname, '..', 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+} else {
+  console.warn(`[server] dist/ não encontrado em ${distDir}; servindo apenas /api/*.`);
+}
+
+app.use((err, _req, res, _next) => {
+  console.error('[server] erro não tratado:', err);
+  res.status(500).json({ error: err.message || 'Erro interno' });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[server] backend rodando em http://0.0.0.0:${PORT}`);
+  if (!process.env.DATACRAZY_API_KEY) {
+    console.warn('[server] AVISO: DATACRAZY_API_KEY não configurada.');
+  }
+  if (!process.env.WHATSAPP_API_KEY) {
+    console.warn('[server] AVISO: WHATSAPP_API_KEY não configurada.');
+  }
+  if (!isDbConfigured()) {
+    console.warn(
+      '[server] AVISO: DATABASE_URL não configurada. ' +
+        'Endpoints /api/campaigns, /api/campaign-types e /api/webhooks vão falhar até o banco estar configurado.'
+    );
+  }
+
+  // Sobe o scheduler in-process da Régua Inteligente.
+  // Não falha o boot se algo der errado aqui.
+  try {
+    startScheduler();
+  } catch (err) {
+    console.error('[server] falha ao iniciar scheduler:', err.message);
+  }
+
+  if (isDbConfigured()) {
+    setTimeout(() => {
+      import('./services/baseComparisonService.js')
+        .then((m) => m.startComparisonBuildIfNeeded())
+        .catch((err) => {
+          console.warn('[server] pré-aquecimento comparação:', err.message);
+        });
+    }, 3000);
+    setTimeout(() => {
+      import('./repositories/reportRepository.js')
+        .then((m) => m.prewarmCaaOverviewMetadata())
+        .catch((err) => {
+          console.warn('[server] pré-aquecimento overview CAA:', err.message);
+        });
+    }, 8000);
+  }
+});

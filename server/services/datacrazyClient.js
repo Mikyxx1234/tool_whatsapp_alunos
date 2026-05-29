@@ -1,0 +1,541 @@
+/**
+ * Cliente HTTP para a API da DataCrazy.
+ *
+ * IMPORTANTE: Mantenha o payload e os endpoints isolados nesta camada
+ * para facilitar ajustes quando a documentação oficial estiver disponível.
+ *
+ * TODO [CURSOR]: confirmar o endpoint exato de envio de mensagem.
+ *   Possíveis caminhos comuns:
+ *     - POST {BASE_URL}/v1/messages
+ *     - POST {BASE_URL}/v1/whatsapp/send
+ *     - POST {BASE_URL}/messages/template
+ *   Ajustar `SEND_MESSAGE_PATH` e o formato de `payload` conforme a doc.
+ */
+
+const SEND_MESSAGE_PATH = '/v1/messages';
+const LIST_TEMPLATES_PATH = '/v1/templates';
+const SEARCH_LEADS_PATH = '/api/v1/leads';
+
+/** Campo adicional no lead (DataCrazy) — nome criado no CRM. */
+export const ORIGEM_ATIVACAO_FIELD =
+  process.env.DATACRAZY_ORIGEM_ATIVACAO_FIELD || 'origem_ativacao';
+
+/** ID do campo `origem_ativacao` (definição no CRM — ver URL ao editar manualmente). */
+export const ORIGEM_ATIVACAO_FIELD_ID =
+  process.env.DATACRAZY_ORIGEM_ATIVACAO_FIELD_ID || '';
+
+/**
+ * Valor gravado em `origem_ativacao` por categoria do disparador.
+ * @type {Record<string, string>}
+ */
+export const ORIGEM_ATIVACAO_BY_CATEGORY = {
+  'docs-pendentes': 'Doc',
+  financeiro: 'Inad',
+  'processos-caa': 'caa',
+  'provavel-evasao': 'Evasao',
+  'acessos-blackboard': 'BB',
+  'aguardando-inicio': 'AguardInicio',
+};
+
+export function origemAtivacaoForCategory(category) {
+  return ORIGEM_ATIVACAO_BY_CATEGORY[category] ?? null;
+}
+
+/** Mensagem exibida na UI quando origem_ativacao não grava no CRM. */
+export const ORIGEM_ATIVACAO_BLOCK_MESSAGE =
+  'Não foi possível gravar o campo origem_ativacao no DataCrazy. O disparo foi interrompido porque as respostas dos alunos não serão mensuradas — a automação do CRM depende desse campo para enviar cliques ao n8n. Verifique DATACRAZY_CRM_BASE_URL, DATACRAZY_ORIGEM_ATIVACAO_FIELD_ID e permissões da API.';
+
+function getConfig() {
+  const apiKey = process.env.DATACRAZY_API_KEY;
+  const baseUrl = (process.env.DATACRAZY_BASE_URL || '').replace(/\/+$/, '');
+
+  if (!apiKey) {
+    throw new Error(
+      'DATACRAZY_API_KEY não configurada. Defina no arquivo .env.'
+    );
+  }
+  if (!baseUrl) {
+    throw new Error(
+      'DATACRAZY_BASE_URL não configurada. Defina no arquivo .env.'
+    );
+  }
+
+  return { apiKey, baseUrl };
+}
+
+/** Base do CRM web (campos adicionais); distinto da API pública api.g1. */
+function getCrmBaseUrl() {
+  const explicit = (process.env.DATACRAZY_CRM_BASE_URL || '').replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const api = (process.env.DATACRAZY_BASE_URL || 'https://api.g1.datacrazy.io').replace(
+    /\/+$/,
+    ''
+  );
+  return api.replace(/:\/\/api\./i, '://crm.');
+}
+
+function buildHeaders(apiKey) {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+}
+
+/**
+ * Constrói o payload esperado pela DataCrazy a partir de um envio padronizado
+ * vindo do frontend.
+ *
+ * TODO [CURSOR]: ajustar a estrutura do payload de acordo com a doc oficial
+ * da DataCrazy (campos obrigatórios podem variar).
+ */
+function buildSendTemplatePayload({ phone, templateName, language, variables }) {
+  const components = [];
+
+  if (variables && Object.keys(variables).length > 0) {
+    components.push({
+      type: 'body',
+      parameters: Object.values(variables).map((value) => ({
+        type: 'text',
+        text: String(value ?? ''),
+      })),
+    });
+  }
+
+  return {
+    to: phone,
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: language || 'pt_BR' },
+      components,
+    },
+    metadata: {
+      variables: variables || {},
+    },
+  };
+}
+
+async function sendTemplateMessage({ phone, templateName, language, variables }) {
+  const { apiKey, baseUrl } = getConfig();
+  const url = `${baseUrl}${SEND_MESSAGE_PATH}`;
+  const payload = buildSendTemplatePayload({ phone, templateName, language, variables });
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: buildHeaders(apiKey),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw new Error(`Falha de rede ao chamar DataCrazy: ${err.message}`);
+  }
+
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      data?.message ||
+      data?.raw ||
+      `DataCrazy respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.providerResponse = data;
+    throw error;
+  }
+
+  // TODO [CURSOR]: confirmar o nome do campo do ID no retorno (id, messageId, message_id, etc.)
+  const messageId =
+    data?.id ||
+    data?.messageId ||
+    data?.message_id ||
+    data?.data?.id ||
+    null;
+
+  return {
+    messageId,
+    raw: data,
+  };
+}
+
+async function listTemplates() {
+  const { apiKey, baseUrl } = getConfig();
+  const url = `${baseUrl}${LIST_TEMPLATES_PATH}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: buildHeaders(apiKey),
+  });
+
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      data?.message ||
+      `DataCrazy respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.providerResponse = data;
+    throw error;
+  }
+
+  // TODO [CURSOR]: ajustar mapeamento conforme a estrutura real da resposta.
+  const list = Array.isArray(data) ? data : data?.data || data?.templates || [];
+
+  return list.map((tpl) => ({
+    id: tpl.id || tpl._id || tpl.name,
+    name: tpl.name,
+    language: tpl.language || tpl.languageCode || 'pt_BR',
+    status: (tpl.status || 'APPROVED').toUpperCase(),
+    category: (tpl.category || 'MARKETING').toUpperCase(),
+    components: tpl.components || [],
+  }));
+}
+
+function extractAdditionalFieldValue(lead, fieldName, fieldId) {
+  if (!lead || typeof lead !== 'object') return null;
+  const bags = [
+    lead.additionalFields,
+    lead.additional_fields,
+    lead.customFields,
+    lead.custom_fields,
+  ];
+  for (const bag of bags) {
+    if (!bag) continue;
+    if (Array.isArray(bag)) {
+      for (const item of bag) {
+        if (!item || typeof item !== 'object') continue;
+        const id = String(item.id ?? item.fieldId ?? item.field_id ?? item.definitionId ?? '');
+        const name = String(item.name ?? item.field ?? item.key ?? item.slug ?? '');
+        if (id === fieldId || name === fieldName) {
+          const v = item.value ?? item.val ?? item.data;
+          return v == null ? null : String(v);
+        }
+      }
+    } else if (typeof bag === 'object') {
+      if (bag[fieldName] != null) return String(bag[fieldName]);
+      if (bag[fieldId] != null) return String(bag[fieldId]);
+    }
+  }
+  return null;
+}
+
+async function getLeadById(leadId) {
+  const { apiKey, baseUrl } = getConfig();
+  const id = String(leadId ?? '').trim();
+  if (!id) throw new Error('leadId obrigatório');
+  const params = new URLSearchParams();
+  params.set('complete[additionalFields]', 'true');
+  const url = `${baseUrl}/api/v1/leads/${encodeURIComponent(id)}?${params.toString()}`;
+  const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+  if (!response.ok) {
+    const message =
+      data?.error?.message || data?.message || `DataCrazy respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+  return data?.data ?? data;
+}
+
+async function searchLeads(opts = {}) {
+  const { apiKey, baseUrl } = getConfig();
+  const params = new URLSearchParams();
+  if (opts.search) params.set('search', String(opts.search).trim());
+  const maxTake = Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) || 100;
+  params.set('take', String(Math.min(Math.max(opts.take ?? 10, 1), maxTake)));
+  params.set('skip', String(Math.max(opts.skip ?? 0, 0)));
+  if (opts.completeAdditionalFields === true) {
+    params.set('complete[additionalFields]', 'true');
+  }
+  const url = `${baseUrl}${SEARCH_LEADS_PATH}?${params.toString()}`;
+  const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+  if (!response.ok) {
+    const message =
+      data?.error?.message || data?.message || `DataCrazy respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  return { data: list, count: data?.count ?? list.length };
+}
+
+function normalizeEmailForMatch(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (s.length < 6 || !s.includes('@')) return '';
+  const [local, domain] = s.split('@');
+  return local && domain && domain.includes('.') ? s : '';
+}
+
+function normalizePhoneDigits(v) {
+  let d = String(v ?? '').replace(/\D/g, '');
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
+  return d.length >= 10 && d.length <= 11 ? d : '';
+}
+
+function leadPhoneDigits(lead) {
+  return String(lead?.rawPhone || lead?.phone || '')
+    .replace(/\D/g, '')
+    .replace(/^55/, '');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const SHARED_INDEX_TTL_MS = 20 * 60 * 1000;
+const sharedLeadsIndex = { expires: 0, byEmail: new Map(), byPhone: new Map() };
+
+function mergeLeadIntoMaps(lead, byEmail, byPhone) {
+  const e = normalizeEmailForMatch(lead.email);
+  const p = leadPhoneDigits(lead);
+  if (e && !byEmail.has(e)) byEmail.set(e, lead);
+  if (p && !byPhone.has(p)) byPhone.set(p, lead);
+}
+
+async function buildLeadsLookupIndex(needed = {}) {
+  const useShared = sharedLeadsIndex.expires > Date.now();
+  const byEmail = useShared ? new Map(sharedLeadsIndex.byEmail) : new Map();
+  const byPhone = useShared ? new Map(sharedLeadsIndex.byPhone) : new Map();
+  const remainingEmails = new Set();
+  const remainingPhones = new Set();
+  for (const e of needed.emails || []) {
+    if (!byEmail.has(e)) remainingEmails.add(e);
+  }
+  for (const p of needed.phones || []) {
+    if (!byPhone.has(p)) remainingPhones.add(p);
+  }
+
+  const take = Math.min(Math.max(Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) || 100, 1), 100);
+  const pageDelay = Math.max(Number(process.env.DATACRAZY_PAGE_DELAY_MS) || 400, 0);
+  const maxPages = Math.max(Number(process.env.DATACRAZY_MAX_PAGES) || 500, 1);
+  let skip = 0;
+  let pages = 0;
+  let leadsScanned = 0;
+  let totalCount = null;
+
+  while (pages < maxPages) {
+    const page = await searchLeads({ take, skip, completeAdditionalFields: false });
+    pages += 1;
+    if (totalCount == null && page.count != null) totalCount = page.count;
+    const batch = page.data;
+    if (!batch.length) break;
+    leadsScanned += batch.length;
+    for (const lead of batch) {
+      mergeLeadIntoMaps(lead, byEmail, byPhone);
+      const e = normalizeEmailForMatch(lead.email);
+      const p = leadPhoneDigits(lead);
+      if (e) remainingEmails.delete(e);
+      if (p) remainingPhones.delete(p);
+    }
+    if (remainingEmails.size === 0 && remainingPhones.size === 0) break;
+    if (batch.length < take) break;
+    if (totalCount != null && skip + batch.length >= totalCount) break;
+    skip += batch.length;
+    if (pageDelay > 0) await sleep(pageDelay);
+  }
+
+  sharedLeadsIndex.byEmail = byEmail;
+  sharedLeadsIndex.byPhone = byPhone;
+  sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+
+  return {
+    byEmail,
+    byPhone,
+    pages,
+    leadsScanned,
+    early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
+    remaining_emails: remainingEmails.size,
+    remaining_phones: remainingPhones.size,
+    index_reused: useShared,
+  };
+}
+
+function lookupLeadInIndex(index, contact) {
+  const email = normalizeEmailForMatch(contact.email);
+  if (email && index.byEmail.has(email)) return index.byEmail.get(email);
+  const phone = normalizePhoneDigits(contact.phone);
+  if (phone) {
+    if (index.byPhone.has(phone)) return index.byPhone.get(phone);
+    for (const [digits, lead] of index.byPhone) {
+      if (digits.endsWith(phone) || phone.endsWith(digits)) return lead;
+    }
+  }
+  return null;
+}
+
+export function invalidateSharedLeadsIndex() {
+  sharedLeadsIndex.expires = 0;
+  sharedLeadsIndex.byEmail.clear();
+  sharedLeadsIndex.byPhone.clear();
+}
+
+/**
+ * Atualiza valor de campo adicional no lead (mesmo endpoint do CRM web).
+ * PUT {crm}/api/crm/additional-fields/lead/{leadId}/{fieldDefinitionId}
+ * Body: `{ value: "..." }`
+ */
+async function updateLeadAdditionalField(leadId, fieldDefinitionId, value) {
+  const { apiKey } = getConfig();
+  const lead = String(leadId ?? '').trim();
+  const fieldId = String(fieldDefinitionId ?? '').trim();
+  if (!lead) throw new Error('leadId obrigatório');
+  if (!fieldId) throw new Error('fieldDefinitionId obrigatório');
+
+  const url = `${getCrmBaseUrl()}/api/crm/additional-fields/lead/${encodeURIComponent(lead)}/${encodeURIComponent(fieldId)}`;
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: buildHeaders(apiKey),
+    body: JSON.stringify({ value: String(value ?? '') }),
+  });
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+  if (!response.ok) {
+    const message =
+      data?.message ||
+      data?.error?.message ||
+      (Array.isArray(data?.message) ? data.message.join('; ') : null) ||
+      data?.raw ||
+      `DataCrazy CRM respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.providerResponse = data;
+    throw error;
+  }
+  return data;
+}
+
+/**
+ * Grava `origem_ativacao` e confirma leitura no lead (GET com additionalFields).
+ * Usado no disparo — falha deve interromper a ativação.
+ */
+async function verifyOrigemAtivacaoForCategory(leadId, category) {
+  const expected = origemAtivacaoForCategory(category);
+  if (!expected) {
+    return { ok: false, skipped: true, reason: 'categoria_sem_mapeamento' };
+  }
+  if (!ORIGEM_ATIVACAO_FIELD_ID) {
+    return {
+      ok: false,
+      skipped: false,
+      error: 'DATACRAZY_ORIGEM_ATIVACAO_FIELD_ID não configurado no .env',
+      field: ORIGEM_ATIVACAO_FIELD,
+      value: expected,
+    };
+  }
+  try {
+    const data = await updateLeadAdditionalField(
+      leadId,
+      ORIGEM_ATIVACAO_FIELD_ID,
+      expected
+    );
+    const putValue = data?.value ?? expected;
+    let lead;
+    try {
+      lead = await getLeadById(leadId);
+    } catch (readErr) {
+      return {
+        ok: false,
+        verified: false,
+        error: `Gravação no CRM retornou OK, mas não foi possível confirmar no lead: ${readErr.message}`,
+        field: ORIGEM_ATIVACAO_FIELD,
+        value: putValue,
+      };
+    }
+    const read = extractAdditionalFieldValue(
+      lead,
+      ORIGEM_ATIVACAO_FIELD,
+      ORIGEM_ATIVACAO_FIELD_ID
+    );
+    if (read == null || read.trim() === '') {
+      return {
+        ok: false,
+        verified: false,
+        error: 'Campo origem_ativacao não aparece no lead após a gravação',
+        field: ORIGEM_ATIVACAO_FIELD,
+        value: putValue,
+      };
+    }
+    if (read.trim().toLowerCase() !== expected.trim().toLowerCase()) {
+      return {
+        ok: false,
+        verified: false,
+        error: `Valor lido "${read}" difere do esperado "${expected}"`,
+        field: ORIGEM_ATIVACAO_FIELD,
+        value: read,
+      };
+    }
+    return {
+      ok: true,
+      verified: true,
+      field: ORIGEM_ATIVACAO_FIELD,
+      value: read.trim(),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      verified: false,
+      error: err.message,
+      field: ORIGEM_ATIVACAO_FIELD,
+      value: expected,
+    };
+  }
+}
+
+/** @deprecated use verifyOrigemAtivacaoForCategory */
+async function setOrigemAtivacaoForCategory(leadId, category) {
+  return verifyOrigemAtivacaoForCategory(leadId, category);
+}
+
+export const datacrazyClient = {
+  sendTemplateMessage,
+  listTemplates,
+  searchLeads,
+  getLeadById,
+  buildLeadsLookupIndex,
+  lookupLeadInIndex,
+  invalidateSharedLeadsIndex,
+  normalizeEmailForMatch,
+  normalizePhoneDigits,
+  buildSendTemplatePayload,
+  updateLeadAdditionalField,
+  verifyOrigemAtivacaoForCategory,
+  setOrigemAtivacaoForCategory,
+  origemAtivacaoForCategory,
+  extractAdditionalFieldValue,
+};
