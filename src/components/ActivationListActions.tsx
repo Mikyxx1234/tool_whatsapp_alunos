@@ -13,6 +13,10 @@ interface Props {
   total: number;
   /** Após disparo ou marcar ativados — atualiza tabela. */
   onFilaChanged?: () => void;
+  /** master_keys selecionados na tabela. Se houver, o botão dispara só pra eles. */
+  selectedMasterKeys?: string[];
+  /** Chamado após disparo bem sucedido (limpa seleção). */
+  onClearSelection?: () => void;
 }
 
 const CATEGORY_LABEL: Record<ActivationCategory, string> = {
@@ -24,7 +28,16 @@ const CATEGORY_LABEL: Record<ActivationCategory, string> = {
   'aguardando-inicio': 'Aguardando início da turma',
 };
 
-export function ActivationListActions({ category, label, total, onFilaChanged }: Props) {
+export function ActivationListActions({
+  category,
+  label,
+  total,
+  onFilaChanged,
+  selectedMasterKeys,
+  onClearSelection,
+}: Props) {
+  const selectedCount = selectedMasterKeys?.length ?? 0;
+  const hasSelection = selectedCount > 0;
   const [running, setRunning] = useState(false);
   const eligible = total;
   const [marking, setMarking] = useState(false);
@@ -42,11 +55,13 @@ export function ActivationListActions({ category, label, total, onFilaChanged }:
   const [origemBlocked, setOrigemBlocked] = useState<string | null>(null);
 
   const runSearchAndActivate = useCallback(async () => {
-    if (!eligible) return;
-    const ok = window.confirm(
-      `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
-        'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.'
-    );
+    const targetCount = hasSelection ? selectedCount : eligible;
+    if (!targetCount) return;
+    const confirmMsg = hasSelection
+      ? `Disparar template para ${selectedCount} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nEsta ação envia mensagens WhatsApp reais.`
+      : `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
+        'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
+    const ok = window.confirm(confirmMsg);
     if (!ok) return;
 
     setRunning(true);
@@ -56,7 +71,10 @@ export function ActivationListActions({ category, label, total, onFilaChanged }:
     setNotFoundItems([]);
 
     try {
-      const result = await activationApi.runDatacrazyBatch(category);
+      const result = await activationApi.runDatacrazyBatch(
+        category,
+        hasSelection ? { masterKeys: selectedMasterKeys } : undefined
+      );
       if (result.origem_ativacao_blocked) {
         setOrigemBlocked(
           result.message ||
@@ -74,12 +92,13 @@ export function ActivationListActions({ category, label, total, onFilaChanged }:
       });
       setNotFoundItems(result.not_found_items ?? []);
       onFilaChanged?.();
+      if (hasSelection) onClearSelection?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro ao buscar e ativar no DataCrazy');
     } finally {
       setRunning(false);
     }
-  }, [category, eligible, onFilaChanged]);
+  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection]);
 
   const downloadNotFoundCsv = useCallback(async () => {
     if (!notFoundItems.length) return;
@@ -160,13 +179,22 @@ export function ActivationListActions({ category, label, total, onFilaChanged }:
         </button>
         <button
           type="button"
-          disabled={running || eligible === 0}
+          disabled={running || (hasSelection ? selectedCount === 0 : eligible === 0)}
           onClick={() => void runSearchAndActivate()}
           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-whatsapp-600 rounded-lg hover:bg-whatsapp-700 disabled:opacity-50"
         >
           {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-          Buscar e ativar
+          {hasSelection ? `Ativar selecionados (${selectedCount})` : 'Buscar e ativar'}
         </button>
+        {hasSelection && (
+          <button
+            type="button"
+            onClick={() => onClearSelection?.()}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
+          >
+            Limpar seleção
+          </button>
+        )}
         {notFoundItems.length > 0 && (
           <button
             type="button"

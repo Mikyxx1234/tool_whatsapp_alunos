@@ -184,7 +184,10 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
     const category = categorySlug(req);
     assertActivationCategory(category);
     const limit = req.body?.limit != null ? Number(req.body.limit) : 0;
-    const data = await runDatacrazyActivationBatch(category, { limit });
+    const masterKeys = Array.isArray(req.body?.master_keys)
+      ? req.body.master_keys.map(String).filter((k) => k.length > 0)
+      : undefined;
+    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys });
     res.json(data);
   } catch (err) {
     handleError(res, err);

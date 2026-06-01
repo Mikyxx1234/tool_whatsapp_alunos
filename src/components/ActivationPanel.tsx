@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BarChart3 } from 'lucide-react';
 import { ActivationListActions } from './ActivationListActions';
@@ -40,6 +40,33 @@ export function ActivationPanel() {
   const [category, setCategory] = useState<ActivationCategory>('docs-pendentes');
   const [intersectionByCat, setIntersectionByCat] = useState<Partial<Record<ActivationCategory, number>>>({});
   const [templateConfigVersion, setTemplateConfigVersion] = useState(0);
+  const [selectedMasterKeys, setSelectedMasterKeys] = useState<Set<string>>(new Set());
+
+  const clearSelection = useCallback(() => setSelectedMasterKeys(new Set()), []);
+  const toggleSelection = useCallback((masterKey: string, checked: boolean) => {
+    setSelectedMasterKeys((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(masterKey);
+      else next.delete(masterKey);
+      return next;
+    });
+  }, []);
+  const toggleAllOnPage = useCallback((pageKeys: string[], checked: boolean) => {
+    setSelectedMasterKeys((prev) => {
+      const next = new Set(prev);
+      for (const k of pageKeys) {
+        if (checked) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setSelectedMasterKeys(new Set());
+  }, [category]);
+
+  const selectedMasterKeysArr = useMemo(() => [...selectedMasterKeys], [selectedMasterKeys]);
 
   const label = useMemo(
     () => CATEGORIES.find((c) => c.id === category)?.label ?? category,
@@ -153,11 +180,19 @@ export function ActivationPanel() {
             label={label}
             total={intersectionTotal}
             onFilaChanged={() => setTemplateConfigVersion((v) => v + 1)}
+            selectedMasterKeys={selectedMasterKeysArr}
+            onClearSelection={clearSelection}
           />
         </div>
       </div>
 
-      <ActivationRosterTable category={category} refreshToken={templateConfigVersion} />
+      <ActivationRosterTable
+        category={category}
+        refreshToken={templateConfigVersion}
+        selectedMasterKeys={selectedMasterKeys}
+        onToggleSelection={toggleSelection}
+        onToggleAllOnPage={toggleAllOnPage}
+      />
     </div>
   );
 }

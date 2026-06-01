@@ -873,11 +873,17 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
   const eligibleItems = roster.items.filter(
     (it) => !it.master_key || !dispatched.has(it.master_key)
   );
+  const selectedKeys = Array.isArray(opts.masterKeys)
+    ? new Set(opts.masterKeys.filter((k) => typeof k === 'string' && k.length > 0))
+    : null;
+  const filteredEligible = selectedKeys && selectedKeys.size > 0
+    ? eligibleItems.filter((it) => it.master_key && selectedKeys.has(it.master_key))
+    : eligibleItems;
   const maxProcess =
     Number(opts.limit) > 0
-      ? Math.min(Number(opts.limit), eligibleItems.length)
-      : eligibleItems.length;
-  const toProcess = eligibleItems.slice(0, maxProcess);
+      ? Math.min(Number(opts.limit), filteredEligible.length)
+      : filteredEligible.length;
+  const toProcess = filteredEligible.slice(0, maxProcess);
 
   const neededEmails = new Set();
   const neededPhones = new Set();

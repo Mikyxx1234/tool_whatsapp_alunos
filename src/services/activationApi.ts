@@ -258,10 +258,17 @@ export const activationApi = {
     return jsonFetch<ActivationRosterResponse>(`/api/activation/${category}/roster${q}`);
   },
 
-  runDatacrazyBatch(category: ActivationCategory, opts?: { limit?: number }) {
+  runDatacrazyBatch(
+    category: ActivationCategory,
+    opts?: { limit?: number; masterKeys?: string[] }
+  ) {
+    const body: Record<string, unknown> = { limit: opts?.limit ?? 0 };
+    if (Array.isArray(opts?.masterKeys) && opts!.masterKeys!.length > 0) {
+      body.master_keys = opts!.masterKeys;
+    }
     return jsonFetch<DatacrazyBatchResponse>(`/api/activation/${category}/run-datacrazy-batch`, {
       method: 'POST',
-      body: JSON.stringify({ limit: opts?.limit ?? 0 }),
+      body: JSON.stringify(body),
     });
   },
 

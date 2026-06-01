@@ -129,9 +129,21 @@ interface Props {
   category: ActivationCategory;
   /** Incrementar após salvar templates para atualizar a coluna Template. */
   refreshToken?: number;
+  /** Set de master_keys selecionados (controlado pelo pai). */
+  selectedMasterKeys?: Set<string>;
+  /** Callback ao marcar/desmarcar uma linha. */
+  onToggleSelection?: (masterKey: string, checked: boolean) => void;
+  /** Callback ao marcar/desmarcar todos da página visível. */
+  onToggleAllOnPage?: (masterKeys: string[], checked: boolean) => void;
 }
 
-export function ActivationRosterTable({ category, refreshToken = 0 }: Props) {
+export function ActivationRosterTable({
+  category,
+  refreshToken = 0,
+  selectedMasterKeys,
+  onToggleSelection,
+  onToggleAllOnPage,
+}: Props) {
   const [items, setItems] = useState<ActivationRosterItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -355,6 +367,35 @@ export function ActivationRosterTable({ category, refreshToken = 0 }: Props) {
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-gray-600">
             <tr>
+              {selectedMasterKeys && (
+                <th className="px-3 py-2 text-center font-medium w-8">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-whatsapp-600"
+                    aria-label="Selecionar todos da página"
+                    checked={
+                      items.length > 0 &&
+                      items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key))
+                    }
+                    ref={(el) => {
+                      if (!el) return;
+                      const someSelected = items.some(
+                        (it) => it.master_key && selectedMasterKeys.has(it.master_key)
+                      );
+                      const allSelected =
+                        items.length > 0 &&
+                        items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key));
+                      el.indeterminate = someSelected && !allSelected;
+                    }}
+                    onChange={(e) => {
+                      const pageKeys = items
+                        .map((it) => it.master_key)
+                        .filter((k): k is string => typeof k === 'string' && k.length > 0);
+                      onToggleAllOnPage?.(pageKeys, e.target.checked);
+                    }}
+                  />
+                </th>
+              )}
               <th className="px-3 py-2 text-left font-medium">Aluno</th>
               <th className="px-3 py-2 text-left font-medium">RGM</th>
               <th className="px-3 py-2 text-left font-medium">Ciclo</th>
@@ -372,9 +413,9 @@ export function ActivationRosterTable({ category, refreshToken = 0 }: Props) {
               <tr>
                 <td
                   colSpan={
-                    category === 'processos-caa' ? 8
-                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
-                    : 7
+                    (category === 'processos-caa' ? 8
+                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
+                      : 7) + (selectedMasterKeys ? 1 : 0)
                   }
                   className="px-3 py-8 text-center text-gray-500 text-xs"
                 >
@@ -387,9 +428,9 @@ export function ActivationRosterTable({ category, refreshToken = 0 }: Props) {
               <tr>
                 <td
                   colSpan={
-                    category === 'processos-caa' ? 8
-                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
-                    : 7
+                    (category === 'processos-caa' ? 8
+                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
+                      : 7) + (selectedMasterKeys ? 1 : 0)
                   }
                   className="px-3 py-6 text-center text-gray-500 text-xs"
                 >
@@ -399,6 +440,20 @@ export function ActivationRosterTable({ category, refreshToken = 0 }: Props) {
             ) : (
               items.map((row, i) => (
                 <tr key={`${row.rgm}-${safePage}-${i}`} className="hover:bg-gray-50/60">
+                  {selectedMasterKeys && (
+                    <td className="px-3 py-2 text-center w-8">
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer accent-whatsapp-600 disabled:opacity-40"
+                        disabled={!row.master_key}
+                        aria-label={`Selecionar ${row.nome ?? row.rgm ?? 'aluno'}`}
+                        checked={Boolean(row.master_key && selectedMasterKeys.has(row.master_key))}
+                        onChange={(e) => {
+                          if (row.master_key) onToggleSelection?.(row.master_key, e.target.checked);
+                        }}
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1.5">
                       <span className="font-medium text-gray-900">{row.nome || '—'}</span>
