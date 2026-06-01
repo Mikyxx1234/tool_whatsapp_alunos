@@ -5,6 +5,46 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 01/06/2026 — Verify de `origem_ativacao` agora é best-effort + n8n limpa após resposta
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** `verifyOrigemAtivacaoForCategory` bloqueava o disparo quando o **PUT no CRM web** retornava 200 OK mas o **GET na API pública** (`/api/v1/leads`) não retornava o campo `origem_ativacao` nos `additionalFields` (config "campo não exposto via API"). O campo estava sendo gravado corretamente no CRM — só não saía na resposta da API pública.
+- **Decisão:**
+  - `verify` agora confia no **PUT 200 OK** (a automação do CRM lê o campo internamente, não via API pública).
+  - GET via API pública continua sendo feito como double-check, mas se falhar/não retornar o campo, loga warning e segue (`ok: true, verified: false`).
+  - PUT que falhar de verdade (status != 200) continua bloqueando o disparo (comportamento correto).
+- **Onde:** `server/services/datacrazyClient.js#verifyOrigemAtivacaoForCategory`.
+
+#### Webhook de resposta (n8n) — handshake obrigatório
+
+A automação do CRM (DataCrazy) dispara o webhook de resposta enquanto `origem_ativacao` estiver preenchido no lead. Se o n8n só grava em `activation_responses` e **não limpa** o campo, **toda mensagem subsequente do aluno** continuará sendo logada como resposta de ativação (falso-positivo).
+
+**Fluxo correto no n8n:**
+
+```
+[Trigger: resposta WhatsApp]
+  ↓
+[Grava em activation_responses (Postgres)]
+  ↓
+[HTTP PUT — limpa origem_ativacao no CRM]
+```
+
+**PUT pra limpar o campo:**
+
+```
+PUT https://crm.g1.datacrazy.io/api/crm/additional-fields/lead/{LEAD_ID}/3a22bd69-4578-4740-87c1-29e72fbbac22
+Authorization: Bearer <DATACRAZY_API_KEY>
+Content-Type: application/json
+Body: {"value": ""}
+```
+
+(Field ID `3a22bd69-4578-4740-87c1-29e72fbbac22` = `origem_ativacao` no CRM. Validado 01/06/2026.)
+
+#### Alternativas descartadas
+
+- **Endpoint da app `POST /api/activation/responses` fazer o PUT de limpeza:** acopla a app ao fluxo de respostas e duplica responsabilidade — o n8n já é o ponto natural pra isso.
+- **Marcar o campo `origem_ativacao` como "exposto via API" no CRM:** seria mais limpo, mas requer config no DataCrazy que pode não estar disponível na conta. A solução com PUT-trust funciona sem depender disso.
+
 ### 01/06/2026 — Busca direta no DataCrazy para lotes pequenos
 
 - **Modelo usado:** Opus 4.7 (principal)
