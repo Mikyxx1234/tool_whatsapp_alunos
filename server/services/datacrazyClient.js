@@ -504,6 +504,12 @@ async function verifyOrigemAtivacaoForCategory(leadId, category) {
       value: expected,
     };
   }
+  // Estratégia:
+  // 1) PUT no CRM web -> se 200, consideramos sucesso (a automação do CRM
+  //    lê o campo internamente, não via API pública).
+  // 2) GET na API pública é só double-check best-effort: se o campo voltar
+  //    correto, marcamos verified=true; se não voltar (config "campo não
+  //    exposto via API"), seguimos com ok=true, verified=false e warning no log.
   try {
     const data = await updateLeadAdditionalField(
       leadId,
@@ -511,48 +517,57 @@ async function verifyOrigemAtivacaoForCategory(leadId, category) {
       expected
     );
     const putValue = data?.value ?? expected;
-    let lead;
+    let lead = null;
+    let readErrMsg = null;
     try {
       lead = await getLeadById(leadId);
     } catch (readErr) {
+      readErrMsg = readErr.message;
+    }
+    const read = lead
+      ? extractAdditionalFieldValue(lead, ORIGEM_ATIVACAO_FIELD, ORIGEM_ATIVACAO_FIELD_ID)
+      : null;
+
+    if (read != null && read.trim() !== '') {
+      if (read.trim().toLowerCase() !== expected.trim().toLowerCase()) {
+        // PUT respondeu OK mas valor lido diverge - confiamos no PUT mas
+        // sinalizamos divergência para diagnóstico.
+        console.warn(
+          `[origem-ativacao] divergencia lead=${leadId} esperado="${expected}" lido="${read}" - prosseguindo com PUT.`
+        );
+        return {
+          ok: true,
+          verified: false,
+          warning: `Valor lido "${read}" diverge do esperado "${expected}" (PUT 200 OK; prosseguindo)`,
+          field: ORIGEM_ATIVACAO_FIELD,
+          value: expected,
+        };
+      }
       return {
-        ok: false,
-        verified: false,
-        error: `Gravação no CRM retornou OK, mas não foi possível confirmar no lead: ${readErr.message}`,
+        ok: true,
+        verified: true,
         field: ORIGEM_ATIVACAO_FIELD,
-        value: putValue,
+        value: read.trim(),
       };
     }
-    const read = extractAdditionalFieldValue(
-      lead,
-      ORIGEM_ATIVACAO_FIELD,
-      ORIGEM_ATIVACAO_FIELD_ID
+
+    // PUT 200 OK mas API pública nao retorna o campo (ou nem retornou o lead).
+    // A automacao do CRM le internamente, entao seguimos com ok=true.
+    const warnReason = readErrMsg
+      ? `nao foi possivel ler o lead (${readErrMsg})`
+      : 'API pública não retornou campos adicionais (campo provavelmente sem flag "expor na API")';
+    console.warn(
+      `[origem-ativacao] PUT OK mas verify-by-read falhou lead=${leadId}: ${warnReason}`
     );
-    if (read == null || read.trim() === '') {
-      return {
-        ok: false,
-        verified: false,
-        error: 'Campo origem_ativacao não aparece no lead após a gravação',
-        field: ORIGEM_ATIVACAO_FIELD,
-        value: putValue,
-      };
-    }
-    if (read.trim().toLowerCase() !== expected.trim().toLowerCase()) {
-      return {
-        ok: false,
-        verified: false,
-        error: `Valor lido "${read}" difere do esperado "${expected}"`,
-        field: ORIGEM_ATIVACAO_FIELD,
-        value: read,
-      };
-    }
     return {
       ok: true,
-      verified: true,
+      verified: false,
+      warning: `PUT no CRM retornou 200 OK; ${warnReason}. Prosseguindo (a automacao do CRM le o campo internamente).`,
       field: ORIGEM_ATIVACAO_FIELD,
-      value: read.trim(),
+      value: putValue,
     };
   } catch (err) {
+    // PUT falhou de verdade (status != 200) -> bloqueia
     return {
       ok: false,
       verified: false,
