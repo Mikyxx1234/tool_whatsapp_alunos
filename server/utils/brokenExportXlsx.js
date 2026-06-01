@@ -1,32 +1,29 @@
-import { execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { unzipSync, strFromU8 } from 'fflate';
 import { isRgmColumnKey, normalizeRgmCanonical } from './rgmDisplay.js';
 
 /**
  * Export ERP com !ref inválido (ex.: "1:K6910") e células sem endereço A1/B1…
  * O Excel exibe certo; o SheetJS desloca colunas (RGM vira valor).
- * @param {Buffer} buffer
+ *
+ * Implementação cross-platform via fflate (JS puro). Antes usava PowerShell
+ * Expand-Archive, mas isso quebrava na produção Linux (Easypanel) com
+ * `spawnSync powershell ENOENT`.
+ * @param {Buffer | ArrayBuffer | Uint8Array} buffer
  * @param {string} entryPath
  */
 export function readXlsxEntryXml(buffer, entryPath = 'xl/worksheets/sheet1.xml') {
-  const dir = mkdtempSync(join(tmpdir(), 'xlsx-'));
-  const zipPath = join(dir, 'work.zip');
-  const outDir = join(dir, 'out');
-  try {
-    writeFileSync(zipPath, buffer);
-    mkdirSync(outDir);
-    const ps = `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${outDir.replace(/'/g, "''")}' -Force`;
-    execFileSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'pipe' });
-    return readFileSync(join(outDir, ...entryPath.split('/')), 'utf8');
-  } finally {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+  const u8 =
+    buffer instanceof Uint8Array
+      ? buffer
+      : buffer instanceof ArrayBuffer
+        ? new Uint8Array(buffer)
+        : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const files = unzipSync(u8, { filter: (f) => f.name === entryPath });
+  const entry = files[entryPath];
+  if (!entry) {
+    throw new Error(`XLSX sem entrada "${entryPath}"`);
   }
+  return strFromU8(entry);
 }
 
 /**
