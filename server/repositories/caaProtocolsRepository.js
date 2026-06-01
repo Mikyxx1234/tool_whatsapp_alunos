@@ -229,7 +229,8 @@ export async function listOpenProtocolsByRgm() {
     select distinct on (coalesce(rgm, protocolo))
       protocolo, rgm, cpf, nome, email, telefone, polo, curso, instituicao,
       subprocesso, data_chegada, data_previsao, situacao_atendimento_raw,
-      situacao_deferimento_raw, status, last_seen_at, last_status_change_at, data
+      situacao_deferimento_raw, status, last_seen_at, last_status_change_at,
+      first_seen_at, data
     from caa_protocols
     where status = 'open'
     order by coalesce(rgm, protocolo), last_status_change_at desc
@@ -356,18 +357,13 @@ export async function listRecentSnapshots(limit = 5) {
 }
 
 /**
- * Conta por status considerando APENAS protocolos presentes no snapshot CAA mais recente.
- * (Protocolos que sumiram da planilha não são contabilizados como estado atual.)
+ * Conta por status sobre TODOS os protocolos acumulados (estoque completo).
  */
 export async function countByStatus() {
   const { rows } = await query(
-    `with latest as (
-       select id from processos_caa_snapshots order by created_at desc limit 1
-     )
-     select p.status, count(*)::int as n
-       from caa_protocols p, latest l
-      where p.last_snapshot_id = l.id
-      group by p.status`
+    `select status, count(*)::int as n
+       from caa_protocols
+      group by status`
   );
   /** @type {Record<string, number>} */
   const out = { open: 0, lost_canceled: 0, lost_confirmed: 0, won_reverted: 0, unknown: 0 };

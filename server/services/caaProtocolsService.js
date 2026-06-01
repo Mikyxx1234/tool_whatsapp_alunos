@@ -7,6 +7,24 @@ import {
 } from '../repositories/caaProtocolsRepository.js';
 
 /**
+ * Carrega todos os protocolos com status='open' da tabela acumulada, dedupados por RGM.
+ * Fonte de verdade do estoque acumulado de pendentes.
+ */
+async function loadOpenProtocolsFromTable() {
+  const { rows } = await query(
+    `select distinct on (coalesce(rgm, protocolo))
+       protocolo, rgm, cpf, nome, email, telefone, polo, curso, instituicao,
+       subprocesso, data_chegada, data_previsao, data_conclusao,
+       situacao_atendimento_raw, situacao_deferimento_raw, status,
+       last_status_change_at, first_seen_at
+     from caa_protocols
+     where status = 'open'
+     order by coalesce(rgm, protocolo), last_status_change_at desc`
+  );
+  return rows;
+}
+
+/**
  * Mapa protocolo → dados normalizados de um snapshot (só cancelamento de matrícula).
  * @param {string} snapshotId
  */
@@ -170,25 +188,25 @@ export async function getSnapshotPairDelta(opts = {}) {
     };
   }
 
-  const [prevMap, latestMap] = await Promise.all([
+  const [prevMap, latestMap, openRows] = await Promise.all([
     loadCancelamentoMap(previous.id),
     loadCancelamentoMap(latest.id),
+    loadOpenProtocolsFromTable(),
   ]);
   const changedAt =
     latest.created_at instanceof Date
       ? latest.created_at.toISOString()
       : new Date(latest.created_at).toISOString();
   const allDiff = diffSnapshotMaps(prevMap, latestMap, changedAt);
-  const openInLatest = openProtocolsFromMap(latestMap);
   const stats = aggregateTransitionStats(allDiff);
-  stats.novos_pendentes = openInLatest.length;
+  stats.novos_pendentes = openRows.length;
   stats.novos_pendentes_no_diff = allDiff.filter(
     (t) => t.from_status === null && t.to_status === 'open'
   ).length;
 
   let transitions;
   if (isNovosPendentesTab(opts)) {
-    transitions = openInLatest.map((p) => protocolToPanelRow(p, changedAt));
+    transitions = openRows.map((p) => protocolToPanelRow(p, changedAt));
   } else {
     transitions = filterTransitionsForTab(allDiff, opts);
   }
@@ -213,7 +231,7 @@ export async function getSnapshotPairDelta(opts = {}) {
     total: transitions.length,
     used_stored_fallback: false,
     identical_reimport,
-    open_in_latest: openInLatest.length,
+    open_in_latest: openRows.length,
   };
 }
 

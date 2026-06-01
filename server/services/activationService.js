@@ -17,8 +17,12 @@ import {
   buildIdentityLookup,
   buildPersonIndexFromSnapshot,
   matchMatriculadoToOtherIndex,
+  collectRowIdentities,
+  canonicalFromIdentities,
 } from './baseComparisonService.js';
-import { compareCicloSets, normalizeCiclo } from '../utils/cicloFromRow.js';
+import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFromRow.js';
+import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
+import { isWindowOpen } from '../utils/caaWindow.js';
 import { pickDisplayRgm } from '../utils/rgmDisplay.js';
 import {
   datacrazyClient,
@@ -176,13 +180,13 @@ export async function warmActivationRoster(category) {
   assertActivationCategory(category);
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
   if (!matSnap) return { ok: false, category, reason: 'missing_snapshot' };
-  const otherSnap = category === 'aguardando-inicio'
+  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
     ? null
     : await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap && category !== 'aguardando-inicio') {
+  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
     return { ok: false, category, reason: 'missing_snapshot' };
   }
-  const otherSnapId = otherSnap?.id ?? 'none';
+  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
   const rosterCacheKey = `${category}:${matSnap.id}:${otherSnapId}`;
   const hit = activationRosterCaches.get(rosterCacheKey);
   if (hit && hit.expires > Date.now()) {
@@ -296,6 +300,72 @@ function computeBbUrgency(term, today) {
 }
 
 /**
+ * Constrói o índice de pessoas da fila CAA a partir do estoque acumulado em
+ * `caa_protocols` (status='open'), aplicando o filtro de janela configurado.
+ * Substitui o buildPersonIndexFromSnapshot para a categoria processos-caa.
+ */
+async function buildCaaPendingIndexFromProtocols() {
+  const [openRows, settings] = await Promise.all([
+    caaProtocolsRepo.listOpenProtocolsByRgm(),
+    journeySettingsRepo.resolveForTerm(null),
+  ]);
+  const cfg = {
+    caa_janela_t0: settings?.caa_janela_t0 ?? 'primeiro_export',
+    caa_janela_dias_tipo: settings?.caa_janela_dias_tipo ?? 'corridos',
+  };
+  const now = new Date();
+
+  /** @type {Map<string, import('./baseComparisonService.js').PersonIndexEntry>} */
+  const byCanon = new Map();
+  let skipped_window_expired = 0;
+
+  for (const p of openRows) {
+    if (!isWindowOpen(p, cfg, now)) {
+      skipped_window_expired += 1;
+      continue;
+    }
+    const row = p.data && typeof p.data === 'object' ? p.data : {
+      Protocolo: p.protocolo,
+      RGM: p.rgm,
+      CPF: p.cpf,
+      Aluno: p.nome,
+      Email: p.email,
+      Celular: p.telefone,
+      Polo: p.polo,
+      Curso: p.curso,
+      Subprocesso: p.subprocesso,
+      'Data Chegada': p.data_chegada,
+      'Data Previsão': p.data_previsao,
+      'Situação Atendimento': p.situacao_atendimento_raw,
+      'Situação Deferimento': p.situacao_deferimento_raw,
+    };
+    const ids = collectRowIdentities(row, { category: 'processos-caa' });
+    if (ids.size === 0) continue;
+    const canon = canonicalFromIdentities(ids);
+    if (!canon) continue;
+    const ciclo = cicloFromRow(row);
+    const cur = byCanon.get(canon);
+    if (!cur) {
+      const entry = { ids: new Set(ids), ciclos: new Set(), row };
+      if (ciclo) entry.ciclos.add(ciclo);
+      byCanon.set(canon, entry);
+    } else {
+      for (const id of ids) cur.ids.add(id);
+      if (ciclo) cur.ciclos.add(ciclo);
+    }
+  }
+
+  return {
+    byCanon,
+    skipped: 0,
+    rowCount: openRows.length,
+    rowCountTotal: openRows.length,
+    rowFilterActive: true,
+    skipped_window_expired,
+  };
+}
+
+/**
  * Matriculados que também estão na outra base (interseção).
  * @param {string} category
  * @param {{ excludeDispatched?: boolean }} [opts] — padrão: true (não repetir mesma ativação)
@@ -315,14 +385,17 @@ export async function getIntersectionActivationList(category, opts = {}) {
     return _buildAguardandoInicioList(category, matSnap, excludeDispatched);
   }
 
-  const otherSnap = await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap) {
+  // CAA usa estoque acumulado de caa_protocols — não precisa de snapshot próprio.
+  const otherSnap = category === 'processos-caa'
+    ? null
+    : await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap && category !== 'processos-caa') {
     const err = new Error(`Nenhum snapshot de ${category}.`);
     err.status = 404;
     throw err;
   }
 
-  const cacheKey = `${category}:${matSnap.id}:${otherSnap.id}:${excludeDispatched ? 'ex' : 'all'}`;
+  const cacheKey = `${category}:${matSnap.id}:${category === 'processos-caa' ? 'estoque' : otherSnap.id}:${excludeDispatched ? 'ex' : 'all'}`;
   const cached = activationListCaches.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return cached.data;
@@ -330,9 +403,9 @@ export async function getIntersectionActivationList(category, opts = {}) {
 
   const [matIndex, otherIndex] = await Promise.all([
     buildPersonIndexCached('matriculados', matSnap.id),
-    buildPersonIndexCached(category, otherSnap.id, {
-      caaOnlyPending: category === 'processos-caa',
-    }),
+    category === 'processos-caa'
+      ? buildCaaPendingIndexFromProtocols()
+      : buildPersonIndexCached(category, otherSnap.id),
   ]);
   const otherLookup = buildIdentityLookup(otherIndex.byCanon);
 
@@ -485,7 +558,7 @@ export async function getIntersectionActivationList(category, opts = {}) {
     bb_subgrupo_counts,
     exclude_dispatched: excludeDispatched,
     matriculados_snapshot_id: matSnap.id,
-    other_snapshot_id: otherSnap.id,
+    other_snapshot_id: otherSnap?.id ?? null,
     generated_at: new Date().toISOString(),
   };
 
@@ -705,15 +778,15 @@ export async function getActivationRoster(category, opts = {}) {
     err.status = 404;
     throw err;
   }
-  const otherSnap = category === 'aguardando-inicio'
+  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
     ? null
     : await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap && category !== 'aguardando-inicio') {
+  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
     const err = new Error(`Snapshots de ${category} não encontrados.`);
     err.status = 404;
     throw err;
   }
-  const otherSnapId = otherSnap?.id ?? 'none';
+  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
   const { rows, meta } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
   const rosterCached = activationRosterCaches.get(`${category}:${matSnap.id}:${otherSnapId}`);
 

@@ -114,7 +114,7 @@ export function collectRowIdentities(row, opts = {}) {
 }
 
 /** @param {Set<string>} ids */
-function canonicalFromIdentities(ids) {
+export function canonicalFromIdentities(ids) {
   const list = [...ids];
   const rgms = list.filter((x) => x.startsWith('RGM:')).sort();
   const cpfs = list.filter((x) => x.startsWith('CPF:')).sort();

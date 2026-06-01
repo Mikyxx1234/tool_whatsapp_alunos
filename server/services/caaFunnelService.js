@@ -1,43 +1,9 @@
 import { query } from '../db/client.js';
-import { addBusinessDays } from '../utils/businessDays.js';
-import { parseFlexibleDate } from '../utils/dateParser.js';
+import { calcJanela } from '../utils/caaWindow.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 
 const CAP_DIARIO = 2;
 const CAP_TOTAL = 4;
-
-/**
- * Resolve T0 e expires_at para um protocolo conforme as configurações de janela.
- *
- * @param {object} p - linha da query (inclui first_seen_at, data_chegada, first_dispatch_at)
- * @param {{ caa_janela_t0: string, caa_janela_dias_tipo: string }} cfg
- * @returns {{ t0: Date|null, expires_at: Date|null }}
- */
-function calcJanela(p, cfg) {
-  const { caa_janela_t0 = 'primeiro_export', caa_janela_dias_tipo = 'corridos' } = cfg;
-
-  let t0 = null;
-
-  if (caa_janela_t0 === 'data_chegada') {
-    t0 = p.data_chegada ? parseFlexibleDate(p.data_chegada) : null;
-    if (!t0) t0 = p.first_seen_at ? new Date(p.first_seen_at) : null;
-  } else if (caa_janela_t0 === 'primeiro_envio') {
-    t0 = p.first_dispatch_at ? new Date(p.first_dispatch_at) : null;
-    if (!t0) t0 = p.first_seen_at ? new Date(p.first_seen_at) : null;
-  } else {
-    // 'primeiro_export' (default)
-    t0 = p.first_seen_at ? new Date(p.first_seen_at) : null;
-  }
-
-  if (!t0) return { t0: null, expires_at: null };
-
-  const expires_at =
-    caa_janela_dias_tipo === 'uteis'
-      ? addBusinessDays(t0, 2)
-      : new Date(t0.getTime() + 48 * 60 * 60 * 1000);
-
-  return { t0, expires_at };
-}
 
 /**
  * Classifica o estado do funil para um protocolo.
@@ -88,13 +54,9 @@ export async function getCaaFunnel(opts = {}) {
   const now = new Date();
 
   // Carrega todos os protocolos com dados derivados em uma só query.
-  // Filtra ao snapshot mais recente (base estoque ativa), mais protocolos
-  // que possuam desfecho manual registrado (para manter rastreabilidade).
+  // Base estoque acumulado: status='open' + últimos 30 dias + desfecho manual.
   const { rows } = await query(`
-    WITH latest_snap AS (
-      SELECT id FROM processos_caa_snapshots ORDER BY created_at DESC LIMIT 1
-    ),
-    m_proto AS (
+    WITH m_proto AS (
       SELECT DISTINCT ON (protocolo)
         protocolo, outcome, occurred_at, consultor_nome, motivo
       FROM activation_manual_outcomes
@@ -161,19 +123,18 @@ export async function getCaaFunnel(opts = {}) {
       r.last_response_kind,
       (e.master_key IS NOT NULL)::boolean           AS engajado
     FROM caa_protocols p
-    JOIN latest_snap ls ON (
-      p.last_snapshot_id = ls.id
-      OR EXISTS (
-        SELECT 1 FROM activation_manual_outcomes amo
-        WHERE amo.category = 'processos-caa'
-          AND (amo.protocolo = p.protocolo OR amo.rgm = p.rgm)
-      )
-    )
     LEFT JOIN m_proto mp ON mp.protocolo = p.protocolo
     LEFT JOIN m_rgm   mr ON mr.rgm = p.rgm
     LEFT JOIN dispatches d ON d.master_key = 'RGM:' || p.rgm
     LEFT JOIN responses  r ON r.master_key = 'RGM:' || p.rgm
     LEFT JOIN engagement e ON e.master_key = 'RGM:' || p.rgm
+    WHERE p.status = 'open'
+       OR p.first_seen_at > NOW() - INTERVAL '30 days'
+       OR EXISTS (
+            SELECT 1 FROM activation_manual_outcomes amo
+            WHERE amo.category = 'processos-caa'
+              AND (amo.protocolo = p.protocolo OR amo.rgm = p.rgm)
+          )
     ORDER BY p.status, p.first_seen_at ASC
   `);
 
