@@ -336,6 +336,51 @@ async function buildLeadsLookupIndex(needed = {}) {
     if (!byPhone.has(p)) remainingPhones.add(p);
   }
 
+  // Atalho: para lotes pequenos (<= threshold), usa busca direta da API
+  // (`?search=<termo>`) em vez de varrer centenas de páginas. Reduz de minutos
+  // pra segundos quando o disparo é de poucas pessoas.
+  const directThreshold = Math.max(
+    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 25,
+    0
+  );
+  const totalRemaining = remainingEmails.size + remainingPhones.size;
+  let directHits = 0;
+  let directQueries = 0;
+  if (totalRemaining > 0 && totalRemaining <= directThreshold) {
+    const terms = [...remainingPhones, ...remainingEmails];
+    for (const term of terms) {
+      try {
+        const page = await searchLeads({ search: term, take: 5 });
+        directQueries += 1;
+        for (const lead of page.data) {
+          mergeLeadIntoMaps(lead, byEmail, byPhone);
+          const e = normalizeEmailForMatch(lead.email);
+          const p = leadPhoneDigits(lead);
+          if (e) remainingEmails.delete(e);
+          if (p) remainingPhones.delete(p);
+          directHits += 1;
+        }
+      } catch (err) {
+        console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
+      }
+    }
+    sharedLeadsIndex.byEmail = byEmail;
+    sharedLeadsIndex.byPhone = byPhone;
+    sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+    return {
+      byEmail,
+      byPhone,
+      pages: 0,
+      leadsScanned: directHits,
+      direct_search: true,
+      direct_queries: directQueries,
+      early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
+      remaining_emails: remainingEmails.size,
+      remaining_phones: remainingPhones.size,
+      index_reused: useShared,
+    };
+  }
+
   const take = Math.min(Math.max(Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) || 100, 1), 100);
   const pageDelay = Math.max(Number(process.env.DATACRAZY_PAGE_DELAY_MS) || 400, 0);
   const maxPages = Math.max(Number(process.env.DATACRAZY_MAX_PAGES) || 500, 1);
@@ -374,6 +419,7 @@ async function buildLeadsLookupIndex(needed = {}) {
     byPhone,
     pages,
     leadsScanned,
+    direct_search: false,
     early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
     remaining_emails: remainingEmails.size,
     remaining_phones: remainingPhones.size,

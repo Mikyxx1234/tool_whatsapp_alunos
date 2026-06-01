@@ -5,6 +5,20 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 01/06/2026 — Busca direta no DataCrazy para lotes pequenos
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** Disparar 1 pessoa demorava ~4min porque `buildLeadsLookupIndex` varria todas as páginas de leads (`take=100&skip=N`) com `pageDelay=400ms`, mesmo que o alvo fosse só 1 telefone.
+- **Decisão:** Quando o lote tem **<= 25 alvos novos** (configurável via `DATACRAZY_DIRECT_SEARCH_THRESHOLD`), pular a paginação e fazer `GET /api/v1/leads?search=<telefone_ou_email>&take=5` por alvo, alimentando o mesmo `byPhone/byEmail` que o caminho paginado popula. Lotes maiores continuam no scan paginado (mais eficiente em volume).
+- **Onde:** `server/services/datacrazyClient.js` → `buildLeadsLookupIndex`. Retorno ganhou flags `direct_search` e `direct_queries` para diagnóstico.
+- **Efeito:** Disparo individual (seleção de 1 aluno) deve cair de ~4min para alguns segundos (1 request à API + latência).
+- **Default seguro:** Se a busca direta falhar (`searchLeads` lançar), loga warning e continua com o que tiver. Cache compartilhado (`sharedLeadsIndex`, TTL 20min) é alimentado igual.
+
+#### Alternativas descartadas
+
+- **Sempre usar scan paginado:** mantém o problema atual (tempo proporcional ao tamanho do CRM, não ao lote).
+- **Buscar lead por id quando já temos `datacrazy_lead_id`:** só vale após a primeira ativação. No 1º disparo, ainda precisamos descobrir o lead por telefone/email.
+
 ### 22/05/2026 — Regra D+1 para CAA (cancelamento de matrícula)
 
 - **Modelo usado:** Opus 4.7 (principal)
