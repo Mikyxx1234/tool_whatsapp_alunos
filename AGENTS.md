@@ -5,6 +5,24 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Rate-limit Meta WhatsApp (cap rígido por segundo)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** O dispatcher de ativação (`runDatacrazyActivationBatch`) não tinha nenhuma garantia estrutural de respeitar limites da Meta. Único pacing era o `ACTIVATION_SEND_DELAY_MS` (default 400ms = ~2,5/s) — útil mas frágil: se alguém zerar o env, paralelizar o dispatcher, ou se a Meta apertar o limite, o código não avisa. Risco real de derrubar qualidade do número WABA ou ser banido em lotes grandes (ex.: 4.600 inadimplentes).
+- **Decisão:** Adicionar um **rate limiter de janela deslizante** singleton no módulo, com cap rígido por segundo (default 60/s, configurável via `WHATSAPP_MAX_SENDS_PER_SECOND`). `await whatsappSendLimiter.acquire()` antes de cada `messagingProvider.sendTemplateMessage`. Default 60/s é abaixo do limite Cloud API da Meta (80/s) com margem de segurança.
+- **Onde:**
+  - `server/utils/rateLimiter.js`: novo helper `createRateLimiter(maxPerWindow, windowMs)` — janela deslizante in-memory.
+  - `server/services/activationService.js`: singleton `whatsappSendLimiter` no top-level; `await whatsappSendLimiter.acquire()` antes do envio dentro do loop.
+- **Comportamento mantido:** `ACTIVATION_SEND_DELAY_MS=400` (default) continua valendo — o limiter é puramente defensivo. Para acelerar (ex.: lotes grandes em WABA tier 4/5), setar `ACTIVATION_SEND_DELAY_MS=0` e o limiter garante teto de 60/s. Em tier 4 (100k/24h), 60/s permite drenar 100k em ~28min sem risco.
+- **Limitação conhecida:** estado in-memory, válido para 1 processo Node. Se houver múltiplos workers no futuro, migrar para Redis/Postgres.
+
+#### Alternativas descartadas
+
+- **Reduzir `ACTIVATION_SEND_DELAY_MS` para 17ms (= 60/s evenly distributed):** mais simples, mas não tem garantia de teto se algum envio for instantâneo (cache local). Sliding-window é mais robusto.
+- **Token bucket clássico:** funcionalmente equivalente para esse caso (não precisamos de "burst"); sliding-window é mais fácil de raciocinar e suficiente.
+- **Cap diário por categoria/global:** considerado, mas tier 4 (100k/24h) deixa folga suficiente para o volume atual; cap por segundo basta. Adicionar cap diário em fase futura se for útil.
+- **Quality monitoring via API Meta Business (Green/Yellow/Red):** valor agregado, mas exige integração nova; pode entrar em iteração posterior se a operação crescer.
+
 ### 02/06/2026 — Coluna "Janela" no roster CAA (tempo restante 48h)
 
 - **Modelo usado:** Opus 4.7 (principal)

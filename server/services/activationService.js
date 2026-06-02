@@ -35,9 +35,24 @@ import {
   isCaaCancelamentoSolicitacao,
 } from '../utils/caaRowFilters.js';
 import { parseFlexibleDate } from '../utils/dateParser.js';
+import { createRateLimiter } from '../utils/rateLimiter.js';
 
 export const URGENCY_HIGH_DAYS = 30;
 export const URGENCY_MEDIUM_DAYS = 14;
+
+/**
+ * Limiter de envios WhatsApp (cap rígido por segundo).
+ * Default 60/s — abaixo do limite Cloud API da Meta (80/s) com folga de segurança.
+ * Override via env WHATSAPP_MAX_SENDS_PER_SECOND.
+ *
+ * Singleton de módulo: compartilhado entre categorias e chamadas paralelas
+ * do dispatcher dentro do mesmo processo Node.
+ */
+const WHATSAPP_SENDS_PER_SECOND = Math.max(
+  1,
+  Math.floor(Number(process.env.WHATSAPP_MAX_SENDS_PER_SECOND) || 60)
+);
+const whatsappSendLimiter = createRateLimiter(WHATSAPP_SENDS_PER_SECOND, 1000);
 
 const ACTIVATION_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROSTER_CACHE_TTL_MS = ACTIVATION_CACHE_TTL_MS;
@@ -1173,6 +1188,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         curso: item.curso || '',
         rgm: item.rgm || '',
       };
+      await whatsappSendLimiter.acquire();
       await messagingProvider.sendTemplateMessage({
         phone,
         templateName: template_name,
