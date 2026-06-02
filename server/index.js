@@ -18,7 +18,6 @@ import journeySettingsRoute from './routes/journeySettings.js';
 import reportsRoute from './routes/reports.js';
 import baseUploadsRoute from './routes/baseUploads.js';
 import activationRoute from './routes/activation.js';
-import manualOutcomesRoute from './routes/manualOutcomes.js';
 import maintenanceRoute from './routes/maintenance.js';
 
 import { isDbConfigured } from './db/client.js';
@@ -61,7 +60,6 @@ app.use('/api/journey-settings', journeySettingsRoute);
 app.use('/api/reports', reportsRoute);
 app.use('/api/base-uploads', baseUploadsRoute);
 app.use('/api/activation', activationRoute);
-app.use('/api/manual-outcomes', manualOutcomesRoute);
 app.use('/api/maintenance', maintenanceRoute);
 
 // Em produção (container Docker), o mesmo processo serve o build estático
@@ -141,5 +139,25 @@ app.listen(PORT, '0.0.0.0', () => {
           console.error('[cleanup origem_ativacao] FAIL:', err.message);
         });
     }, CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS);
+
+    // Cron interno de sync de desfechos CAA via CRM DataCrazy.
+    // Endpoint manual: POST /api/maintenance/sync-crm-desfechos.
+    const CRM_DESFECHO_SYNC_INTERVAL_HOURS = Math.max(
+      1,
+      parseFloat(process.env.CRM_DESFECHO_SYNC_INTERVAL_HOURS || '2') || 2
+    );
+    setInterval(() => {
+      import('./services/crmDesfechoSyncService.js')
+        .then((m) => m.syncCaaDesfechos())
+        .then((r) => {
+          if (r.skipped_no_config) return;
+          console.log(
+            `[crm-desfecho-sync] scanned=${r.scanned} revertido=${r.synced_revertido} confirmado=${r.synced_confirmado} ignored=${r.ignored} failed=${r.failed}`
+          );
+        })
+        .catch((err) => {
+          console.error('[crm-desfecho-sync] FAIL:', err.message);
+        });
+    }, CRM_DESFECHO_SYNC_INTERVAL_HOURS * 60 * 60 * 1000);
   }
 });

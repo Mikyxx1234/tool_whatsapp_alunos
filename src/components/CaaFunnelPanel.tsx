@@ -7,7 +7,6 @@ import {
   type CaaFunnelCounts,
   type CaaFunnelResponse,
 } from '../services/reportApi';
-import { ManualOutcomeModal } from './ManualOutcomeModal';
 
 // ─── Configuração de visual por estado ────────────────────────────────────────
 
@@ -115,12 +114,6 @@ function EstadoBadge({ estado }: { estado: CaaFunnelEstado }) {
 
 // ─── Componente principal ──────────────────────────────────────────────────────
 
-interface OutcomeModalState {
-  isOpen: boolean;
-  rgm?: string;
-  nome?: string;
-}
-
 export function CaaFunnelPanel() {
   const [data, setData] = useState<CaaFunnelResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -133,8 +126,6 @@ export function CaaFunnelPanel() {
   const [page, setPage] = useState(0);
 
   const LIMIT = 50;
-
-  const [outcomeModal, setOutcomeModal] = useState<OutcomeModalState>({ isOpen: false });
 
   const load = useCallback(
     async (
@@ -323,7 +314,6 @@ export function CaaFunnelPanel() {
                     <th className="px-3 py-2 text-right">Envios (hoje/total)</th>
                     <th className="px-3 py-2 text-left">Última resposta</th>
                     <th className="px-3 py-2 text-left">Desfecho manual</th>
-                    <th className="px-3 py-2 text-left"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -331,9 +321,6 @@ export function CaaFunnelPanel() {
                     <FunnelRow
                       key={item.protocolo}
                       item={item}
-                      onRegisterOutcome={(rgm, nome) =>
-                        setOutcomeModal({ isOpen: true, rgm: rgm ?? undefined, nome: nome ?? undefined })
-                      }
                     />
                   ))}
                 </tbody>
@@ -371,33 +358,13 @@ export function CaaFunnelPanel() {
         )}
       </div>
 
-      {/* Modal de desfecho manual */}
-      <ManualOutcomeModal
-        isOpen={outcomeModal.isOpen}
-        prefill={{
-          category: 'processos-caa',
-          rgm: outcomeModal.rgm,
-          nome: outcomeModal.nome,
-        }}
-        onClose={() => setOutcomeModal({ isOpen: false })}
-        onSaved={() => {
-          setOutcomeModal({ isOpen: false });
-          void load(estadoFilter, soEngajados, soConflito, page * LIMIT);
-        }}
-      />
     </section>
   );
 }
 
 // ─── Sub-componentes ───────────────────────────────────────────────────────────
 
-function FunnelRow({
-  item,
-  onRegisterOutcome,
-}: {
-  item: CaaFunnelItem;
-  onRegisterOutcome: (rgm: string | null, nome: string | null) => void;
-}) {
+function FunnelRow({ item }: { item: CaaFunnelItem }) {
   return (
     <tr className="hover:bg-gray-50">
       <td className="px-3 py-2 font-mono text-xs text-gray-700 whitespace-nowrap">
@@ -468,15 +435,6 @@ function FunnelRow({
         ) : (
           <span className="text-gray-400">—</span>
         )}
-      </td>
-      <td className="px-3 py-2">
-        <button
-          type="button"
-          onClick={() => onRegisterOutcome(item.rgm, item.nome)}
-          className="px-2 py-1 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded hover:bg-sky-100 whitespace-nowrap"
-        >
-          Desfecho
-        </button>
       </td>
     </tr>
   );

@@ -16,19 +16,10 @@
 import * as origemRepo from '../repositories/activationOrigemRepository.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 import { datacrazyClient } from './datacrazyClient.js';
-import { createRateLimiter } from '../utils/rateLimiter.js';
-
-/**
- * Rate limiter pro CRM DataCrazy (PUT em campos adicionais).
- * Default conservador 10/s (env DATACRAZY_CRM_RATE_PER_SECOND override).
- * Singleton de módulo — compartilhado entre execuções concorrentes do cleanup
- * (ex.: cron + endpoint manual disparados simultaneamente).
- */
-const DATACRAZY_CRM_RATE_PER_SECOND = Math.max(
-  1,
-  Math.floor(Number(process.env.DATACRAZY_CRM_RATE_PER_SECOND) || 10)
-);
-const datacrazyCrmLimiter = createRateLimiter(DATACRAZY_CRM_RATE_PER_SECOND, 1000);
+import {
+  datacrazyCrmLimiter,
+  DATACRAZY_CRM_RATE_PER_SECOND,
+} from '../utils/datacrazyCrmLimiter.js';
 
 /**
  * @param {{ dryRun?: boolean }} [opts]

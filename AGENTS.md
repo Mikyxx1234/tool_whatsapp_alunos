@@ -5,6 +5,45 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Sync de desfechos CAA via CRM (remove input manual)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.
+- **Problema:** O painel de desfecho manual (decisão 28/05) exigia que o consultor abrisse a app, preenchesse um modal e subisse print. Na prática, o consultor já registrava o desfecho no CRM DataCrazy diretamente — dois registros paralelos, divergentes e com fricção.
+- **Decisão:** Substituir o fluxo de input manual por **polling automático de um campo CRM**. O consultor preenche o campo `DATACRAZY_DESFECHO_CAA_FIELD_ID` no lead com `"Sim"` (matrícula revertida) ou `"Não"` (cancelamento confirmado). A app lê esse campo, cria a entrada em `activation_manual_outcomes` e limpa o campo (handshake).
+- **Escopo da remoção:** Página `/desfechos-manuais`, modal `ManualOutcomeModal`, hook `useConsultor`, `manualOutcomesApi.ts`, rota `/api/manual-outcomes`, serviço `manualOutcomesService.js`, link "Desfechos" no header, rota em `App.tsx`, botão "Desfecho" no roster CAA e no funil CAA.
+- **O que continua:** Repositório `manualOutcomesRepository.js` (agora escrito pelo sync, lido pelo `caaFunnelService`). Tabela `activation_manual_outcomes` inalterada. A coluna "Desfecho manual" no funil CAA continua mostrando o valor — agora preenchido pelo sync.
+- **Mapeamento de valores:**
+  - `"Sim"` → `outcome = 'revertido'`
+  - `"Não"` / `"Nao"` (case-insensitive) → `outcome = 'confirmado'`
+  - Qualquer outro valor → ignorado (auditoria em `crm_desfecho_sync_log`)
+- **Envs:**
+  - `DATACRAZY_DESFECHO_CAA_FIELD_ID` — UUID do campo no CRM (sem esse env o sync é no-op com aviso).
+  - `CRM_DESFECHO_SYNC_LOOKBACK_DAYS` — janela de lookback (default 14 dias).
+  - `CRM_DESFECHO_SYNC_INTERVAL_HOURS` — intervalo do cron interno (default 2h).
+- **Rate-limit:** reutiliza `datacrazyCrmLimiter` (10/s) extraído para `server/utils/datacrazyCrmLimiter.js` (compartilhado com cleanup de `origem_ativacao`).
+- **Onde:**
+  - Migration `023_crm_desfecho_sync_log.sql` — tabela de auditoria do sync.
+  - `server/utils/datacrazyCrmLimiter.js` (NOVO) — singleton extraído do cleanup service.
+  - `server/services/activationOrigemCleanupService.js` — refatorado para importar do módulo compartilhado.
+  - `server/services/datacrazyClient.js` — nova função `getLeadAdditionalFieldValue(leadId, fieldId)`.
+  - `server/repositories/activationDispatchRepository.js` — nova função `listRecentDispatchedLeadsForCategory(category, days)`.
+  - `server/repositories/manualOutcomesRepository.js` — novas funções `deleteByRgmAndCategory` e `createFromCrm`.
+  - `server/services/crmDesfechoSyncService.js` (NOVO) — orquestra o sync, retorna resultado.
+  - `server/routes/maintenance.js` — endpoint `POST /api/maintenance/sync-crm-desfechos`.
+  - `server/index.js` — remove rota manual-outcomes, adiciona cron do sync.
+  - `src/services/maintenanceApi.ts` — novo método `syncCrmDesfechos` e tipo `SyncCrmDesfechosResponse`.
+  - `src/pages/JourneyRulesPage.tsx` — card "Sync de desfechos CAA do CRM" no scope GLOBAL.
+  - `src/components/Header.tsx`, `src/App.tsx` — remoção de rota/link.
+  - `src/components/ActivationRosterTable.tsx`, `src/components/CaaFunnelPanel.tsx` — remoção de botão e modal.
+
+#### Alternativas descartadas
+
+- **n8n webhook disparando quando o campo é preenchido:** exigiria configuração de automação no DataCrazy para cada campo, mais frágil que polling periódico.
+- **Preservar input manual junto com o sync:** dois caminhos paralelos gerando entradas divergentes; dados de fonte dupla confundem o funil. O CRM é a fonte de verdade.
+- **Polling de todos os leads do CRM (sem filtrar por dispatched):** caro e sem contexto — só faz sentido verificar leads que realmente foram ativados. `listRecentDispatchedLeadsForCategory` filtra por `status='sent'` na janela de lookback.
+- **Limitar lookback ao cooldown CAA (6h):** muito curto; consultor pode demorar dias para registrar. 14 dias cobre bem sem custo excessivo de GETs no CRM.
+- **Rate-limit separado para o sync:** descartado em favor do singleton compartilhado — ambos chamam o mesmo CRM, o teto de 10/s é global.
+
 ### 02/06/2026 — Limpeza proativa de `origem_ativacao` stale + filtro defensivo de respostas
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.

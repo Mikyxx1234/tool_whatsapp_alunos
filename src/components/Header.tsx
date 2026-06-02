@@ -6,7 +6,6 @@ import {
   SlidersHorizontal,
   BarChart3,
   Files,
-  ClipboardCheck,
   TrendingUp,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
@@ -53,12 +52,6 @@ const NAV: Array<{
     label: 'Regras',
     icon: SlidersHorizontal,
     match: (p) => p.startsWith('/journey-rules'),
-  },
-  {
-    to: '/desfechos-manuais',
-    label: 'Desfechos',
-    icon: ClipboardCheck,
-    match: (p) => p.startsWith('/desfechos-manuais'),
   },
 ];
 

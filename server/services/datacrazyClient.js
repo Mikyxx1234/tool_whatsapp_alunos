@@ -610,6 +610,56 @@ async function clearOrigemAtivacaoForLead(leadId) {
   }
 }
 
+/**
+ * Lê valor de um campo adicional do lead no CRM web.
+ * GET {crm}/api/crm/additional-fields/lead/{leadId}/{fieldId}
+ * Retorna a string do campo ou null se 404 / campo ausente.
+ */
+async function getLeadAdditionalFieldValue(leadId, fieldId) {
+  const { apiKey } = getConfig();
+  const lead = String(leadId ?? '').trim();
+  const fId = String(fieldId ?? '').trim();
+  if (!lead || !fId) return null;
+
+  const url = `${getCrmBaseUrl()}/api/crm/additional-fields/lead/${encodeURIComponent(lead)}/${encodeURIComponent(fId)}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: buildHeaders(apiKey),
+    });
+  } catch (err) {
+    throw new Error(`Falha de rede ao ler campo adicional do CRM: ${err.message}`);
+  }
+
+  if (response.status === 404) return null;
+
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    const message =
+      data?.message ||
+      data?.error?.message ||
+      data?.raw ||
+      `DataCrazy CRM respondeu com status ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  // O CRM retorna o objeto com o campo "value"
+  if (data && typeof data === 'object' && 'value' in data) {
+    return data.value != null ? String(data.value) : null;
+  }
+  return null;
+}
+
 export const datacrazyClient = {
   sendTemplateMessage,
   listTemplates,
@@ -622,6 +672,7 @@ export const datacrazyClient = {
   normalizePhoneDigits,
   buildSendTemplatePayload,
   updateLeadAdditionalField,
+  getLeadAdditionalFieldValue,
   verifyOrigemAtivacaoForCategory,
   setOrigemAtivacaoForCategory,
   clearOrigemAtivacaoForLead,

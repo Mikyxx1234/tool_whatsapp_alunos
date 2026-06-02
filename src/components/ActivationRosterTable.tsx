@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, MessageCircle, ClipboardCheck } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MessageCircle } from 'lucide-react';
 import {
   activationApi,
   type ActivationCategory,
@@ -8,7 +8,6 @@ import {
   type ActivationStageFilter,
   type BbSubgrupo,
 } from '../services/activationApi';
-import { ManualOutcomeModal } from './ManualOutcomeModal';
 
 function fmtRelative(iso: string): string {
   const then = new Date(iso).getTime();
@@ -215,7 +214,6 @@ export function ActivationRosterTable({
   const [skippedLimbo, setSkippedLimbo] = useState(0);
   const [urgencyCounts, setUrgencyCounts] = useState<{ alta: number; media: number; normal: number; sem_turma: number } | null>(null);
   const [subgrupoCounts, setSubgrupoCounts] = useState<{ podia_e_nao_acessou: number; nao_acessa_faz_tempo: number; acessou_pouco: number } | null>(null);
-  const [outcomeTarget, setOutcomeTarget] = useState<ActivationRosterItem | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -576,19 +574,6 @@ export function ActivationRosterTable({
                       <span className="text-rose-600">selecione acima</span>
                     )}
                   </td>
-                  {category === 'processos-caa' && (
-                    <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => setOutcomeTarget(row)}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-whatsapp-700 bg-whatsapp-50 border border-whatsapp-200 rounded-lg hover:bg-whatsapp-100 transition-colors"
-                        title="Registrar desfecho deste aluno"
-                      >
-                        <ClipboardCheck className="w-3 h-3" />
-                        Desfecho
-                      </button>
-                    </td>
-                  )}
                 </tr>
               ))
             )}
@@ -624,20 +609,6 @@ export function ActivationRosterTable({
         </div>
       )}
 
-      <ManualOutcomeModal
-        isOpen={outcomeTarget != null}
-        prefill={
-          outcomeTarget
-            ? {
-                category: category as ActivationCategory,
-                rgm: outcomeTarget.rgm ?? undefined,
-                nome: outcomeTarget.nome ?? undefined,
-              }
-            : undefined
-        }
-        onClose={() => setOutcomeTarget(null)}
-        onSaved={() => setOutcomeTarget(null)}
-      />
     </div>
   );
 }

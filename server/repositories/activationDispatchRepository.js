@@ -125,3 +125,28 @@ export async function countDispatched(category) {
   );
   return rows[0]?.n ?? 0;
 }
+
+/**
+ * Lista leads distintos disparados recentemente numa categoria, com datacrazy_lead_id preenchido.
+ * Usado pelo sync de desfechos CAA.
+ * @param {string} category
+ * @param {number} days
+ * @returns {Promise<Array<{ datacrazy_lead_id: string, rgm: string|null, nome: string|null, master_key: string|null }>>}
+ */
+export async function listRecentDispatchedLeadsForCategory(category, days) {
+  const { rows } = await query(
+    `select distinct on (datacrazy_lead_id)
+            datacrazy_lead_id,
+            rgm,
+            nome,
+            master_key
+       from activation_dispatch_events
+      where category = $1
+        and status = 'sent'
+        and datacrazy_lead_id is not null
+        and created_at >= now() - ($2 || ' days')::interval
+      order by datacrazy_lead_id, created_at desc`,
+    [category, String(days)]
+  );
+  return rows;
+}

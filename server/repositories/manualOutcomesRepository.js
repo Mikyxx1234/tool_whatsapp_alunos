@@ -181,3 +181,51 @@ export async function deleteById(id) {
   );
   return rows[0] ?? null;
 }
+
+/**
+ * Remove todos os desfechos de um RGM numa categoria.
+ * Retorna a lista de ids deletados (com proof_path para limpeza de arquivo se necessário).
+ * @param {string} rgm
+ * @param {string} category
+ * @returns {Promise<Array<{ id: string, proof_path: string|null }>>}
+ */
+export async function deleteByRgmAndCategory(rgm, category) {
+  const { rows } = await query(
+    `delete from activation_manual_outcomes
+      where rgm = $1 and category = $2
+      returning id, proof_path`,
+    [rgm, category]
+  );
+  return rows;
+}
+
+/**
+ * Insere desfecho originado do sync do CRM (sem proof, consultor automático).
+ * @param {{
+ *   category: string,
+ *   rgm?: string|null,
+ *   datacrazy_lead_id?: string|null,
+ *   nome?: string|null,
+ *   outcome: string,
+ *   motivo?: string|null,
+ *   notes?: string|null,
+ *   occurred_at?: Date|string|null,
+ * }} data
+ * @returns {Promise<ManualOutcomeRow>}
+ */
+export async function createFromCrm(data) {
+  const masterKey = data.rgm ? `RGM:${data.rgm}` : null;
+  return insertOutcome({
+    category: data.category,
+    master_key: masterKey,
+    rgm: data.rgm ?? null,
+    cpf: null,
+    nome: data.nome ?? null,
+    protocolo: null,
+    outcome: data.outcome,
+    motivo: data.motivo ?? null,
+    notes: data.notes ?? null,
+    consultor_nome: 'DataCrazy CRM (auto)',
+    occurred_at: data.occurred_at ?? new Date(),
+  });
+}

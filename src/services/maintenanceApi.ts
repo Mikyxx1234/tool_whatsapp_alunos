@@ -11,6 +11,20 @@ export interface CleanStaleOrigemAtivacaoResponse {
   ran_at: string;
 }
 
+export interface SyncCrmDesfechosResponse {
+  scanned: number;
+  synced_revertido: number;
+  synced_confirmado: number;
+  ignored: number;
+  failed: number;
+  errors: Array<{ lead_id: string; error: string }>;
+  lookback_days: number;
+  dry_run: boolean;
+  ran_at: string;
+  crm_rate_per_second: number;
+  skipped_no_config?: boolean;
+}
+
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     ...init,
@@ -40,6 +54,17 @@ export const maintenanceApi = {
     const qs = opts?.dryRun ? '?dry_run=true' : '';
     return jsonFetch<CleanStaleOrigemAtivacaoResponse>(
       `/api/maintenance/clean-stale-origem-ativacao${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  syncCrmDesfechos(opts?: { dryRun?: boolean; days?: number }) {
+    const params = new URLSearchParams();
+    if (opts?.dryRun) params.set('dry_run', 'true');
+    if (opts?.days != null) params.set('days', String(opts.days));
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return jsonFetch<SyncCrmDesfechosResponse>(
+      `/api/maintenance/sync-crm-desfechos${qs}`,
       { method: 'POST', body: '{}' }
     );
   },

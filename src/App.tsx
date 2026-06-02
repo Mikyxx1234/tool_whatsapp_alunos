@@ -6,7 +6,6 @@ import AcademicTermsPage from './pages/AcademicTermsPage';
 import JourneyRulesPage from './pages/JourneyRulesPage';
 import ReportsPage from './pages/ReportsPage';
 import BasesPage from './pages/BasesPage';
-import ManualOutcomesPage from './pages/ManualOutcomesPage';
 import ActivationConversionPage from './pages/ActivationConversionPage';
 
 export default function App() {
@@ -20,7 +19,6 @@ export default function App() {
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/bases" element={<BasesPage />} />
         <Route path="/journey-rules" element={<JourneyRulesPage />} />
-        <Route path="/desfechos-manuais" element={<ManualOutcomesPage />} />
         <Route path="/conversao" element={<ActivationConversionPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

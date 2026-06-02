@@ -13,6 +13,7 @@ import { academicTermApi, type AcademicTermDTO } from '../services/academicTermA
 import {
   maintenanceApi,
   type CleanStaleOrigemAtivacaoResponse,
+  type SyncCrmDesfechosResponse,
 } from '../services/maintenanceApi';
 
 interface ToastState {
@@ -49,6 +50,30 @@ export default function JourneyRulesPage() {
 
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanStaleOrigemAtivacaoResponse | null>(null);
+
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncCrmDesfechosResponse | null>(null);
+
+  const runSync = useCallback(async (dryRun: boolean) => {
+    setSyncRunning(true);
+    try {
+      const r = await maintenanceApi.syncCrmDesfechos({ dryRun });
+      setSyncResult(r);
+      if (r.skipped_no_config) {
+        showToast('Sync ignorado: DATACRAZY_DESFECHO_CAA_FIELD_ID não configurado no .env.', 'error');
+      } else {
+        const verb = dryRun ? 'Simulação' : 'Sync';
+        const detail = dryRun
+          ? `${r.synced_revertido + r.synced_confirmado} lead(s) seriam sincronizados.`
+          : `${r.synced_revertido} revertidos, ${r.synced_confirmado} confirmados, ${r.failed} falhas (de ${r.scanned} escaneados).`;
+        showToast(`${verb} concluído: ${detail}`, r.failed > 0 ? 'error' : 'success');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erro no sync', 'error');
+    } finally {
+      setSyncRunning(false);
+    }
+  }, []);
 
   const runCleanup = useCallback(
     async (dryRun: boolean) => {
@@ -699,6 +724,116 @@ export default function JourneyRulesPage() {
                           </summary>
                           <ul className="mt-1 ml-4 list-disc space-y-0.5">
                             {cleanupResult.errors.slice(0, 10).map((e, i) => (
+                              <li key={i} className="font-mono">
+                                <span className="opacity-60">{e.lead_id.slice(0, 8)}…</span>{' '}
+                                {e.error}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {scope === 'GLOBAL' && (
+              <Card title="Sync de desfechos CAA do CRM">
+                <div className="text-xs text-gray-600 leading-relaxed">
+                  Lê o campo de desfecho CAA do lead no CRM DataCrazy (valores{' '}
+                  <code className="bg-gray-100 px-1 rounded">Sim</code> /{' '}
+                  <code className="bg-gray-100 px-1 rounded">Não</code>), cria ou sobrescreve o
+                  desfecho em <code className="bg-gray-100 px-1 rounded">activation_manual_outcomes</code>{' '}
+                  para a categoria <code className="bg-gray-100 px-1 rounded">processos-caa</code>, e
+                  limpa o campo no CRM (handshake). Roda automaticamente a cada 2h.
+                </div>
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Requer <code className="bg-amber-100 px-1 rounded">DATACRAZY_DESFECHO_CAA_FIELD_ID</code>{' '}
+                  configurado no <code className="bg-amber-100 px-1 rounded">.env</code>. Sem essa variável,
+                  o sync é ignorado silenciosamente.
+                </div>
+
+                <div className="border-t border-gray-100 pt-4 mt-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={syncRunning}
+                      onClick={() => void runSync(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Conta quantos leads seriam sincronizados sem gravar nada"
+                    >
+                      <PlayCircle className="w-4 h-4" />
+                      Simular (dry-run)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={syncRunning}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Sincronizar agora todos os leads CAA dos últimos ${
+                              Number(process.env.CRM_DESFECHO_SYNC_LOOKBACK_DAYS) || 14
+                            } dias? Vai sobrescrever desfechos manuais existentes para esses RGMs.`
+                          )
+                        ) {
+                          void runSync(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-rose-600 border border-rose-600 rounded-lg hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Lê o CRM e cria/sobrescreve desfechos CAA"
+                    >
+                      {syncRunning ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                      {syncRunning ? 'Sincronizando…' : 'Sincronizar agora'}
+                    </button>
+                  </div>
+
+                  {syncResult && (
+                    <div
+                      className={`rounded-lg border p-3 text-xs space-y-1 ${
+                        syncResult.failed > 0
+                          ? 'bg-rose-50 border-rose-200 text-rose-900'
+                          : syncResult.skipped_no_config
+                          ? 'bg-amber-50 border-amber-200 text-amber-900'
+                          : syncResult.dry_run
+                          ? 'bg-sky-50 border-sky-200 text-sky-900'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      }`}
+                    >
+                      <p className="font-medium">
+                        {syncResult.skipped_no_config
+                          ? 'Ignorado — campo não configurado'
+                          : syncResult.dry_run
+                          ? 'Simulação'
+                          : 'Sync'}{' '}
+                        — {new Date(syncResult.ran_at).toLocaleString('pt-BR')}
+                      </p>
+                      {!syncResult.skipped_no_config && (
+                        <>
+                          <p className="tabular-nums">
+                            <strong>Escaneados:</strong> {syncResult.scanned} ·{' '}
+                            <strong>Revertidos:</strong> {syncResult.synced_revertido} ·{' '}
+                            <strong>Confirmados:</strong> {syncResult.synced_confirmado} ·{' '}
+                            <strong>Ignorados:</strong> {syncResult.ignored} ·{' '}
+                            <strong>Falhas:</strong> {syncResult.failed}
+                          </p>
+                          <p className="opacity-75">
+                            Janela: {syncResult.lookback_days}d · Taxa CRM:{' '}
+                            {syncResult.crm_rate_per_second}/s
+                          </p>
+                        </>
+                      )}
+                      {syncResult.errors.length > 0 && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer font-medium">
+                            Ver {syncResult.errors.length} erro(s)
+                          </summary>
+                          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                            {syncResult.errors.slice(0, 10).map((e, i) => (
                               <li key={i} className="font-mono">
                                 <span className="opacity-60">{e.lead_id.slice(0, 8)}…</span>{' '}
                                 {e.error}
