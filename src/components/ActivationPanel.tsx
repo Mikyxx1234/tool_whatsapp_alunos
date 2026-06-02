@@ -159,11 +159,6 @@ export function ActivationPanel() {
               }`}
             >
               {c.label}
-              {intersectionByCat[c.id] != null && (
-                <span className="ml-1.5 text-xs opacity-80 tabular-nums">
-                  ({intersectionByCat[c.id]!.toLocaleString('pt-BR')})
-                </span>
-              )}
             </button>
           ))}
         </div>
