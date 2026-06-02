@@ -5,6 +5,20 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Remoção do dedup por template (`template_ja_enviado`)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** Mesmo com o cooldown novo (decisão abaixo), a pessoa continuava sendo bloqueada permanentemente por uma segunda barreira no `runDatacrazyActivationBatch`: `wasTemplateSentInCategory(category, master_key, template_name)`. Essa função consultava `activation_dispatch_events` sem janela temporal e marcava `skipped: template_ja_enviado` se aquele **nome de template específico** já tivesse sido enviado uma vez. Na prática — como quase nenhuma categoria tem 3 templates distintos por tier (1ª/Reativação/5ª) — o sistema resolvia o mesmo nome (`caa_cancelamento`) pra todos os tiers e o segundo filtro virava bloqueio permanente disfarçado de "dedup". Caso real validado: RGM 47277581 entrou na fila como Reativação após o cooldown de 6h, mas o dispatch acusava `1 ignorada(s) (template já enviado)`.
+- **Decisão:** Remover o check + a função `wasTemplateSentInCategory`. O cooldown (6h CAA / 24h outras) é o único gate antispam; o cap por tier continua dado pela presença/ausência de template (sem template `fifth` → `template_nao_configurado` segura naturalmente).
+- **Onde:** `server/services/activationService.js` — `runDatacrazyActivationBatch` (5 linhas removidas) + definição da função (9 linhas removidas).
+- **Efeito:** Pessoa pode receber o mesmo template múltiplas vezes desde que respeite o cooldown e o tier. A operação assume a responsabilidade de configurar templates distintos por tier em `/regras` se quiser conteúdo variado (não é obrigatório).
+
+#### Alternativas descartadas
+
+- **Janela temporal no dedup (ex.: "mesmo template só após 7 dias"):** mais um eixo de configuração que sobrepõe o cooldown sem benefício claro. Cooldown único é mais simples.
+- **Manter o dedup mas relaxar pra "diferente status que não `sent`":** não muda nada — o status pra evento bem-sucedido sempre é `sent`.
+- **Manter o dedup como warning não-bloqueante:** poluiria o resultado do batch sem agregar; quem precisar de variedade de conteúdo cadastra mais templates.
+
 ### 02/06/2026 — Cooldown entre disparos (substitui filtro absoluto de dispatched)
 
 - **Modelo usado:** Opus 4.7 (principal)

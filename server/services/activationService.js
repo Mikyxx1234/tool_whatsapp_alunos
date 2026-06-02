@@ -744,17 +744,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function wasTemplateSentInCategory(category, masterKey, templateName) {
-  if (!masterKey || !templateName) return false;
-  const { rows } = await query(
-    `select 1 from activation_dispatch_events
-      where category = $1 and master_key = $2 and status = 'sent' and template_name = $3
-      limit 1`,
-    [category, masterKey, templateName]
-  );
-  return rows.length > 0;
-}
-
 /** @typedef {'all'|'first'|'repeat'|'fifth'} ActivationStageFilter */
 
 /**
@@ -1040,12 +1029,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         errorMessage: `Template não configurado para ${tierLabel(message_tier)}. Defina ACTIVATION_TEMPLATE_* no .env`,
       });
       results.push({ ...item, status: 'failed', error: 'template_nao_configurado' });
-      continue;
-    }
-
-    if (master_key && (await wasTemplateSentInCategory(category, master_key, template_name))) {
-      skipped += 1;
-      results.push({ ...item, status: 'skipped', error: 'template_ja_enviado' });
       continue;
     }
 
