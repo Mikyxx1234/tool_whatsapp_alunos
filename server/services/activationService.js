@@ -42,6 +42,41 @@ export const URGENCY_MEDIUM_DAYS = 14;
 const ACTIVATION_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROSTER_CACHE_TTL_MS = ACTIVATION_CACHE_TTL_MS;
 
+/**
+ * Cooldown (em horas) entre disparos da mesma pessoa, por categoria.
+ * CAA tem cooldown menor (6h) para encaixar 2 disparos por dia dentro da
+ * janela CAA de 48h. Demais categorias usam 24h (1x/dia).
+ * Substitui o filtro absoluto antigo (1 disparo por pessoa, para sempre).
+ */
+const COOLDOWN_HOURS_BY_CATEGORY = {
+  'processos-caa': 6,
+  'docs-pendentes': 24,
+  financeiro: 24,
+  'acessos-blackboard': 24,
+  'provavel-evasao': 24,
+  'aguardando-inicio': 24,
+};
+
+function getCooldownHoursForCategory(category) {
+  return COOLDOWN_HOURS_BY_CATEGORY[category] ?? 24;
+}
+
+/**
+ * Retorna true se o master_key foi disparado há menos que `cooldownHours` horas.
+ * @param {Map<string, string|Date>} lastSentMap
+ * @param {string|null|undefined} masterKey
+ * @param {number} cooldownHours
+ * @param {number} [now=Date.now()]
+ */
+function isOnCooldown(lastSentMap, masterKey, cooldownHours, now = Date.now()) {
+  if (!masterKey || !lastSentMap) return false;
+  const lastRaw = lastSentMap.get(masterKey);
+  if (!lastRaw) return false;
+  const last = lastRaw instanceof Date ? lastRaw.getTime() : new Date(lastRaw).getTime();
+  if (!Number.isFinite(last)) return false;
+  return now - last < cooldownHours * 3600 * 1000;
+}
+
 export const ACTIVATION_CATEGORIES = /** @type {const} */ ([
   'docs-pendentes',
   'financeiro',
@@ -411,7 +446,9 @@ export async function getIntersectionActivationList(category, opts = {}) {
 
   /** BB: quem está no export no mesmo ciclo já acessou — fila = sem linha alinhada ao ciclo. */
   const matriculadosSemNaOutraBase = category === 'acessos-blackboard';
-  const dispatched = await activationDispatchRepo.getDispatchedMasterKeys(category);
+  const lastSentMap = await activationDispatchRepo.getLastSentAtByMasterKey(category);
+  const cooldownHours = getCooldownHoursForCategory(category);
+  const cooldownNow = Date.now();
 
   // BB: alunos cuja turma ainda não começou ficam de fora (regra "limbo").
   const filterBbLimbo = category === 'acessos-blackboard';
@@ -495,7 +532,7 @@ export async function getIntersectionActivationList(category, opts = {}) {
         continue;
       }
       seenMaster.add(master_key);
-      if (dispatched.has(master_key)) {
+      if (isOnCooldown(lastSentMap, master_key, cooldownHours, cooldownNow)) {
         skipped_already_dispatched += 1;
         if (excludeDispatched) continue;
       }
@@ -549,7 +586,8 @@ export async function getIntersectionActivationList(category, opts = {}) {
     total: items.length,
     items,
     intersection_raw,
-    already_dispatched_in_db: dispatched.size,
+    already_dispatched_in_db: lastSentMap.size,
+    cooldown_hours: cooldownHours,
     skipped_already_dispatched,
     skipped_duplicate_key,
     skipped_ciclo_divergente,
@@ -579,11 +617,13 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
   const cached = activationListCaches.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.data;
 
-  const [matIndex, dispatched, terms] = await Promise.all([
+  const [matIndex, lastSentMap, terms] = await Promise.all([
     buildPersonIndexCached('matriculados', matSnap.id),
-    activationDispatchRepo.getDispatchedMasterKeys(category),
+    activationDispatchRepo.getLastSentAtByMasterKey(category),
     loadTerms(),
   ]);
+  const cooldownHours = getCooldownHoursForCategory(category);
+  const cooldownNow = Date.now();
   const today = new Date();
 
   /** @type {Array<object>} */
@@ -612,7 +652,7 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
         continue;
       }
       seenMaster.add(master_key);
-      if (dispatched.has(master_key)) {
+      if (isOnCooldown(lastSentMap, master_key, cooldownHours, cooldownNow)) {
         skipped_already_dispatched += 1;
         if (excludeDispatched) continue;
       }
@@ -638,7 +678,8 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
     total: items.length,
     items,
     intersection_raw: items.length,
-    already_dispatched_in_db: dispatched.size,
+    already_dispatched_in_db: lastSentMap.size,
+    cooldown_hours: cooldownHours,
     skipped_already_dispatched,
     skipped_duplicate_key,
     skipped_ciclo_divergente: 0,
@@ -869,9 +910,11 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
 
   const storedTemplates = await getActivationTemplateConfig();
   const roster = await getActivationRoster(category);
-  const dispatched = await activationDispatchRepo.getDispatchedMasterKeys(category);
+  const lastSentMap = await activationDispatchRepo.getLastSentAtByMasterKey(category);
+  const cooldownHours = getCooldownHoursForCategory(category);
+  const cooldownNow = Date.now();
   const eligibleItems = roster.items.filter(
-    (it) => !it.master_key || !dispatched.has(it.master_key)
+    (it) => !it.master_key || !isOnCooldown(lastSentMap, it.master_key, cooldownHours, cooldownNow)
   );
   const selectedKeys = Array.isArray(opts.masterKeys)
     ? new Set(opts.masterKeys.filter((k) => typeof k === 'string' && k.length > 0))
@@ -879,6 +922,24 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
   const filteredEligible = selectedKeys && selectedKeys.size > 0
     ? eligibleItems.filter((it) => it.master_key && selectedKeys.has(it.master_key))
     : eligibleItems;
+
+  // Se o usuário selecionou explicitamente itens mas todos caíram fora (cooldown
+  // ou já fora da fila por outro motivo), devolve erro claro em vez de
+  // disparar 0 silenciosamente.
+  if (selectedKeys && selectedKeys.size > 0 && filteredEligible.length === 0) {
+    const onCooldown = roster.items.filter(
+      (it) => it.master_key && selectedKeys.has(it.master_key)
+              && isOnCooldown(lastSentMap, it.master_key, cooldownHours, cooldownNow)
+    );
+    const msg = onCooldown.length > 0
+      ? `Os ${onCooldown.length} item(s) selecionado(s) ainda estão em cooldown de ${cooldownHours}h (último disparo recente). Aguarde ou selecione outros.`
+      : 'Nenhum dos itens selecionados está elegível na fila atual.';
+    const err = new Error(msg);
+    err.status = 400;
+    err.code = 'no_eligible_selected';
+    throw err;
+  }
+
   const maxProcess =
     Number(opts.limit) > 0
       ? Math.min(Number(opts.limit), filteredEligible.length)

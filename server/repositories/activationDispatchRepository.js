@@ -46,6 +46,23 @@ export async function getDispatchedMasterKeys(category) {
 }
 
 /**
+ * Retorna Map<master_key, lastSentAt(ISO)> para cálculo de cooldown.
+ * Considera apenas eventos com status='sent'.
+ * @param {string} category
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function getLastSentAtByMasterKey(category) {
+  const { rows } = await query(
+    `select master_key, max(created_at) as last_sent_at
+       from activation_dispatch_events
+      where category = $1 and status = 'sent' and master_key is not null
+      group by master_key`,
+    [category]
+  );
+  return new Map(rows.map((r) => [r.master_key, r.last_sent_at]));
+}
+
+/**
  * @param {object} event
  */
 export async function recordDispatchEvent(event) {

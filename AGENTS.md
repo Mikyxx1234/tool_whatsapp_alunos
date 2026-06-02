@@ -5,6 +5,27 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Cooldown entre disparos (substitui filtro absoluto de dispatched)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** Pessoa que já foi disparada 1 vez em uma categoria nunca mais voltava à fila — o filtro `dispatched.has(master_key)` era absoluto. Conflito com a regra de múltiplas ativações por tier (1ª / Reativação / 5ª) que já existia no resto da app (`resolveMessageTier`, `resolveTemplateForActivation`).
+- **Decisão:** Trocar por **cooldown configurável por categoria**:
+  - **`processos-caa`**: **6h** (encaixa 2 disparos/dia dentro da janela CAA de 48h; consultor não trabalha 24h, então 12h não daria 2 envios no mesmo expediente)
+  - **Outras categorias** (`docs-pendentes`, `financeiro`, `acessos-blackboard`, `provavel-evasao`, `aguardando-inicio`): **24h** (1x/dia)
+  - Limite total continua dado pelos templates configurados — pessoa some quando esgota o tier (ex.: sem template `5ª ativação`, sai após a 4ª).
+- **Onde:**
+  - `activationDispatchRepository.js#getLastSentAtByMasterKey` — nova query `max(created_at)` por master_key + status `sent`.
+  - `activationService.js#COOLDOWN_HOURS_BY_CATEGORY`, `getCooldownHoursForCategory`, `isOnCooldown` — helpers.
+  - 3 locais que usavam `dispatched.has(master_key)` foram substituídos por `isOnCooldown(...)`: intersection list, aguardando-início, batch.
+  - Erro claro quando usuário seleciona alguém em cooldown via batch: HTTP 400 `no_eligible_selected` com mensagem indicando horas restantes.
+- **Default seguro:** cooldownHours hardcoded por categoria. Quando for preciso tuning fino per-categoria via UI, mover pra `journey_settings`.
+
+#### Alternativas descartadas
+
+- **Sempre permitir disparos consecutivos sem cooldown:** spam; sem proteção contra clique duplo.
+- **Cooldown via `journey_settings`:** mais flexível, mas exige migration + form em `/regras` + carregar settings em cada chamada de fila. Defaults hardcoded resolvem o problema imediato.
+- **Limite máximo absoluto por pessoa (ex.: 5 disparos/categoria):** confiamos nos templates configurados (sem 5ª = sai naturalmente).
+
 ### 01/06/2026 — Verify de `origem_ativacao` agora é best-effort + n8n limpa após resposta
 
 - **Modelo usado:** Opus 4.7 (principal)
