@@ -339,19 +339,39 @@ async function buildLeadsLookupIndex(needed = {}) {
   // Atalho: para lotes pequenos (<= threshold), usa busca direta da API
   // (`?search=<termo>`) em vez de varrer centenas de páginas. Reduz de minutos
   // pra segundos quando o disparo é de poucas pessoas.
+  // Default 100 cobre seleções típicas (até ~100 alunos por vez); acima disso
+  // a paginação completa fica mais eficiente em volume.
   const directThreshold = Math.max(
-    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 25,
+    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 100,
     0
+  );
+  // Concorrência paralela das buscas diretas. DataCrazy não publica limite oficial;
+  // 5 simultâneas é seguro e reduz 29 leads de ~30s pra ~6s.
+  const directConcurrency = Math.max(
+    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 5, 20),
+    1
   );
   const totalRemaining = remainingEmails.size + remainingPhones.size;
   let directHits = 0;
   let directQueries = 0;
   if (totalRemaining > 0 && totalRemaining <= directThreshold) {
     const terms = [...remainingPhones, ...remainingEmails];
-    for (const term of terms) {
-      try {
-        const page = await searchLeads({ search: term, take: 5 });
+    for (let i = 0; i < terms.length; i += directConcurrency) {
+      const slice = terms.slice(i, i + directConcurrency);
+      const results = await Promise.all(
+        slice.map(async (term) => {
+          try {
+            const page = await searchLeads({ search: term, take: 5 });
+            return { term, page };
+          } catch (err) {
+            console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
+            return { term, page: null };
+          }
+        })
+      );
+      for (const { page } of results) {
         directQueries += 1;
+        if (!page) continue;
         for (const lead of page.data) {
           mergeLeadIntoMaps(lead, byEmail, byPhone);
           const e = normalizeEmailForMatch(lead.email);
@@ -360,8 +380,6 @@ async function buildLeadsLookupIndex(needed = {}) {
           if (p) remainingPhones.delete(p);
           directHits += 1;
         }
-      } catch (err) {
-        console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
       }
     }
     sharedLeadsIndex.byEmail = byEmail;
@@ -374,6 +392,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       leadsScanned: directHits,
       direct_search: true,
       direct_queries: directQueries,
+      direct_concurrency: directConcurrency,
       early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
       remaining_emails: remainingEmails.size,
       remaining_phones: remainingPhones.size,
