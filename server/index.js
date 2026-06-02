@@ -19,6 +19,7 @@ import reportsRoute from './routes/reports.js';
 import baseUploadsRoute from './routes/baseUploads.js';
 import activationRoute from './routes/activation.js';
 import manualOutcomesRoute from './routes/manualOutcomes.js';
+import maintenanceRoute from './routes/maintenance.js';
 
 import { isDbConfigured } from './db/client.js';
 import { startScheduler } from './services/schedulerService.js';
@@ -61,6 +62,7 @@ app.use('/api/reports', reportsRoute);
 app.use('/api/base-uploads', baseUploadsRoute);
 app.use('/api/activation', activationRoute);
 app.use('/api/manual-outcomes', manualOutcomesRoute);
+app.use('/api/maintenance', maintenanceRoute);
 
 // Em produção (container Docker), o mesmo processo serve o build estático
 // do frontend (Vite -> dist/). Em dev, o Vite roda na porta 5173 e proxy-a
@@ -122,5 +124,22 @@ app.listen(PORT, '0.0.0.0', () => {
           console.warn('[server] pré-aquecimento overview CAA:', err.message);
         });
     }, 8000);
+
+    // Cron interno de limpeza de origem_ativacao stale no CRM.
+    // Roda a cada 24h. Endpoint manual: POST /api/maintenance/clean-stale-origem-ativacao.
+    // Backup defensivo caso o n8n Schedule Trigger caia.
+    const CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    setInterval(() => {
+      import('./services/activationOrigemCleanupService.js')
+        .then((m) => m.cleanStaleOrigemAtivacao())
+        .then((r) => {
+          console.log(
+            `[cleanup origem_ativacao] scanned=${r.scanned} cleaned=${r.cleaned} failed=${r.failed} window=${r.stale_window_hours}h`
+          );
+        })
+        .catch((err) => {
+          console.error('[cleanup origem_ativacao] FAIL:', err.message);
+        });
+    }, CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS);
   }
 });

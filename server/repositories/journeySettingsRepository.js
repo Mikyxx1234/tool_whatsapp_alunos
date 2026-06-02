@@ -10,6 +10,7 @@ const FIELDS = `
   inativo_dias,
   caa_janela_t0, caa_janela_dias_tipo,
   bb_nao_acessa_dias, bb_acessou_pouco_minutos, bb_acessou_pouco_interacoes,
+  origem_ativacao_stale_hours,
   raw_config, created_at, updated_at
 `;
 
@@ -22,6 +23,7 @@ const ALLOWED = [
   'inativo_dias',
   'caa_janela_t0', 'caa_janela_dias_tipo',
   'bb_nao_acessa_dias', 'bb_acessou_pouco_minutos', 'bb_acessou_pouco_interacoes',
+  'origem_ativacao_stale_hours',
 ];
 
 export async function getGlobal(client) {

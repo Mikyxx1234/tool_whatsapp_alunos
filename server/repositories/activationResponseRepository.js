@@ -211,19 +211,36 @@ export async function resolveDispatchContext(q, windowHours = 168) {
  * Bulk: pra cada master_key, devolve a última resposta (ou null).
  * Usado pelo roster pra mostrar badge "Interagiu há X".
  *
+ * Aplica filtro defensivo: só conta respostas que tenham um `activation_dispatch_events`
+ * com `status='sent'` para a mesma master_key/category, com `created_at`
+ * dentro de `staleHours` antes do `received_at` da resposta. Respostas
+ * "órfãs" (sem dispatch recente) ficam no DB para auditoria mas não aparecem
+ * no roster — evita falso-positivo causado por `origem_ativacao` antigo.
+ *
  * @param {string} category
  * @param {string[]} masterKeys
+ * @param {number} [staleHours=72]
  */
-export async function findLastByMasterKeys(category, masterKeys) {
+export async function findLastByMasterKeys(category, masterKeys, staleHours = 72) {
   const keys = [...new Set(masterKeys.filter(Boolean))];
   if (!keys.length) return new Map();
+  const safeHours = Math.max(1, Math.floor(Number(staleHours) || 72));
   const { rows } = await query(
-    `select distinct on (master_key)
-       master_key, response_kind, button_payload, message_text, received_at
-       from activation_responses
-      where category = $1 and master_key = any($2::text[])
-      order by master_key, received_at desc`,
-    [category, keys]
+    `select distinct on (r.master_key)
+       r.master_key, r.response_kind, r.button_payload, r.message_text, r.received_at
+       from activation_responses r
+      where r.category = $1
+        and r.master_key = any($2::text[])
+        and exists (
+          select 1 from activation_dispatch_events d
+          where d.master_key = r.master_key
+            and d.category = r.category
+            and d.status = 'sent'
+            and d.created_at <= coalesce(r.received_at, r.created_at)
+            and d.created_at >= coalesce(r.received_at, r.created_at) - ($3::int * interval '1 hour')
+        )
+      order by r.master_key, r.received_at desc`,
+    [category, keys, safeHours]
   );
   return new Map(rows.map((r) => [r.master_key, r]));
 }

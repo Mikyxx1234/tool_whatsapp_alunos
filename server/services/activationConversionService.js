@@ -1,4 +1,5 @@
 import { query } from '../db/client.js';
+import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 
 const CATEGORY_LABELS = {
   'docs-pendentes': 'Docs pendentes',
@@ -13,6 +14,29 @@ const ALL_CATEGORIES = Object.keys(CATEGORY_LABELS);
 const RECENT_LIMIT = 50;
 
 /**
+ * Filtro defensivo: só conta respostas em `activation_responses` que tenham um
+ * dispatch `sent` correspondente na mesma master_key/category nas últimas
+ * `staleHours` antes do `received_at`. Sem isso, respostas tardias (3 meses
+ * depois de uma ativação) virariam falso-positivo quando o campo
+ * `origem_ativacao` no CRM não foi limpo (handshake n8n só limpa após a 1ª
+ * resposta — decisão Opus 02/06/2026).
+ *
+ * O alias `r` deve apontar para `activation_responses`. O placeholder
+ * `${staleHoursParamIdx}` é o índice (1-based) do parâmetro com a janela
+ * em horas dentro do array de params da query.
+ */
+function buildValidResponseExists(rAlias, staleHoursParamIdx) {
+  return `exists (
+    select 1 from activation_dispatch_events d
+    where d.master_key = ${rAlias}.master_key
+      and d.category = ${rAlias}.category
+      and d.status = 'sent'
+      and d.created_at <= coalesce(${rAlias}.received_at, ${rAlias}.created_at)
+      and d.created_at >= coalesce(${rAlias}.received_at, ${rAlias}.created_at) - ($${staleHoursParamIdx}::int * interval '1 hour')
+  )`;
+}
+
+/**
  * @param {{ category?: string, period_days?: number, offset?: number }} opts
  */
 export async function getActivationConversion({ category = 'all', period_days = 30, offset = 0 } = {}) {
@@ -22,10 +46,14 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const sinceIso = sinceDate.toISOString();
   const catFilter = category !== 'all' ? category : null;
 
+  const settings = await journeySettingsRepo.resolveForTerm(null);
+  const staleHours = Math.max(
+    1,
+    Math.floor(Number(settings?.origem_ativacao_stale_hours) || 72)
+  );
+
   const dispCatCond = catFilter ? 'AND category = $2' : '';
-  const respCatCond = catFilter ? 'AND category = $2' : '';
   const dispParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
-  const respParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
 
   // --- KPIs from dispatches ---
   const { rows: [dk] } = await query(
@@ -39,17 +67,24 @@ export async function getActivationConversion({ category = 'all', period_days = 
     dispParams
   );
 
-  // --- KPIs from responses ---
+  // --- KPIs from responses (com filtro defensivo) ---
+  // params: $1=sinceIso [, $2=catFilter], $N=staleHours
+  const respKpiParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
+  const respKpiCatCond = catFilter ? 'AND r.category = $2' : '';
+  const respKpiStaleIdx = catFilter ? 3 : 2;
+  const validResponseExistsR = buildValidResponseExists('r', respKpiStaleIdx);
+
   const { rows: [rk] } = await query(
     `SELECT
-      COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL)::bigint AS unique_responders,
-      COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL AND response_kind = 'click')::bigint AS unique_clickers,
-      COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL AND response_kind = 'message')::bigint AS unique_messages,
-      COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL AND response_kind = 'opt_out')::bigint AS unique_opt_outs
-    FROM activation_responses
-    WHERE COALESCE(received_at, created_at) >= $1
-      ${respCatCond}`,
-    respParams
+      COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL)::bigint AS unique_responders,
+      COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'click')::bigint AS unique_clickers,
+      COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'message')::bigint AS unique_messages,
+      COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'opt_out')::bigint AS unique_opt_outs
+    FROM activation_responses r
+    WHERE COALESCE(r.received_at, r.created_at) >= $1
+      ${respKpiCatCond}
+      AND ${validResponseExistsR}`,
+    respKpiParams
   );
 
   const ud = Number(dk.unique_dispatched) || 0;
@@ -70,6 +105,8 @@ export async function getActivationConversion({ category = 'all', period_days = 
   };
 
   // --- by_category: always computed for all categories ---
+  // Para cada categoria, params são [sinceIso, cat, staleHours].
+  const byCatValidExists = buildValidResponseExists('r', 3);
   const byCatRows = await Promise.all(
     ALL_CATEGORIES.map(async (cat) => {
       const [{ rows: [dr] }, { rows: [rr] }] = await Promise.all([
@@ -83,11 +120,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
         ),
         query(
           `SELECT
-            COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL)::bigint AS unique_responders,
-            COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL AND response_kind = 'opt_out')::bigint AS unique_opt_outs
-          FROM activation_responses
-          WHERE COALESCE(received_at, created_at) >= $1 AND category = $2`,
-          [sinceIso, cat]
+            COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL)::bigint AS unique_responders,
+            COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'opt_out')::bigint AS unique_opt_outs
+          FROM activation_responses r
+          WHERE COALESCE(r.received_at, r.created_at) >= $1
+            AND r.category = $2
+            AND ${byCatValidExists}`,
+          [sinceIso, cat, staleHours]
         ),
       ]);
       const catUd = Number(dr?.unique_dispatched) || 0;
@@ -107,22 +146,32 @@ export async function getActivationConversion({ category = 'all', period_days = 
   );
   byCatRows.sort((a, b) => b.response_rate - a.response_rate);
 
-  // --- Top buttons ---
+  // --- Top buttons (com filtro defensivo) ---
+  const topBtnParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
+  const topBtnCatCond = catFilter ? 'AND r.category = $2' : '';
+  const topBtnStaleIdx = catFilter ? 3 : 2;
+  const topBtnValidExists = buildValidResponseExists('r', topBtnStaleIdx);
+
   const { rows: topButtons } = await query(
-    `SELECT button_payload, COUNT(*)::int AS count
-    FROM activation_responses
-    WHERE COALESCE(received_at, created_at) >= $1
-      AND button_payload IS NOT NULL
-      ${respCatCond}
-    GROUP BY button_payload
+    `SELECT r.button_payload, COUNT(*)::int AS count
+    FROM activation_responses r
+    WHERE COALESCE(r.received_at, r.created_at) >= $1
+      AND r.button_payload IS NOT NULL
+      ${topBtnCatCond}
+      AND ${topBtnValidExists}
+    GROUP BY r.button_payload
     ORDER BY count DESC
     LIMIT 5`,
-    respParams
+    topBtnParams
   );
 
-  // --- Recent responses with pagination ---
-  const limitIdx = respParams.length + 1;
-  const offsetIdx = respParams.length + 2;
+  // --- Recent responses with pagination (com filtro defensivo) ---
+  const recentBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
+  const recentCatCond = catFilter ? 'AND ar.category = $2' : '';
+  const recentStaleIdx = catFilter ? 3 : 2;
+  const recentValidExists = buildValidResponseExists('ar', recentStaleIdx);
+  const recentLimitIdx = recentBaseParams.length + 1;
+  const recentOffsetIdx = recentBaseParams.length + 2;
 
   const { rows: recentRows } = await query(
     `SELECT
@@ -145,18 +194,22 @@ export async function getActivationConversion({ category = 'all', period_days = 
       ) AS nome
     FROM activation_responses ar
     WHERE COALESCE(ar.received_at, ar.created_at) >= $1
-      ${respCatCond}
+      ${recentCatCond}
+      AND ${recentValidExists}
     ORDER BY COALESCE(ar.received_at, ar.created_at) DESC
-    LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-    [...respParams, RECENT_LIMIT, offsetNum]
+    LIMIT $${recentLimitIdx} OFFSET $${recentOffsetIdx}`,
+    [...recentBaseParams, RECENT_LIMIT, offsetNum]
   );
 
+  // --- Total recent (com filtro defensivo, mesmo escopo) ---
+  const totalRecentValidExists = buildValidResponseExists('r', recentStaleIdx);
   const { rows: [{ total_recent }] } = await query(
     `SELECT COUNT(*)::int AS total_recent
-    FROM activation_responses
-    WHERE COALESCE(received_at, created_at) >= $1
-      ${respCatCond}`,
-    respParams
+    FROM activation_responses r
+    WHERE COALESCE(r.received_at, r.created_at) >= $1
+      ${catFilter ? 'AND r.category = $2' : ''}
+      AND ${totalRecentValidExists}`,
+    recentBaseParams
   );
 
   return {
@@ -165,6 +218,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
       period_days: periodDays,
       since: sinceIso,
       now: new Date().toISOString(),
+      stale_window_hours: staleHours,
     },
     kpis,
     by_category: byCatRows,

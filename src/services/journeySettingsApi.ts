@@ -44,6 +44,7 @@ export interface JourneySettingsDTO {
   bb_nao_acessa_dias: number;
   bb_acessou_pouco_minutos: number;
   bb_acessou_pouco_interacoes: number;
+  origem_ativacao_stale_hours: number;
   raw_config: unknown;
   created_at: string;
   updated_at: string;
@@ -67,6 +68,7 @@ export interface JourneySettingsPatch {
   bb_nao_acessa_dias?: number;
   bb_acessou_pouco_minutos?: number;
   bb_acessou_pouco_interacoes?: number;
+  origem_ativacao_stale_hours?: number;
 }
 
 export interface PreviewImpactResponse {

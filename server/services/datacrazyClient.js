@@ -583,6 +583,33 @@ async function setOrigemAtivacaoForCategory(leadId, category) {
   return verifyOrigemAtivacaoForCategory(leadId, category);
 }
 
+/**
+ * Limpa `origem_ativacao` no lead (PUT value=""). Usado pelo job de cleanup
+ * pra reverter o campo em leads onde a pessoa nunca respondeu — evita
+ * falsos-positivos em respostas tardias (3 meses depois etc.).
+ *
+ * @param {string} leadId
+ * @returns {Promise<{ ok: boolean, error?: string, status?: number }>}
+ */
+async function clearOrigemAtivacaoForLead(leadId) {
+  if (!ORIGEM_ATIVACAO_FIELD_ID) {
+    return {
+      ok: false,
+      error: 'DATACRAZY_ORIGEM_ATIVACAO_FIELD_ID não configurado no .env',
+    };
+  }
+  try {
+    await updateLeadAdditionalField(leadId, ORIGEM_ATIVACAO_FIELD_ID, '');
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err.message,
+      status: err.status,
+    };
+  }
+}
+
 export const datacrazyClient = {
   sendTemplateMessage,
   listTemplates,
@@ -597,6 +624,7 @@ export const datacrazyClient = {
   updateLeadAdditionalField,
   verifyOrigemAtivacaoForCategory,
   setOrigemAtivacaoForCategory,
+  clearOrigemAtivacaoForLead,
   origemAtivacaoForCategory,
   extractAdditionalFieldValue,
 };

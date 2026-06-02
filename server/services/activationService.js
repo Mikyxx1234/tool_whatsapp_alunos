@@ -912,8 +912,20 @@ export async function getActivationRoster(category, opts = {}) {
       : filtered.slice(offset);
 
   const masterKeys = pageItems.map((it) => it.master_key).filter(Boolean);
+  let staleHoursForResponses = 72;
+  if (masterKeys.length) {
+    const rosterSettings = await journeySettingsRepo.resolveForTerm(null);
+    staleHoursForResponses = Math.max(
+      1,
+      Math.floor(Number(rosterSettings?.origem_ativacao_stale_hours) || 72)
+    );
+  }
   const responsesByKey = masterKeys.length
-    ? await activationResponseRepo.findLastByMasterKeys(category, masterKeys)
+    ? await activationResponseRepo.findLastByMasterKeys(
+        category,
+        masterKeys,
+        staleHoursForResponses
+      )
     : new Map();
 
   const items = pageItems.map((it) => {

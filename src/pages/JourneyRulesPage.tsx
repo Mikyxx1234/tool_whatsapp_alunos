@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Save, RefreshCw, Info } from 'lucide-react';
+import { Save, RefreshCw, Info, Trash2, PlayCircle } from 'lucide-react';
 import { Header } from '../components/Header';
 import { Toast, type ToastVariant } from '../components/Toast';
 import {
@@ -10,6 +10,10 @@ import {
   type PreviewImpactResponse,
 } from '../services/journeySettingsApi';
 import { academicTermApi, type AcademicTermDTO } from '../services/academicTermApi';
+import {
+  maintenanceApi,
+  type CleanStaleOrigemAtivacaoResponse,
+} from '../services/maintenanceApi';
 
 interface ToastState {
   message: string;
@@ -42,6 +46,29 @@ export default function JourneyRulesPage() {
   });
   const showToast = (message: string, variant: ToastVariant = 'success') =>
     setToast({ message, variant, visible: true });
+
+  const [cleanupRunning, setCleanupRunning] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<CleanStaleOrigemAtivacaoResponse | null>(null);
+
+  const runCleanup = useCallback(
+    async (dryRun: boolean) => {
+      setCleanupRunning(true);
+      try {
+        const r = await maintenanceApi.cleanStaleOrigemAtivacao({ dryRun });
+        setCleanupResult(r);
+        const verb = dryRun ? 'Simulação' : 'Limpeza';
+        const detail = dryRun
+          ? `${r.scanned} lead(s) seria(m) limpos.`
+          : `${r.cleaned} limpos, ${r.failed} falhas (de ${r.scanned} encontrados).`;
+        showToast(`${verb} concluída: ${detail}`, r.failed > 0 ? 'error' : 'success');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Erro no cleanup', 'error');
+      } finally {
+        setCleanupRunning(false);
+      }
+    },
+    []
+  );
 
   const fetchTerms = useCallback(async () => {
     try {
@@ -96,6 +123,8 @@ export default function JourneyRulesPage() {
       bb_nao_acessa_dias: draft.bb_nao_acessa_dias ?? base.bb_nao_acessa_dias ?? 14,
       bb_acessou_pouco_minutos: draft.bb_acessou_pouco_minutos ?? base.bb_acessou_pouco_minutos ?? 60,
       bb_acessou_pouco_interacoes: draft.bb_acessou_pouco_interacoes ?? base.bb_acessou_pouco_interacoes ?? 10,
+      origem_ativacao_stale_hours:
+        draft.origem_ativacao_stale_hours ?? base.origem_ativacao_stale_hours ?? 72,
     };
   }, [draft, settings]);
 
@@ -552,6 +581,134 @@ export default function JourneyRulesPage() {
                       Dias úteis ampliam a janela efetiva em fins de semana e feriados.
                     </p>
                   </div>
+                </div>
+              </Card>
+            )}
+
+            {scope === 'GLOBAL' && (
+              <Card title="Limpeza de origem_ativacao (CRM)">
+                <div className="text-xs text-gray-600 leading-relaxed">
+                  Após este intervalo desde o último disparo, o campo{' '}
+                  <code className="bg-gray-100 px-1 rounded">origem_ativacao</code> do lead é
+                  limpo no CRM DataCrazy (PUT value="") e respostas que chegarem além desta
+                  janela <strong>são ignoradas</strong> em painéis (taxa de resposta, badges do
+                  roster). Auditoria em{' '}
+                  <code className="bg-gray-100 px-1 rounded">activation_responses</code> é
+                  preservada — só não conta nas métricas.
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">
+                      Janela "stale" (horas)
+                    </p>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8760}
+                      value={effective.origem_ativacao_stale_hours}
+                      onChange={(e) =>
+                        handleChange(
+                          'origem_ativacao_stale_hours',
+                          Math.max(1, Math.min(8760, Number(e.target.value) || 72))
+                        )
+                      }
+                      className="input"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Default 72h (3 dias). Range: 1h a 8760h (1 ano).
+                    </p>
+                  </div>
+                  <div className="text-xs text-gray-500 self-end">
+                    <p>
+                      <strong>Cron interno:</strong> a app roda o cleanup automaticamente a
+                      cada 24h.
+                    </p>
+                    <p className="mt-1">
+                      <strong>Manual:</strong>{' '}
+                      <code className="bg-gray-100 px-1 rounded">
+                        POST /api/maintenance/clean-stale-origem-ativacao
+                      </code>{' '}
+                      — agendável também via n8n Schedule Trigger.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-100 pt-4 mt-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={cleanupRunning}
+                      onClick={() => runCleanup(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Conta quantos leads seriam limpos sem chamar o CRM"
+                    >
+                      <PlayCircle className="w-4 h-4" />
+                      Simular (dry-run)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cleanupRunning}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Limpar agora todos os leads com origem_ativacao SET há mais de ${effective.origem_ativacao_stale_hours}h?\n\nA app respeita o limite do CRM DataCrazy.`
+                          )
+                        ) {
+                          runCleanup(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-rose-600 border border-rose-600 rounded-lg hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Chama o CRM e limpa o campo de todos os leads stale"
+                    >
+                      {cleanupRunning ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                      {cleanupRunning ? 'Limpando…' : 'Limpar agora'}
+                    </button>
+                  </div>
+
+                  {cleanupResult && (
+                    <div
+                      className={`rounded-lg border p-3 text-xs space-y-1 ${
+                        cleanupResult.failed > 0
+                          ? 'bg-rose-50 border-rose-200 text-rose-900'
+                          : cleanupResult.dry_run
+                          ? 'bg-sky-50 border-sky-200 text-sky-900'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      }`}
+                    >
+                      <p className="font-medium">
+                        {cleanupResult.dry_run ? 'Simulação' : 'Limpeza'} —{' '}
+                        {new Date(cleanupResult.ran_at).toLocaleString('pt-BR')}
+                      </p>
+                      <p className="tabular-nums">
+                        <strong>Encontrados:</strong> {cleanupResult.scanned} ·{' '}
+                        <strong>Limpos:</strong> {cleanupResult.cleaned} ·{' '}
+                        <strong>Falhas:</strong> {cleanupResult.failed}
+                      </p>
+                      <p className="opacity-75">
+                        Janela: {cleanupResult.stale_window_hours}h · Taxa CRM:{' '}
+                        {cleanupResult.crm_rate_per_second}/s
+                      </p>
+                      {cleanupResult.errors.length > 0 && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer font-medium">
+                            Ver {cleanupResult.errors.length} erro(s)
+                          </summary>
+                          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                            {cleanupResult.errors.slice(0, 10).map((e, i) => (
+                              <li key={i} className="font-mono">
+                                <span className="opacity-60">{e.lead_id.slice(0, 8)}…</span>{' '}
+                                {e.error}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  )}
                 </div>
               </Card>
             )}

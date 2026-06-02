@@ -5,6 +5,58 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Limpeza proativa de `origem_ativacao` stale + filtro defensivo de respostas
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.
+- **Problema:** O handshake n8n (decisão 01/06) só limpa `origem_ativacao` no CRM se a pessoa **responder**. Quem nunca responde fica com o campo preenchido pra sempre — e qualquer mensagem futura (3 meses, 6 meses depois) dispara o webhook e vira falso-positivo em `activation_responses`.
+- **Decisão (tripé):**
+  1. **Cleanup ativo** — job que limpa leads com `origem_ativacao` SET há mais de N horas (default 72h, configurável em `/journey-rules`). Lê de `activation_origem_ativacao_log` os SETs sem CLEAR posterior + `created_at < now() - interval Nh`. Pra cada, PUT `value=""` no CRM e registra um CLEAR no log (auditoria + idempotência).
+  2. **2 caminhos de execução do cleanup:**
+     - **Endpoint `POST /api/maintenance/clean-stale-origem-ativacao`** (protegido por `requireApiKey`) — agendável via n8n Schedule Trigger.
+     - **Cron interno** — `setInterval` no boot do server (a cada 24h). Backup defensivo caso o n8n caia.
+  3. **Filtro defensivo na leitura de respostas** — toda query que conta/exibe respostas faz `INNER JOIN activation_dispatch_events` exigindo um `sent` para a mesma `master_key`/`category` nas últimas N horas antes do `received_at`. Mesma N do cleanup (vem de `journey_settings.origem_ativacao_stale_hours`). Respostas "órfãs" continuam no DB (auditoria) mas não contam em painel de Conversão nem no `ResponseBadge` do roster.
+- **Config:** novo campo `origem_ativacao_stale_hours integer default 72 check (between 1 and 8760)` em `journey_settings` (scope GLOBAL), editável em `/journey-rules` em um card novo.
+- **Onde:**
+  - Migration `022_origem_ativacao_settings.sql` (campo novo).
+  - `server/repositories/journeySettingsRepository.js` (FIELDS + ALLOWED).
+  - `server/repositories/activationOrigemRepository.js` — nova função `listStaleSetEntries(hours)`.
+  - `server/services/activationOrigemCleanupService.js` (NOVO) — orquestra cleanup, retorna `{ scanned, cleaned, failed, errors }`.
+  - `server/services/datacrazyClient.js` — função `clearOrigemAtivacaoForLead(leadId)` (PUT value=""), se ainda não existir.
+  - `server/routes/maintenance.js` (NOVO) — endpoint + `requireApiKey`.
+  - `server/index.js` — registra rota + `setInterval(cleanupService.run, 24h)` no boot.
+  - `server/repositories/activationResponseRepository.js` — modifica `findLastByMasterKeys` com JOIN/filtro de dispatch recente.
+  - `server/services/activationConversionService.js` — aplica filtro em todas as métricas (KPIs, by_category, top_buttons, recent_responses).
+  - `src/services/journeySettingsApi.ts` — campo novo.
+  - `src/pages/JourneyRulesPage.tsx` — card "Limpeza de origem_ativacao (CRM)" com input numérico.
+- **Default seguro:** 72h cobre janela CAA (48h) + folga; categorias não-CAA têm sobra confortável. Cron 24h evita explosão de PUTs no CRM.
+
+#### Alternativas descartadas
+
+- **Limpar a tabela `activation_responses` (deletar registros stale):** descartado. Os registros são auditoria. Filtro em query é reversível e não destrói dado.
+- **Webhook na app pra interceptar e validar antes de gravar:** quebra a decisão arquitetural de 22/05 (n8n grava direto, app só lê). Cleanup ativo + filtro defensivo resolve sem essa migração.
+- **Cleanup só via endpoint (sem cron interno):** se n8n cair, fica acumulando. Cron interno é backup barato.
+- **Janela diferente pra cleanup e pra filtro:** confunde — se limpamos em 72h, responder após 72h é stale por definição. Usar mesma config.
+- **Janela hard-coded no env (sem UI):** decisão 29/05 abriu precedente — config de operação vai pra `journey_settings` + `/journey-rules` (escala melhor que env).
+- **Categoria nova `aguardando-inicio` no CHECK do log de origem:** fora de escopo desta iteração; bug latente conhecido (CHECK na tabela `activation_origem_ativacao_log` não inclui `aguardando-inicio`). Anotar pra próxima migration.
+
+#### Extensão (02/06/2026) — Botão manual + rate-limit do CRM
+
+- **Botão na UI:** card "Limpeza de origem_ativacao" em `/journey-rules` ganhou 2 botões:
+  - **Simular (dry-run)** → `POST /api/maintenance/clean-stale-origem-ativacao?dry_run=true` (não chama CRM, só conta o que seria limpo).
+  - **Limpar agora** → mesmo endpoint sem `dry_run`. Confirm dialog antes de disparar.
+  - Painel de resultado mostra: encontrados, limpos, falhas, janela, taxa CRM, ran_at + lista expansível dos erros.
+- **Rate-limit CRM:** `activationOrigemCleanupService.js` ganhou um `createRateLimiter` singleton (default 10/s, configurável via `DATACRAZY_CRM_RATE_PER_SECOND`). `await datacrazyCrmLimiter.acquire()` antes de cada PUT pro CRM DataCrazy. Default conservador — DataCrazy não publica limite oficial; 10/s evita rajada e mantém cleanup tolerável (1.000 leads stale → ~100s).
+- **Onde:**
+  - `server/services/activationOrigemCleanupService.js` — `datacrazyCrmLimiter` + `acquire()` antes do PUT + `crm_rate_per_second` no retorno.
+  - `src/services/maintenanceApi.ts` (NOVO) — client TS com `apiAuthHeaders()`.
+  - `src/pages/JourneyRulesPage.tsx` — botões + painel de resultado.
+
+##### Alternativas descartadas (extensão)
+
+- **Sem confirm dialog:** botão escarlate sem confirmação é arriscado — Limpeza apaga centenas de campos no CRM real.
+- **Rate-limit no `datacrazyClient` (global):** afetaria também `searchLeads` / `paginateAll` que já têm seus próprios pacings (`pageDelay`). Limitar só na cleanup mantém o resto inalterado.
+- **Botão na página `/manutenção` separada:** página dedicada de manutenção não existe ainda; pra 1 botão, criar uma página é overhead. Colocar no card já existente é coeso.
+
 ### 02/06/2026 — Rate-limit Meta WhatsApp (cap rígido por segundo)
 
 - **Modelo usado:** Opus 4.7 (principal)
