@@ -250,11 +250,27 @@ Body: {"value": ""}
 - **Endpoint da app `POST /api/activation/responses` fazer o PUT de limpeza:** acopla a app ao fluxo de respostas e duplica responsabilidade — o n8n já é o ponto natural pra isso.
 - **Marcar o campo `origem_ativacao` como "exposto via API" no CRM:** seria mais limpo, mas requer config no DataCrazy que pode não estar disponível na conta. A solução com PUT-trust funciona sem depender disso.
 
+### 02/06/2026 — Direct search threshold 25→100 + paralelização
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** Selecionar **29 pessoas** na fila CAA caía no scan paginado completo do CRM (29 > 25). Resultado: minutos pra varrer 30k leads em 300+ páginas com 400ms entre páginas.
+- **Decisão:**
+ - Threshold default sobe de **25 → 100** (`DATACRAZY_DIRECT_SEARCH_THRESHOLD`). Cobre seleções típicas do roster sem trade-off (até 100 GETs diretos ainda é mais rápido que paginar o CRM inteiro).
+ - Buscas diretas agora rodam em **batches paralelos de 5** (configurável via `DATACRAZY_DIRECT_SEARCH_CONCURRENCY`, default 5, max 20). Antes era 1 por vez (sequencial).
+ - 29 leads sai de minutos → ~6s.
+- **Onde:** `server/services/datacrazyClient.js#buildLeadsLookupIndex` (bloco do fast path).
+
+#### Alternativas descartadas
+
+- **Threshold ainda maior (ex.: 500):** acima de ~100 alvos, paginar o CRM inteiro (com cache `sharedLeadsIndex` TTL 20min) já compensa, porque a 1ª chamada paga o custo único e as subsequentes reusam.
+- **Concorrência mais alta (ex.: 20):** sem dados sobre rate limit oficial do DataCrazy, 5 é conservador. Bumpável via env se precisar.
+- **Cache de leads por master_key:** já existe via `sharedLeadsIndex` (índice global de phone/email com TTL 20min).
+
 ### 01/06/2026 — Busca direta no DataCrazy para lotes pequenos
 
 - **Modelo usado:** Opus 4.7 (principal)
 - **Problema:** Disparar 1 pessoa demorava ~4min porque `buildLeadsLookupIndex` varria todas as páginas de leads (`take=100&skip=N`) com `pageDelay=400ms`, mesmo que o alvo fosse só 1 telefone.
-- **Decisão:** Quando o lote tem **<= 25 alvos novos** (configurável via `DATACRAZY_DIRECT_SEARCH_THRESHOLD`), pular a paginação e fazer `GET /api/v1/leads?search=<telefone_ou_email>&take=5` por alvo, alimentando o mesmo `byPhone/byEmail` que o caminho paginado popula. Lotes maiores continuam no scan paginado (mais eficiente em volume).
+- **Decisão:** Quando o lote tem **<= 25 alvos novos** (configurável via `DATACRAZY_DIRECT_SEARCH_THRESHOLD`), pular a paginação e fazer `GET /api/v1/leads?search=<telefone_ou_email>&take=5` por alvo, alimentando o mesmo `byPhone/byEmail` que o caminho paginado popula. Lotes maiores continuam no scan paginado (mais eficiente em volume). **Atualização 02/06/2026:** threshold elevado para 100 + paralelização de 5 — ver entrada acima.
 - **Onde:** `server/services/datacrazyClient.js` → `buildLeadsLookupIndex`. Retorno ganhou flags `direct_search` e `direct_queries` para diagnóstico.
 - **Efeito:** Disparo individual (seleção de 1 aluno) deve cair de ~4min para alguns segundos (1 request à API + latência).
 - **Default seguro:** Se a busca direta falhar (`searchLeads` lançar), loga warning e continua com o que tiver. Cache compartilhado (`sharedLeadsIndex`, TTL 20min) é alimentado igual.
