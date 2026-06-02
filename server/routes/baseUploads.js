@@ -5,6 +5,7 @@ import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import { invalidateComparisonCache } from '../services/baseComparisonService.js';
 import { invalidateOverviewCache } from '../services/reportOverviewCache.js';
 import { invalidateActivationListCache } from '../services/activationService.js';
+import { bustCicloCache } from '../services/cicloResolverService.js';
 import {
   csvTextToRowObjectsFast,
   xlsxBufferToRowObjects,
@@ -22,6 +23,7 @@ function afterBaseUpload(category) {
   invalidateComparisonCache();
   invalidateOverviewCache();
   if (category === 'matriculados') {
+    bustCicloCache();
     invalidateActivationListCache();
   } else {
     invalidateActivationListCache(category);

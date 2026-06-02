@@ -4,6 +4,7 @@ import {
   reportApi,
   type CaaStatus,
   type CaaSummaryResponse,
+  type CaaSummaryTransitions,
   type CaaTransitionItem,
   type CaaFunnelCounts,
 } from '../services/reportApi';
@@ -51,14 +52,35 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [funnelCounts, setFunnelCounts] = useState<CaaFunnelCounts | null>(null);
+  const [cicloFilter, setCicloFilter] = useState('all');
+
+  const availableCiclos = summary?.available_ciclos ?? [];
+  const summaryByCiclo = summary?.summary_by_ciclo ?? {};
+
+  const pickTransition = (key: keyof CaaSummaryTransitions): number => {
+    if (cicloFilter !== 'all') {
+      const v = summaryByCiclo[cicloFilter]?.transitions?.[key];
+      return Number(v ?? 0);
+    }
+    return Number(summary?.transitions?.[key] ?? 0);
+  };
+
+  const buildBreakdown = (key: keyof CaaSummaryTransitions) => {
+    if (cicloFilter !== 'all' || availableCiclos.length <= 1) return undefined;
+    if (Object.keys(summaryByCiclo).length === 0) return undefined;
+    return availableCiclos.map((c) => ({
+      ciclo: c,
+      value: Number(summaryByCiclo[c]?.transitions?.[key] ?? 0),
+    }));
+  };
 
   const load = useCallback(
     async (currentTab: TabId) => {
       setLoading(true);
       setError(null);
       try {
-        const scope = useHoursScope ? 'hours' : 'last_snapshot';
-        const args = useHoursScope ? { scope, hours } : { scope } as const;
+        const scope: 'hours' | 'last_snapshot' = useHoursScope ? 'hours' : 'last_snapshot';
+        const args = useHoursScope ? { scope, hours } : { scope };
         const [s, t] = await Promise.all([
           reportApi.caaSummary(args),
           reportApi.caaTransitions({
@@ -129,15 +151,35 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
             )}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void load(tab)}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Atualizar
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          {availableCiclos.length > 1 && (
+            <div className="flex items-center gap-2">
+              <label htmlFor="ciclo-filter-caa-daily" className="text-xs text-gray-600 shrink-0">
+                Ciclo:
+              </label>
+              <select
+                id="ciclo-filter-caa-daily"
+                value={cicloFilter}
+                onChange={(e) => setCicloFilter(e.target.value)}
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-whatsapp-400"
+              >
+                <option value="all">Todos</option>
+                {availableCiclos.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => void load(tab)}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Atualizar
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -151,33 +193,37 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
           icon={<Sparkles className="w-4 h-4" />}
           tone="amber"
           label="Pendentes na fila"
-          value={summary?.transitions.novos_pendentes ?? 0}
+          value={pickTransition('novos_pendentes')}
           hint={
-            (summary?.transitions.novos_pendentes_no_diff ?? 0) > 0
+            (summary?.transitions.novos_pendentes_no_diff ?? 0) > 0 && cicloFilter === 'all'
               ? `${summary!.transitions.novos_pendentes_no_diff} novo(s) neste export · restante já estava pendente`
               : 'pendentes no último export — aguardando ativação'
           }
+          cicloBreakdown={buildBreakdown('novos_pendentes')}
         />
         <KpiCard
           icon={<AlertTriangle className="w-4 h-4" />}
           tone="rose"
           label="Perdemos — aluno desistiu"
-          value={summary?.transitions.perdidos_canceled ?? 0}
+          value={pickTransition('perdidos_canceled')}
           hint="estavam pendentes e foram canceladas pelo aluno"
+          cicloBreakdown={buildBreakdown('perdidos_canceled')}
         />
         <KpiCard
           icon={<ArrowUpRight className="w-4 h-4" />}
           tone="rose"
           label="Perdemos — CAA confirmou"
-          value={summary?.transitions.perdidos_confirmed ?? 0}
+          value={pickTransition('perdidos_confirmed')}
           hint="CAA deferiu o cancelamento"
+          cicloBreakdown={buildBreakdown('perdidos_confirmed')}
         />
         <KpiCard
           icon={<ShieldCheck className="w-4 h-4" />}
           tone="emerald"
           label="Revertidos (vitória)"
-          value={summary?.transitions.revertidos ?? 0}
+          value={pickTransition('revertidos')}
           hint="CAA indeferiu o cancelamento — aluno fica"
+          cicloBreakdown={buildBreakdown('revertidos')}
         />
       </div>
 
@@ -312,12 +358,14 @@ function KpiCard({
   label,
   value,
   hint,
+  cicloBreakdown,
 }: {
   icon: React.ReactNode;
   tone: 'amber' | 'rose' | 'emerald';
   label: string;
   value: number;
   hint: string;
+  cicloBreakdown?: Array<{ ciclo: string; value: number }>;
 }) {
   const map = {
     amber: 'border-amber-200 bg-amber-50 text-amber-800',
@@ -332,6 +380,18 @@ function KpiCard({
       </div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value.toLocaleString('pt-BR')}</div>
       <div className="text-[11px] opacity-80 mt-0.5">{hint}</div>
+      {cicloBreakdown && cicloBreakdown.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1 text-[11px]">
+          {cicloBreakdown.map(({ ciclo, value: v }) => (
+            <span
+              key={ciclo}
+              className="px-1.5 py-0.5 rounded bg-white/60 border border-current/20 opacity-90"
+            >
+              {ciclo}: <strong>{v.toLocaleString('pt-BR')}</strong>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

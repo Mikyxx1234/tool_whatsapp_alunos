@@ -123,6 +123,7 @@ export function CaaFunnelPanel() {
   const [estadoFilter, setEstadoFilter] = useState<CaaFunnelEstado | 'todos'>('todos');
   const [soEngajados, setSoEngajados] = useState(false);
   const [soConflito, setSoConflito] = useState(false);
+  const [cicloFilter, setCicloFilter] = useState('all');
   const [page, setPage] = useState(0);
 
   const LIMIT = 50;
@@ -132,6 +133,7 @@ export function CaaFunnelPanel() {
       estado: CaaFunnelEstado | 'todos',
       engajado: boolean,
       conflito: boolean,
+      ciclo: string,
       offset: number
     ) => {
       setLoading(true);
@@ -141,6 +143,7 @@ export function CaaFunnelPanel() {
           estado: estado === 'todos' ? undefined : estado,
           engajado: engajado ? true : undefined,
           conflito: conflito ? true : undefined,
+          ciclo: ciclo !== 'all' ? ciclo : undefined,
           limit: LIMIT,
           offset,
         });
@@ -155,8 +158,8 @@ export function CaaFunnelPanel() {
   );
 
   useEffect(() => {
-    void load(estadoFilter, soEngajados, soConflito, page * LIMIT);
-  }, [load, estadoFilter, soEngajados, soConflito, page]);
+    void load(estadoFilter, soEngajados, soConflito, cicloFilter, page * LIMIT);
+  }, [load, estadoFilter, soEngajados, soConflito, cicloFilter, page]);
 
   const handleFilterChange = (
     novoEstado?: CaaFunnelEstado | 'todos',
@@ -180,6 +183,18 @@ export function CaaFunnelPanel() {
     total_no_funil: 0,
     engajados: 0,
     com_conflito: 0,
+  };
+
+  const availableCiclos = data?.available_ciclos ?? [];
+  const countsByCiclo = data?.counts_by_ciclo ?? {};
+
+  const buildCicloBreakdown = (key: keyof CaaFunnelCounts) => {
+    if (cicloFilter !== 'all' || availableCiclos.length <= 1) return undefined;
+    if (Object.keys(countsByCiclo).length === 0) return undefined;
+    return availableCiclos.map((c) => ({
+      ciclo: c,
+      value: Number(countsByCiclo[c]?.[key] ?? 0),
+    }));
   };
 
   const totalPages = data ? Math.ceil(data.total_items / LIMIT) : 0;
@@ -212,15 +227,38 @@ export function CaaFunnelPanel() {
             )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void load(estadoFilter, soEngajados, soConflito, page * LIMIT)}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Atualizar
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          {availableCiclos.length > 1 && (
+            <div className="flex items-center gap-2">
+              <label htmlFor="ciclo-filter-caa-funnel" className="text-xs text-gray-600 shrink-0">
+                Ciclo:
+              </label>
+              <select
+                id="ciclo-filter-caa-funnel"
+                value={cicloFilter}
+                onChange={(e) => {
+                  setCicloFilter(e.target.value);
+                  setPage(0);
+                }}
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              >
+                <option value="all">Todos</option>
+                {availableCiclos.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => void load(estadoFilter, soEngajados, soConflito, cicloFilter, page * LIMIT)}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Atualizar
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -234,6 +272,7 @@ export function CaaFunnelPanel() {
         {ESTADOS_FUNIL.map((estado) => {
           const cfg = ESTADO_CONFIG[estado];
           const count = counts[estado] ?? 0;
+          const breakdown = buildCicloBreakdown(estado);
           return (
             <button
               key={estado}
@@ -245,6 +284,18 @@ export function CaaFunnelPanel() {
             >
               <div className="text-[11px] font-medium leading-tight">{cfg.label}</div>
               <div className="mt-1 text-2xl font-semibold tabular-nums">{count.toLocaleString('pt-BR')}</div>
+              {breakdown && breakdown.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1 text-[10px]">
+                  {breakdown.map(({ ciclo, value }) => (
+                    <span
+                      key={ciclo}
+                      className="px-1 py-0.5 rounded bg-white/60 border border-current/30 opacity-90"
+                    >
+                      {ciclo}: <strong>{value.toLocaleString('pt-BR')}</strong>
+                    </span>
+                  ))}
+                </div>
+              )}
             </button>
           );
         })}

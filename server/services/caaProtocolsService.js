@@ -169,7 +169,12 @@ function isNovosPendentesTab(opts = {}) {
 
 /**
  * KPIs e lista D+1: compara último export com o anterior (linhas brutas dos snapshots).
- * @param {{ toStatus?: string[], limit?: number, requireCurrentStatus?: string }} [opts]
+ * @param {{
+ *   toStatus?: string[],
+ *   limit?: number,
+ *   requireCurrentStatus?: string,
+ *   cicloMap?: Map<string, string>
+ * }} [opts]
  */
 export async function getSnapshotPairDelta(opts = {}) {
   const snaps = await listRecentSnapshots(2);
@@ -223,6 +228,31 @@ export async function getSnapshotPairDelta(opts = {}) {
     previous.row_count === latest.row_count &&
     previous.file_name === latest.file_name;
 
+  // summary_by_ciclo — only computed when cicloMap is provided
+  let summary_by_ciclo = undefined;
+  let summary_available_ciclos = undefined;
+  if (opts.cicloMap) {
+    const cm = opts.cicloMap;
+    const cicloSet = new Set();
+    for (const [, c] of cm) if (c) cicloSet.add(c);
+    const ciclos = [...cicloSet].sort((a, b) => b.localeCompare(a));
+    summary_available_ciclos = ciclos;
+    summary_by_ciclo = {};
+    for (const ciclo of ciclos) {
+      const filteredDiff = allDiff.filter((t) => {
+        const rgm = t.rgm ? String(t.rgm) : null;
+        return rgm && cm.get(rgm) === ciclo;
+      });
+      const filteredOpen = openRows.filter((p) => {
+        const rgm = p.rgm ? String(p.rgm) : null;
+        return rgm && cm.get(rgm) === ciclo;
+      });
+      const cicloStats = aggregateTransitionStats(filteredDiff);
+      cicloStats.novos_pendentes = filteredOpen.length;
+      summary_by_ciclo[ciclo] = { transitions: cicloStats };
+    }
+  }
+
   return {
     latest,
     previous,
@@ -232,6 +262,8 @@ export async function getSnapshotPairDelta(opts = {}) {
     used_stored_fallback: false,
     identical_reimport,
     open_in_latest: openRows.length,
+    summary_by_ciclo,
+    summary_available_ciclos,
   };
 }
 

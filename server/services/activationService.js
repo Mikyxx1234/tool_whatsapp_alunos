@@ -886,6 +886,16 @@ export async function getActivationRoster(category, opts = {}) {
   }
   const available_ciclos = [...cicloSet].sort((a, b) => b.localeCompare(a));
 
+  // counts_by_ciclo: total por ciclo antes de qualquer filtro de stage/subgrupo/ciclo.
+  /** @type {Record<string, number>} */
+  const counts_by_ciclo = {};
+  if (available_ciclos.length > 1) {
+    for (const r of rows) {
+      const c = normalizeCiclo(r.ciclo || '');
+      if (c) counts_by_ciclo[c] = (counts_by_ciclo[c] || 0) + 1;
+    }
+  }
+
   // bb_subgrupo_counts deve refletir o total antes do filtro de subgrupo.
   const bbSubgrupoCountsUnfiltered = meta?.bb_subgrupo_counts ?? undefined;
 
@@ -954,6 +964,7 @@ export async function getActivationRoster(category, opts = {}) {
     bb_urgency_counts: meta?.bb_urgency_counts,
     bb_subgrupo_counts: bbSubgrupoCountsUnfiltered,
     available_ciclos,
+    counts_by_ciclo,
   };
 }
 

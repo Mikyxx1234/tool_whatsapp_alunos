@@ -209,6 +209,7 @@ export function ActivationRosterTable({
   const [bbSubgrupo, setBbSubgrupo] = useState<BbSubgrupo | 'all'>('all');
   const [cicloFilter, setCicloFilter] = useState('');
   const [availableCiclos, setAvailableCiclos] = useState<string[]>([]);
+  const [countsByCiclo, setCountsByCiclo] = useState<Record<string, number>>({});
   const [totalUnfiltered, setTotalUnfiltered] = useState<number | null>(null);
   const [slowLoad, setSlowLoad] = useState(false);
   const [skippedLimbo, setSkippedLimbo] = useState(0);
@@ -240,6 +241,7 @@ export function ActivationRosterTable({
         setUrgencyCounts(r.bb_urgency_counts ?? null);
         setSubgrupoCounts(r.bb_subgrupo_counts ?? null);
         setAvailableCiclos(r.available_ciclos ?? []);
+        setCountsByCiclo(r.counts_by_ciclo ?? {});
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erro ao carregar fila');
         setItems([]);
@@ -357,7 +359,18 @@ export function ActivationRosterTable({
         </div>
       )}
       {availableCiclos.length > 1 && (
-        <div className="px-4 pt-2 pb-1">
+        <div className="px-4 pt-2 pb-1 space-y-1">
+          {Object.keys(countsByCiclo).length > 1 && (
+            <div className="text-[11px] text-gray-600 flex flex-wrap items-center gap-1">
+              <span className="font-medium">Por ciclo:</span>
+              {availableCiclos.map((c, i) => (
+                <span key={c} className="tabular-nums">
+                  {c}: <strong className="text-gray-800">{(countsByCiclo[c] ?? 0).toLocaleString('pt-BR')}</strong>
+                  {i < availableCiclos.length - 1 && <span className="mx-1 text-gray-400">·</span>}
+                </span>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[11px] font-medium text-gray-600 mr-1">Ciclo:</span>
             <button

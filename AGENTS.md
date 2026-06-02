@@ -5,6 +5,48 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Breakdown por ciclo em Conversão, CAA Daily, CAA Funil e Disparador
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu + implementou diretamente (Executor foi interrompido pelo usuário no meio da tarefa; trabalho parcial estava em commits intermediários que o Opus auditou e completou).
+- **Problema:** A separação por ciclo existia apenas em `MatriculadosComparisonPanel` (`/reports` card matriculados). Demais relatórios (Conversão, CAA Daily, CAA Funil) e o Disparador não diferenciavam 2026/1 de 2026/2 — relevante porque Graduação e Pós viram ciclo em datas distintas (ex.: Pós ainda em 2026/1 enquanto Graduação já em 2026/2). Contagens agregadas escondiam essa diferença.
+- **Decisão:**
+  1. **Helper compartilhado** `server/services/cicloResolverService.js` com cache TTL 5min:
+     - `getRgmToCicloMap(): Promise<Map<rgm, ciclo>>` — indexa o snapshot mais recente de matriculados.
+     - `getAvailableCiclos(): Promise<string[]>` — lista ordenada desc lexicográfico.
+     - `rgmFromMasterKey(masterKey)` e `masterKeysForCiclo(map, ciclo)` — helpers de transformação.
+     - `bustCicloCache()` chamado em `routes/baseUploads.js` ao subir snapshot de matriculados.
+  2. **Endpoints aceitam `?ciclo=<valor>` e sempre retornam `available_ciclos` + dados por ciclo:**
+     - `/api/reports/activation-conversion` → `kpis_by_ciclo: Record<ciclo, kpis>` (sempre presente quando há >1 ciclo). Filtro específico: aplica `master_key = ANY(...)` derivado do `cicloMap`.
+     - `/api/reports/caa/summary` → `summary_by_ciclo: Record<ciclo, { transitions }>`. Filtra in-memory cruzando `caa_protocols.rgm` com map.
+     - `/api/reports/caa/funnel` → `counts_by_ciclo: Record<ciclo, counts>`. Mesma estratégia in-memory.
+     - `/api/activation/list/:category` → `counts_by_ciclo: Record<ciclo, number>` — calculado sobre `rows` cacheado, **antes** dos filtros de stage/subgrupo/ciclo. Garante que contagens visíveis no header não se alteram com filtros locais.
+  3. **UI segue padrão `MatriculadosComparisonPanel`:**
+     - Dropdown `<select>` "Ciclo: Todos / 2026/2 / 2026/1" no header de cada painel — só aparece quando `available_ciclos.length > 1`.
+     - Modo "Todos": número principal + mini-badges abaixo com breakdown por ciclo.
+     - Modo "ciclo específico": números/listas recalculados pra esse ciclo, badges escondidos.
+     - **Disparador (roster):** linha de texto "Por ciclo: 2026/2: X · 2026/1: Y" **sempre visível** acima dos chips de filtro (mostra total real independente do filtro ativo).
+- **Onde (arquivos modificados):**
+  - Backend: `cicloResolverService.js` (NOVO), `activationConversionService.js`, `caaProtocolsService.js`, `caaFunnelService.js`, `activationService.js`, `routes/reports.js`, `routes/baseUploads.js`.
+  - Frontend: `reportApi.ts`, `activationApi.ts` (types), `ActivationConversionPage.tsx` (KpiCard com `cicloBreakdown`), `CaaDailyPanel.tsx` (helpers `pickTransition`/`buildBreakdown` reativos ao filtro), `CaaFunnelPanel.tsx` (dropdown + badges nos 6 estado cards), `ActivationRosterTable.tsx` (estado `countsByCiclo` + linha "Por ciclo:").
+- **Default seguro:** Sem snapshot matriculados → cache vazio, `available_ciclos = []`, dropdown não aparece, comportamento idêntico ao anterior. Sem ciclo válido para um RGM → não conta em nenhum breakdown (mas continua na agregada).
+- **Escopo conhecido (não implementado nesta iteração):** No CAA Daily, o filtro de ciclo afeta apenas os 4 KPIs do topo. A tabela de transições e os chips "Estado atual da base CAA" continuam agregados (backend não recebe filtro de ciclo nesses fluxos). Iterar quando houver demanda real.
+
+#### Estratégia in-memory vs JOIN no banco
+
+Optou-se por **filtragem in-memory** (cruzando `master_key/rgm` com o `cicloMap` carregado uma vez por query) em vez de JOIN com tabela temporária:
+- ✅ Cache compartilhado entre as 3 queries de um mesmo painel (TTL 5min cobre a janela típica de navegação).
+- ✅ Não precisa criar nem manter tabela `rgm_ciclo` no banco — fonte continua sendo o JSON do snapshot.
+- ✅ Filtragem por ciclo via `master_key = ANY($N)` é eficiente em PostgreSQL com índice em `master_key`.
+- ❌ Carrega map completo em memória (28k RGMs × ~10 bytes = ~280KB — negligível).
+
+#### Alternativas descartadas
+
+- **Layout side-by-side com 2 colunas de cards** (proposta original do usuário): 4 KPIs × 2 ciclos = 8 cards no Conversão, 6 cards × 2 = 12 no Funil — visualmente poluído. O padrão do MatriculadosComparison (número principal + badges abaixo) entrega a mesma informação com menos ruído e o usuário já validou esse padrão na decisão de 29/05.
+- **Persistir ciclo em coluna nova de `activation_dispatch_events`:** acoplaria registros históricos ao snapshot atual de matriculados — se o ciclo de um aluno mudasse, o histórico ficaria errado. Lookup on-the-fly via snapshot vigente é mais consistente conceitualmente.
+- **JOIN com tabela temporária `rgm_ciclo`:** mais "puro" SQL mas exige sincronização extra e cleanup. Filtragem in-memory é mais simples pro volume atual (~28k RGMs).
+- **Cache de ciclo por TTL maior (ex.: 30min):** matriculados pode ser reimportado várias vezes ao dia em operação ativa; 5min equilibra performance × frescor.
+- **Cache pré-aquecido no boot:** não vale a complexidade — primeira request paga ~1s, depois fica em cache.
+
 ### 02/06/2026 — Sync de desfechos CAA via CRM (remove input manual)
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.

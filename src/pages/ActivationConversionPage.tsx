@@ -73,6 +73,7 @@ export default function ActivationConversionPage() {
   const [error, setError] = useState<string | null>(null);
   const [category, setCategory] = useState('all');
   const [periodDays, setPeriodDays] = useState(30);
+  const [cicloFilter, setCicloFilter] = useState('all');
   const [recentRows, setRecentRows] = useState<ActivationConversionRecentResponse[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -97,6 +98,7 @@ export default function ActivationConversionPage() {
         category,
         period_days: periodDays,
         offset: 0,
+        ciclo: cicloFilter !== 'all' ? cicloFilter : undefined,
       });
       setData(result);
       setRecentRows(result.recent_responses);
@@ -105,7 +107,7 @@ export default function ActivationConversionPage() {
     } finally {
       setLoading(false);
     }
-  }, [category, periodDays]);
+  }, [category, periodDays, cicloFilter]);
 
   useEffect(() => {
     void load();
@@ -119,6 +121,7 @@ export default function ActivationConversionPage() {
         category,
         period_days: periodDays,
         offset: recentRows.length,
+        ciclo: cicloFilter !== 'all' ? cicloFilter : undefined,
       });
       setRecentRows((prev) => [...prev, ...result.recent_responses]);
     } catch {
@@ -130,6 +133,9 @@ export default function ActivationConversionPage() {
 
   const selectedCatLabel =
     CATEGORY_OPTIONS.find((o) => o.value === category)?.label ?? 'Todas as bases';
+
+  const availableCiclos = data?.available_ciclos ?? [];
+  const kpisByCiclo = data?.kpis_by_ciclo ?? {};
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -212,6 +218,26 @@ export default function ActivationConversionPage() {
               </button>
             ))}
           </div>
+
+          {/* Ciclo select */}
+          {availableCiclos.length > 1 && (
+            <div className="flex items-center gap-2">
+              <label htmlFor="ciclo-filter-conversion" className="text-xs text-gray-600 shrink-0">
+                Ciclo:
+              </label>
+              <select
+                id="ciclo-filter-conversion"
+                value={cicloFilter}
+                onChange={(e) => setCicloFilter(e.target.value)}
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-whatsapp-400"
+              >
+                <option value="all">Todos</option>
+                {availableCiclos.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {error && (
@@ -229,6 +255,9 @@ export default function ActivationConversionPage() {
             value={(data?.kpis.total_dispatches ?? 0).toLocaleString('pt-BR')}
             hint={`para ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} pessoas únicas`}
             loading={loading}
+            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.total_dispatches ?? 0 }))
+              : undefined}
           />
           <KpiCard
             icon={<Users className="w-4 h-4" />}
@@ -237,6 +266,9 @@ export default function ActivationConversionPage() {
             value={(data?.kpis.unique_responders ?? 0).toLocaleString('pt-BR')}
             hint={`de ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} únicos (${fmtPct(data?.kpis.response_rate ?? 0)})`}
             loading={loading}
+            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_responders ?? 0 }))
+              : undefined}
           />
           <KpiCard
             icon={<MousePointerClick className="w-4 h-4" />}
@@ -245,6 +277,9 @@ export default function ActivationConversionPage() {
             value={(data?.kpis.unique_clickers ?? 0).toLocaleString('pt-BR')}
             hint={`de ${(data?.kpis.unique_responders ?? 0).toLocaleString('pt-BR')} que responderam`}
             loading={loading}
+            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_clickers ?? 0 }))
+              : undefined}
           />
           <KpiCard
             icon={<XCircle className="w-4 h-4" />}
@@ -253,6 +288,9 @@ export default function ActivationConversionPage() {
             value={(data?.kpis.unique_opt_outs ?? 0).toLocaleString('pt-BR')}
             hint={`${fmtPct(data?.kpis.opt_out_rate ?? 0)} do total enviado`}
             loading={loading}
+            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_opt_outs ?? 0 }))
+              : undefined}
           />
         </div>
 
@@ -441,6 +479,7 @@ function KpiCard({
   value,
   hint,
   loading,
+  cicloBreakdown,
 }: {
   icon: React.ReactNode;
   tone: 'sky' | 'emerald' | 'blue' | 'rose';
@@ -448,6 +487,7 @@ function KpiCard({
   value: string;
   hint: string;
   loading: boolean;
+  cicloBreakdown?: Array<{ ciclo: string; value: number }>;
 }) {
   const toneMap: Record<typeof tone, string> = {
     sky: 'border-sky-200 bg-sky-50 text-sky-800',
@@ -468,6 +508,15 @@ function KpiCard({
       >
         {value}
       </div>
+      {cicloBreakdown && cicloBreakdown.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-gray-500">
+          {cicloBreakdown.map(({ ciclo, value: v }) => (
+            <span key={ciclo} className="px-1.5 py-0.5 rounded bg-gray-100 border border-gray-200">
+              {ciclo}: <strong className="text-gray-700">{v.toLocaleString('pt-BR')}</strong>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="text-[11px] opacity-80 mt-0.5">{hint}</div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { query } from '../db/client.js';
 import { calcJanela } from '../utils/caaWindow.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
+import { getRgmToCicloMap, getAvailableCiclos } from './cicloResolverService.js';
 
 const CAP_DIARIO = 2;
 const CAP_TOTAL = 4;
@@ -33,6 +34,31 @@ function classifyEstado(p, expiresAt) {
   return 'unknown';
 }
 
+const ESTADO_KEYS = [
+  'ativavel',
+  'perdido_silencioso',
+  'revertido_manual',
+  'perdido_manual',
+  'revertido_export',
+  'perdido_export',
+  'unknown',
+];
+
+function zeroCounts() {
+  return {
+    ativavel: 0,
+    perdido_silencioso: 0,
+    revertido_manual: 0,
+    perdido_manual: 0,
+    revertido_export: 0,
+    perdido_export: 0,
+    unknown: 0,
+    total_no_funil: 0,
+    engajados: 0,
+    com_conflito: 0,
+  };
+}
+
 /**
  * Retorna o funil CAA calculado on-the-fly.
  *
@@ -41,7 +67,8 @@ function classifyEstado(p, expiresAt) {
  *   engajado?: boolean,
  *   conflito?: boolean,
  *   limit?: number,
- *   offset?: number
+ *   offset?: number,
+ *   ciclo?: string
  * }} opts
  */
 export async function getCaaFunnel(opts = {}) {
@@ -53,90 +80,93 @@ export async function getCaaFunnel(opts = {}) {
 
   const now = new Date();
 
-  // Carrega todos os protocolos com dados derivados em uma só query.
-  // Base estoque acumulado: status='open' + últimos 30 dias + desfecho manual.
-  const { rows } = await query(`
-    WITH m_proto AS (
-      SELECT DISTINCT ON (protocolo)
-        protocolo, outcome, occurred_at, consultor_nome, motivo
-      FROM activation_manual_outcomes
-      WHERE category = 'processos-caa'
-        AND protocolo IS NOT NULL
-      ORDER BY protocolo, occurred_at DESC
-    ),
-    m_rgm AS (
-      SELECT DISTINCT ON (rgm)
-        rgm, outcome, occurred_at, consultor_nome, motivo
-      FROM activation_manual_outcomes
-      WHERE category = 'processos-caa'
-        AND protocolo IS NULL
-        AND rgm IS NOT NULL
-      ORDER BY rgm, occurred_at DESC
-    ),
-    dispatches AS (
+  // Ciclo resolution (in parallel with the main query)
+  const [available_ciclos, cicloMap, { rows }] = await Promise.all([
+    getAvailableCiclos(),
+    getRgmToCicloMap(),
+    query(`
+      WITH m_proto AS (
+        SELECT DISTINCT ON (protocolo)
+          protocolo, outcome, occurred_at, consultor_nome, motivo
+        FROM activation_manual_outcomes
+        WHERE category = 'processos-caa'
+          AND protocolo IS NOT NULL
+        ORDER BY protocolo, occurred_at DESC
+      ),
+      m_rgm AS (
+        SELECT DISTINCT ON (rgm)
+          rgm, outcome, occurred_at, consultor_nome, motivo
+        FROM activation_manual_outcomes
+        WHERE category = 'processos-caa'
+          AND protocolo IS NULL
+          AND rgm IS NOT NULL
+        ORDER BY rgm, occurred_at DESC
+      ),
+      dispatches AS (
+        SELECT
+          master_key,
+          COUNT(*)::int                                                AS dispatches_total,
+          COUNT(*) FILTER (
+            WHERE (created_at AT TIME ZONE 'America/Sao_Paulo')::date
+                = (now() AT TIME ZONE 'America/Sao_Paulo')::date
+          )::int                                                       AS dispatches_today,
+          MIN(created_at)                                              AS first_dispatch_at
+        FROM activation_dispatch_events
+        WHERE category = 'processos-caa'
+        GROUP BY master_key
+      ),
+      responses AS (
+        SELECT DISTINCT ON (master_key)
+          master_key,
+          COALESCE(received_at, created_at) AS last_response_at,
+          response_kind                      AS last_response_kind
+        FROM activation_responses
+        WHERE response_kind IN ('click', 'message')
+        ORDER BY master_key, COALESCE(received_at, created_at) DESC NULLS LAST
+      ),
+      engagement AS (
+        SELECT DISTINCT master_key
+        FROM activation_responses
+        WHERE response_kind IN ('click', 'message')
+      )
       SELECT
-        master_key,
-        COUNT(*)::int                                                AS dispatches_total,
-        COUNT(*) FILTER (
-          WHERE (created_at AT TIME ZONE 'America/Sao_Paulo')::date
-              = (now() AT TIME ZONE 'America/Sao_Paulo')::date
-        )::int                                                       AS dispatches_today,
-        MIN(created_at)                                              AS first_dispatch_at
-      FROM activation_dispatch_events
-      WHERE category = 'processos-caa'
-      GROUP BY master_key
-    ),
-    responses AS (
-      SELECT DISTINCT ON (master_key)
-        master_key,
-        COALESCE(received_at, created_at) AS last_response_at,
-        response_kind                      AS last_response_kind
-      FROM activation_responses
-      WHERE response_kind IN ('click', 'message')
-      ORDER BY master_key, COALESCE(received_at, created_at) DESC NULLS LAST
-    ),
-    engagement AS (
-      SELECT DISTINCT master_key
-      FROM activation_responses
-      WHERE response_kind IN ('click', 'message')
-    )
-    SELECT
-      p.protocolo,
-      p.rgm,
-      p.cpf,
-      p.nome,
-      p.polo,
-      p.curso,
-      p.data_chegada,
-      p.first_seen_at,
-      p.last_seen_at,
-      p.status,
-      p.subprocesso,
-      COALESCE(mp.outcome,       mr.outcome)       AS manual_outcome,
-      COALESCE(mp.occurred_at,   mr.occurred_at)   AS manual_occurred_at,
-      COALESCE(mp.consultor_nome,mr.consultor_nome) AS manual_consultor_nome,
-      COALESCE(mp.motivo,        mr.motivo)         AS manual_motivo,
-      COALESCE(d.dispatches_total,  0)::int         AS dispatches_total,
-      COALESCE(d.dispatches_today, 0)::int          AS dispatches_today,
-      d.first_dispatch_at,
-      r.last_response_at,
-      r.last_response_kind,
-      (e.master_key IS NOT NULL)::boolean           AS engajado
-    FROM caa_protocols p
-    LEFT JOIN m_proto mp ON mp.protocolo = p.protocolo
-    LEFT JOIN m_rgm   mr ON mr.rgm = p.rgm
-    LEFT JOIN dispatches d ON d.master_key = 'RGM:' || p.rgm
-    LEFT JOIN responses  r ON r.master_key = 'RGM:' || p.rgm
-    LEFT JOIN engagement e ON e.master_key = 'RGM:' || p.rgm
-    WHERE p.status = 'open'
-       OR p.first_seen_at > NOW() - INTERVAL '30 days'
-       OR EXISTS (
-            SELECT 1 FROM activation_manual_outcomes amo
-            WHERE amo.category = 'processos-caa'
-              AND (amo.protocolo = p.protocolo OR amo.rgm = p.rgm)
-          )
-    ORDER BY p.status, p.first_seen_at ASC
-  `);
+        p.protocolo,
+        p.rgm,
+        p.cpf,
+        p.nome,
+        p.polo,
+        p.curso,
+        p.data_chegada,
+        p.first_seen_at,
+        p.last_seen_at,
+        p.status,
+        p.subprocesso,
+        COALESCE(mp.outcome,       mr.outcome)       AS manual_outcome,
+        COALESCE(mp.occurred_at,   mr.occurred_at)   AS manual_occurred_at,
+        COALESCE(mp.consultor_nome,mr.consultor_nome) AS manual_consultor_nome,
+        COALESCE(mp.motivo,        mr.motivo)         AS manual_motivo,
+        COALESCE(d.dispatches_total,  0)::int         AS dispatches_total,
+        COALESCE(d.dispatches_today, 0)::int          AS dispatches_today,
+        d.first_dispatch_at,
+        r.last_response_at,
+        r.last_response_kind,
+        (e.master_key IS NOT NULL)::boolean           AS engajado
+      FROM caa_protocols p
+      LEFT JOIN m_proto mp ON mp.protocolo = p.protocolo
+      LEFT JOIN m_rgm   mr ON mr.rgm = p.rgm
+      LEFT JOIN dispatches d ON d.master_key = 'RGM:' || p.rgm
+      LEFT JOIN responses  r ON r.master_key = 'RGM:' || p.rgm
+      LEFT JOIN engagement e ON e.master_key = 'RGM:' || p.rgm
+      WHERE p.status = 'open'
+         OR p.first_seen_at > NOW() - INTERVAL '30 days'
+         OR EXISTS (
+              SELECT 1 FROM activation_manual_outcomes amo
+              WHERE amo.category = 'processos-caa'
+                AND (amo.protocolo = p.protocolo OR amo.rgm = p.rgm)
+            )
+      ORDER BY p.status, p.first_seen_at ASC
+    `),
+  ]);
 
   // Enriquece cada protocolo com janela e estado
   const processed = rows.map((p) => {
@@ -184,20 +214,8 @@ export async function getCaaFunnel(opts = {}) {
     };
   });
 
-  // Counts
-  const counts = {
-    ativavel: 0,
-    perdido_silencioso: 0,
-    revertido_manual: 0,
-    perdido_manual: 0,
-    revertido_export: 0,
-    perdido_export: 0,
-    unknown: 0,
-    total_no_funil: 0,
-    engajados: 0,
-    com_conflito: 0,
-  };
-
+  // Counts over all processed items (before filters)
+  const counts = zeroCounts();
   for (const p of processed) {
     if (Object.prototype.hasOwnProperty.call(counts, p.estado)) {
       counts[p.estado]++;
@@ -207,8 +225,35 @@ export async function getCaaFunnel(opts = {}) {
     if (p.conflito) counts.com_conflito++;
   }
 
+  // counts_by_ciclo (computed before any filter)
+  /** @type {Record<string, object>} */
+  const counts_by_ciclo = {};
+  if (available_ciclos.length > 1) {
+    for (const cicloKey of available_ciclos) {
+      const cc = zeroCounts();
+      for (const p of processed) {
+        const rgm = p.rgm ? String(p.rgm) : null;
+        if (!rgm || cicloMap.get(rgm) !== cicloKey) continue;
+        if (Object.prototype.hasOwnProperty.call(cc, p.estado)) cc[p.estado]++;
+        if (p.estado !== 'unknown') cc.total_no_funil++;
+        if (p.engajado && p.estado !== 'unknown') cc.engajados++;
+        if (p.conflito) cc.com_conflito++;
+      }
+      counts_by_ciclo[cicloKey] = cc;
+    }
+  }
+
+  // Validate requested ciclo
+  const activeCiclo = (opts.ciclo && available_ciclos.includes(opts.ciclo)) ? opts.ciclo : null;
+
   // Aplica filtros
   let filtered = processed;
+  if (activeCiclo) {
+    filtered = filtered.filter((p) => {
+      const rgm = p.rgm ? String(p.rgm) : null;
+      return rgm && cicloMap.get(rgm) === activeCiclo;
+    });
+  }
   if (opts.estado) {
     filtered = filtered.filter((p) => p.estado === opts.estado);
   }
@@ -235,6 +280,8 @@ export async function getCaaFunnel(opts = {}) {
       now: now.toISOString(),
     },
     counts,
+    counts_by_ciclo,
+    available_ciclos,
     items,
     total_items,
     limit,

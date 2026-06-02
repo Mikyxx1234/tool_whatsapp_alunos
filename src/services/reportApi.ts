@@ -162,11 +162,12 @@ export const reportApi = {
     });
   },
 
-  caaSummary(opts: { scope?: 'last_snapshot' | 'hours'; hours?: number } = {}) {
+  caaSummary(opts: { scope?: 'last_snapshot' | 'hours'; hours?: number; ciclo?: string } = {}) {
     const p = new URLSearchParams();
     const scope = opts.scope || 'last_snapshot';
     p.set('scope', scope);
     if (scope === 'hours' && opts.hours) p.set('hours', String(opts.hours));
+    if (opts.ciclo) p.set('ciclo', opts.ciclo);
     return fetchJson<CaaSummaryResponse>(`/api/reports/caa/summary?${p.toString()}`, {
       timeoutMs: 30_000,
     });
@@ -200,6 +201,7 @@ export const reportApi = {
       conflito?: boolean;
       limit?: number;
       offset?: number;
+      ciclo?: string;
     } = {}
   ) {
     const p = new URLSearchParams();
@@ -208,6 +210,7 @@ export const reportApi = {
     if (params.conflito) p.set('conflito', 'true');
     if (params.limit != null) p.set('limit', String(params.limit));
     if (params.offset != null) p.set('offset', String(params.offset));
+    if (params.ciclo) p.set('ciclo', params.ciclo);
     const q = p.toString();
     return fetchJson<CaaFunnelResponse>(`/api/reports/caa/funnel${q ? `?${q}` : ''}`, {
       timeoutMs: 30_000,
@@ -215,12 +218,13 @@ export const reportApi = {
   },
 
   activationConversion(
-    params: { category?: string; period_days?: number; offset?: number } = {}
+    params: { category?: string; period_days?: number; offset?: number; ciclo?: string } = {}
   ) {
     const p = new URLSearchParams();
     if (params.category) p.set('category', params.category);
     if (params.period_days != null) p.set('period_days', String(params.period_days));
     if (params.offset != null) p.set('offset', String(params.offset));
+    if (params.ciclo) p.set('ciclo', params.ciclo);
     const q = p.toString();
     return fetchJson<ActivationConversionResponse>(
       `/api/reports/activation-conversion${q ? `?${q}` : ''}`,
@@ -241,6 +245,8 @@ export interface ActivationConversionKpis {
   response_rate: number;
   opt_out_rate: number;
 }
+
+export type ActivationConversionKpisByCiclo = Record<string, ActivationConversionKpis>;
 
 export interface ActivationConversionByCategoryItem {
   category: string;
@@ -276,8 +282,11 @@ export interface ActivationConversionResponse {
     period_days: number;
     since: string;
     now: string;
+    ciclo?: string | null;
   };
   kpis: ActivationConversionKpis;
+  kpis_by_ciclo?: ActivationConversionKpisByCiclo;
+  available_ciclos?: string[];
   by_category: ActivationConversionByCategoryItem[];
   top_buttons: ActivationConversionTopButton[];
   recent_responses: ActivationConversionRecentResponse[];
@@ -349,6 +358,8 @@ export interface CaaFunnelResponse {
     now: string;
   };
   counts: CaaFunnelCounts;
+  counts_by_ciclo?: Record<string, CaaFunnelCounts>;
+  available_ciclos?: string[];
   items: CaaFunnelItem[];
   total_items: number;
   limit: number;
@@ -363,6 +374,14 @@ export interface CaaSnapshotInfo {
   created_at: string;
 }
 
+export interface CaaSummaryTransitions {
+  novos_pendentes: number;
+  novos_pendentes_no_diff?: number;
+  perdidos_canceled: number;
+  perdidos_confirmed: number;
+  revertidos: number;
+}
+
 export interface CaaSummaryResponse {
   scope: 'last_snapshot' | 'hours';
   window_hours: number | null;
@@ -372,15 +391,11 @@ export interface CaaSummaryResponse {
   needs_previous?: boolean;
   identical_reimport?: boolean;
   used_stored_fallback?: boolean;
-  transitions: {
-    novos_pendentes: number;
-    novos_pendentes_no_diff?: number;
-    perdidos_canceled: number;
-    perdidos_confirmed: number;
-    revertidos: number;
-  };
+  transitions: CaaSummaryTransitions;
   current: Record<CaaStatus, number>;
   labels: Record<Exclude<CaaStatus, 'unknown'>, string>;
+  available_ciclos?: string[];
+  summary_by_ciclo?: Record<string, { transitions: CaaSummaryTransitions }>;
 }
 
 export interface CaaTransitionItem {

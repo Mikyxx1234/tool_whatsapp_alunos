@@ -12,6 +12,7 @@ import { caaStatusLabel } from '../utils/caaRowFilters.js';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 import { getCaaFunnel } from '../services/caaFunnelService.js';
 import { getActivationConversion } from '../services/activationConversionService.js';
+import { getRgmToCicloMap, getAvailableCiclos } from '../services/cicloResolverService.js';
 
 const router = Router();
 
@@ -114,22 +115,28 @@ router.get('/caa/summary', async (req, res) => {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
     const scope = await resolveCaaSnapshotScope(req);
+    const [available_ciclos, cicloMap] = await Promise.all([
+      getAvailableCiclos(),
+      getRgmToCicloMap(),
+    ]);
     let stats;
     let needs_previous = false;
     let previous_snapshot = scope.kind === 'last_snapshot' ? scope.previous_snapshot : null;
     let identical_reimport = false;
     let used_stored_fallback = false;
+    let summary_by_ciclo = undefined;
     if (scope.kind === 'hours') {
       stats = await caaProtocolsRepo.getDailyTransitionStats({ since: scope.since });
     } else if (!scope.snapshot) {
       stats = { novos_pendentes: 0, perdidos_canceled: 0, perdidos_confirmed: 0, revertidos: 0 };
     } else {
-      const delta = await getSnapshotPairDelta();
+      const delta = await getSnapshotPairDelta({ cicloMap: available_ciclos.length > 1 ? cicloMap : undefined });
       stats = delta.stats;
       needs_previous = Boolean(delta.needs_previous);
       previous_snapshot = delta.previous ?? scope.previous_snapshot;
       identical_reimport = Boolean(delta.identical_reimport);
       used_stored_fallback = Boolean(delta.used_stored_fallback);
+      summary_by_ciclo = delta.summary_by_ciclo;
     }
     const byStatus =
       scope.kind === 'last_snapshot'
@@ -152,6 +159,8 @@ router.get('/caa/summary', async (req, res) => {
         lost_confirmed: caaStatusLabel('lost_confirmed'),
         won_reverted: caaStatusLabel('won_reverted'),
       },
+      available_ciclos,
+      summary_by_ciclo,
     });
   } catch (err) {
     handleError(res, err);
@@ -219,6 +228,7 @@ router.get('/caa/funnel', requireApiKey, async (req, res) => {
     const estado = req.query.estado ? String(req.query.estado) : undefined;
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : undefined;
 
     let engajado;
     if (req.query.engajado === 'true') engajado = true;
@@ -226,7 +236,7 @@ router.get('/caa/funnel', requireApiKey, async (req, res) => {
 
     const conflito = req.query.conflito === 'true' ? true : undefined;
 
-    const result = await getCaaFunnel({ estado, engajado, conflito, limit, offset });
+    const result = await getCaaFunnel({ estado, engajado, conflito, limit, offset, ciclo });
     res.json(result);
   } catch (err) {
     handleError(res, err);
@@ -241,7 +251,8 @@ router.get('/activation-conversion', requireApiKey, async (req, res) => {
     const category = String(req.query.category || 'all');
     const period_days = Math.min(Math.max(parseInt(req.query.period_days, 10) || 30, 1), 365);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-    const result = await getActivationConversion({ category, period_days, offset });
+    const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : null;
+    const result = await getActivationConversion({ category, period_days, offset, ciclo });
     res.json(result);
   } catch (err) {
     handleError(res, err);

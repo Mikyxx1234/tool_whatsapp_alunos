@@ -146,6 +146,8 @@ export interface ActivationRosterResponse {
   };
   /** Ciclos distintos presentes no snapshot de matriculados (antes do filtro de ciclo). */
   available_ciclos?: string[];
+  /** Contagem de alunos por ciclo na fila completa (antes de qualquer filtro). */
+  counts_by_ciclo?: Record<string, number>;
 }
 
 export interface DatacrazyBatchNotFoundItem extends ActivationListItem {
