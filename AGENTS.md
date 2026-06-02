@@ -5,6 +5,25 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 02/06/2026 — Coluna "Janela" no roster CAA (tempo restante 48h)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Problema:** O roster CAA não mostrava ao consultor quanto tempo ainda restava da janela de 48h por candidato. A informação existia no `caaFunnelService` (estoque/funil) mas ficava escondida lá. Sem isso, o consultor não conseguia priorizar quem atender primeiro.
+- **Decisão:** Adicionar coluna nova "Janela" no `ActivationRosterTable` (somente categoria `processos-caa`), mostrando o tempo restante até a janela vencer, com badge colorido por urgência. Cálculo do `hours_remaining` é feito no frontend a partir do `expires_at` (timestamp absoluto vindo do backend), garantindo que o número sempre reflita o "agora", mesmo com o cache do backend ativo.
+- **Onde:**
+  - `server/services/activationService.js`: `import { calcJanela }` adicionado; após o loop de items, novo bloco específico para CAA carrega `listOpenProtocolsByRgm` + `journey_settings`, calcula `{ t0, expires_at }` via `calcJanela`, anexa `caa_janela: { t0, expires_at, t0_source, dias_tipo }` (ISO strings) em cada item. Sort atualizado: CAA ordena por `expires_at` ascendente (mais urgente no topo).
+  - `src/services/activationApi.ts`: novo tipo `CaaJanelaInfo` + campo opcional em `ActivationRosterItem`.
+  - `src/components/ActivationRosterTable.tsx`: novo componente `CaaJanelaCell` + coluna "Janela" no `<thead>` (CAA only) entre os filtros condicionais e "Vezes ativado".
+- **Faixas de cor:** Verde ≥12h (formato `14h` ou `2d` se ≥48h) · Âmbar 6–12h · Vermelho <6h (mostra minutos se <1h: `42min`) · Cinza "Vencida" ou "sem janela" (sem T0).
+- **Tooltip:** mostra fonte do T0 (Data Chegada / 1º export / 1º envio), tipo de contagem (corridos/úteis), T0 e data de vencimento formatados.
+
+#### Alternativas descartadas
+
+- **Computar `hours_remaining` no backend e cachear o número:** ficaria preso ao TTL do cache (10min), badge ficaria "frozen" em valor antigo. Solução adotada (cachear `expires_at` absoluto, computar horas no frontend) é mais simples e sempre fresca.
+- **Badge inline no nome em vez de coluna:** o usuário pediu coluna explicitamente. Coluna deixa o dado tabular e ordenável.
+- **Chips de contagem no header ("X vencendo em 6h · Y em <1h"):** considerado, mas escopo MVP é coluna; adicionar depois se houver demanda.
+- **Querry separada para listar TODOS protocolos abertos (sem dedup por RGM):** descartado em favor de reusar `listOpenProtocolsByRgm` (mesma usada pra montar a fila). Pessoas com >1 protocolo aberto verão a janela do "mais recentemente mudado" — caso raro, custo de erro baixo, evolui depois.
+
 ### 02/06/2026 — Remoção do dedup por template (`template_ja_enviado`)
 
 - **Modelo usado:** Opus 4.7 (principal)

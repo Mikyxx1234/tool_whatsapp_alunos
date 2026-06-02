@@ -22,7 +22,7 @@ import {
 } from './baseComparisonService.js';
 import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFromRow.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
-import { isWindowOpen } from '../utils/caaWindow.js';
+import { isWindowOpen, calcJanela } from '../utils/caaWindow.js';
 import { pickDisplayRgm } from '../utils/rgmDisplay.js';
 import {
   datacrazyClient,
@@ -551,6 +551,40 @@ export async function getIntersectionActivationList(category, opts = {}) {
     }
   }
 
+  if (category === 'processos-caa' && items.length) {
+    const [openRows, janelaSettings] = await Promise.all([
+      caaProtocolsRepo.listOpenProtocolsByRgm(),
+      journeySettingsRepo.resolveForTerm(null),
+    ]);
+    const janelaCfg = {
+      caa_janela_t0: janelaSettings?.caa_janela_t0 ?? 'primeiro_export',
+      caa_janela_dias_tipo: janelaSettings?.caa_janela_dias_tipo ?? 'corridos',
+    };
+    /** @type {Map<string, { t0: Date|null, expires_at: Date|null }>} */
+    const windowByRgm = new Map();
+    for (const p of openRows) {
+      if (!p.rgm) continue;
+      const w = calcJanela(p, janelaCfg);
+      const prev = windowByRgm.get(p.rgm);
+      if (!prev) {
+        windowByRgm.set(p.rgm, w);
+      } else if (w.expires_at && (!prev.expires_at || w.expires_at < prev.expires_at)) {
+        windowByRgm.set(p.rgm, w);
+      }
+    }
+    for (const it of items) {
+      const w = it.rgm ? windowByRgm.get(it.rgm) : null;
+      it.caa_janela = w
+        ? {
+            t0: w.t0 ? w.t0.toISOString() : null,
+            expires_at: w.expires_at ? w.expires_at.toISOString() : null,
+            t0_source: janelaCfg.caa_janela_t0,
+            dias_tipo: janelaCfg.caa_janela_dias_tipo,
+          }
+        : null;
+    }
+  }
+
   const SUBGRUPO_ORDER = { podia_e_nao_acessou: 0, nao_acessa_faz_tempo: 1, acessou_pouco: 2 };
   const URGENCY_ORDER = { alta: 0, media: 1, normal: 2, sem_turma: 3 };
   items.sort((a, b) => {
@@ -564,6 +598,15 @@ export async function getIntersectionActivationList(category, opts = {}) {
       const da = a.bb_dias_apos_inicio ?? -1;
       const db = b.bb_dias_apos_inicio ?? -1;
       if (da !== db) return db - da;
+    }
+    if (category === 'processos-caa') {
+      const ea = a.caa_janela?.expires_at
+        ? new Date(a.caa_janela.expires_at).getTime()
+        : Number.POSITIVE_INFINITY;
+      const eb = b.caa_janela?.expires_at
+        ? new Date(b.caa_janela.expires_at).getTime()
+        : Number.POSITIVE_INFINITY;
+      if (ea !== eb) return ea - eb;
     }
     return a.nome.localeCompare(b.nome, 'pt-BR');
   });

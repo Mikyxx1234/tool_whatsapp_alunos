@@ -102,6 +102,13 @@ export type ActivationStageFilter = 'all' | 'first' | 'repeat' | 'fifth';
 
 export type ActivationResponseKind = 'click' | 'message' | 'opt_out' | 'other';
 
+export interface CaaJanelaInfo {
+  t0: string | null;
+  expires_at: string | null;
+  t0_source: 'data_chegada' | 'primeiro_export' | 'primeiro_envio';
+  dias_tipo: 'corridos' | 'uteis';
+}
+
 export interface ActivationRosterItem extends ActivationListItem {
   prior_activation_count: number;
   message_tier: ActivationMessageTier;
@@ -116,6 +123,7 @@ export interface ActivationRosterItem extends ActivationListItem {
   bb_term_codigo?: string | null;
   bb_subgrupo?: BbSubgrupo;
   dias_ate_inicio?: number | null;
+  caa_janela?: CaaJanelaInfo | null;
 }
 
 export interface ActivationRosterResponse {

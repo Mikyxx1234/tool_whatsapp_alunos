@@ -49,6 +49,63 @@ function UrgencyBadge({ row }: { row: ActivationRosterItem }) {
   );
 }
 
+function CaaJanelaCell({ row }: { row: ActivationRosterItem }) {
+  const j = row.caa_janela;
+  if (!j) {
+    return <span className="text-xs text-gray-400">—</span>;
+  }
+  if (!j.expires_at) {
+    return (
+      <span
+        className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full border bg-gray-50 text-gray-600 border-gray-200"
+        title="Sem T0 disponível para calcular a janela (faltam data_chegada / first_seen_at / first_dispatch_at)."
+      >
+        sem janela
+      </span>
+    );
+  }
+  const expiresMs = new Date(j.expires_at).getTime();
+  const diffH = (expiresMs - Date.now()) / 3_600_000;
+  const t0Label =
+    j.t0_source === 'data_chegada' ? 'Data Chegada CAA' :
+    j.t0_source === 'primeiro_envio' ? '1º envio nosso' :
+    '1º export';
+  const diasLabel = j.dias_tipo === 'uteis' ? 'dias úteis' : 'horas corridas';
+  const t0Iso = j.t0 ? new Date(j.t0).toLocaleString('pt-BR') : '—';
+  const expiresIso = new Date(j.expires_at).toLocaleString('pt-BR');
+
+  let label: string;
+  let cls: string;
+  if (diffH <= 0) {
+    label = 'Vencida';
+    cls = 'bg-gray-100 text-gray-600 border-gray-300';
+  } else if (diffH < 1) {
+    const mins = Math.max(1, Math.floor(diffH * 60));
+    label = `${mins}min`;
+    cls = 'bg-rose-50 text-rose-700 border-rose-200';
+  } else if (diffH < 6) {
+    label = `${Math.floor(diffH)}h`;
+    cls = 'bg-rose-50 text-rose-700 border-rose-200';
+  } else if (diffH < 12) {
+    label = `${Math.floor(diffH)}h`;
+    cls = 'bg-amber-50 text-amber-700 border-amber-200';
+  } else {
+    const h = Math.floor(diffH);
+    label = h >= 48 ? `${Math.floor(h / 24)}d` : `${h}h`;
+    cls = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+  }
+
+  const title = `Janela 48h CAA\nBase T0: ${t0Label} (${diasLabel})\nT0: ${t0Iso}\nVence: ${expiresIso}`;
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full border tabular-nums ${cls}`}
+      title={title}
+    >
+      {label}
+    </span>
+  );
+}
+
 function ResponseBadge({ row }: { row: ActivationRosterItem }) {
   if (!row.last_response_at) return null;
   const kind = row.last_response_kind ?? 'click';
@@ -402,6 +459,11 @@ export function ActivationRosterTable({
               <th className="px-3 py-2 text-left font-medium">Polo</th>
               {category === 'acessos-blackboard' && <th className="px-3 py-2 text-left font-medium">Grupo</th>}
               {category === 'aguardando-inicio' && <th className="px-3 py-2 text-left font-medium">Início em</th>}
+              {category === 'processos-caa' && (
+                <th className="px-3 py-2 text-left font-medium" title="Tempo restante na janela 48h CAA">
+                  Janela
+                </th>
+              )}
               <th className="px-3 py-2 text-left font-medium">Vezes ativado</th>
               <th className="px-3 py-2 text-left font-medium">Próxima msg</th>
               <th className="px-3 py-2 text-left font-medium">Template</th>
@@ -413,7 +475,7 @@ export function ActivationRosterTable({
               <tr>
                 <td
                   colSpan={
-                    (category === 'processos-caa' ? 8
+                    (category === 'processos-caa' ? 9
                       : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
                       : 7) + (selectedMasterKeys ? 1 : 0)
                   }
@@ -428,7 +490,7 @@ export function ActivationRosterTable({
               <tr>
                 <td
                   colSpan={
-                    (category === 'processos-caa' ? 8
+                    (category === 'processos-caa' ? 9
                       : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
                       : 7) + (selectedMasterKeys ? 1 : 0)
                   }
@@ -481,6 +543,11 @@ export function ActivationRosterTable({
                   {category === 'aguardando-inicio' && (
                     <td className="px-3 py-2 text-xs tabular-nums text-amber-700 font-medium">
                       {row.dias_ate_inicio != null ? `${row.dias_ate_inicio}d` : '—'}
+                    </td>
+                  )}
+                  {category === 'processos-caa' && (
+                    <td className="px-3 py-2">
+                      <CaaJanelaCell row={row} />
                     </td>
                   )}
                   <td className="px-3 py-2 tabular-nums font-semibold text-gray-900">
