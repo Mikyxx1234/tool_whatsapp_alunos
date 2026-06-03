@@ -95,6 +95,7 @@ export async function findRgmByCpfInMatriculados(cpfDigits) {
  *   buttonPayload?: string|null,
  *   messageText?: string|null,
  *   externalId?: string|null,
+ *   consultorResponsavelNome?: string|null,
  *   rawPayload?: Record<string, unknown>|null,
  *   receivedAt?: Date|string|null,
  * }} input
@@ -134,6 +135,11 @@ export async function recordResponse(input) {
     }
   }
 
+  const consultorNome =
+    typeof input.consultorResponsavelNome === 'string' && input.consultorResponsavelNome.trim()
+      ? input.consultorResponsavelNome.trim().slice(0, 200)
+      : null;
+
   const params = [
     category,
     masterKey,
@@ -146,17 +152,18 @@ export async function recordResponse(input) {
     input.externalId ?? null,
     input.rawPayload ? JSON.stringify(input.rawPayload) : null,
     input.receivedAt ? new Date(input.receivedAt) : new Date(),
+    consultorNome,
   ];
 
   const { rows } = await query(
     `insert into activation_responses (
        category, master_key, datacrazy_lead_id, telefone, rgm,
        response_kind, button_payload, message_text, external_id,
-       raw_payload, received_at
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
+       raw_payload, received_at, consultor_responsavel_nome
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
      on conflict (external_id) where external_id is not null do nothing
      returning id, category, master_key, datacrazy_lead_id, telefone,
-               response_kind, received_at`,
+               response_kind, received_at, consultor_responsavel_nome`,
     params
   );
   return rows[0] ?? null;

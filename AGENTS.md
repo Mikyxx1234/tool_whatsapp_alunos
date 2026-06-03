@@ -250,79 +250,79 @@ Body: {"value": ""}
 - **Endpoint da app `POST /api/activation/responses` fazer o PUT de limpeza:** acopla a app ao fluxo de respostas e duplica responsabilidade — o n8n já é o ponto natural pra isso.
 - **Marcar o campo `origem_ativacao` como "exposto via API" no CRM:** seria mais limpo, mas requer config no DataCrazy que pode não estar disponível na conta. A solução com PUT-trust funciona sem depender disso.
 
-### 03/06/2026 — Painel "Por consultor" (preparação para merge com dcz-crm-sync)
+### 03/06/2026 — Falso start: consultor no dispatch (revertido na mesma sessão)
 
 - **Modelo usado:** Opus 4.7 (principal)
-- **Contexto:** Usuário vai mergear este app com `dcz-crm-sync` (Flask, em produção) que já tem `app_users` (id serial, username, pw_hash, role, kommo_user_id, email_cruzeiro, categoria, datacrazy_user_id) + `user_permissions` por página. O merge vai acontecer depois — esta entrega prepara o terreno do lado WhatsApp.
-- **Decisão:** Adicionar identidade do consultor a cada dispatch + painel agregado, **sem** construir auth aqui (vem do merge). A fonte da identidade fica **plugável**: hoje vem de `localStorage` via prompt; depois do merge, o middleware Flask injeta nos headers HTTP.
+- **Contexto:** Numa primeira leitura, interpretei "consultor" como quem clica em "Ativar". Construí `activation_dispatch_events.consultor_id` (migration 024) + hook `useConsultor` + painel agrupado por disparador. **Errado.** O usuário corrigiu: o disparador é um operador (pessoa diferente do consultor); o consultor é quem ASSUME a conversa no DataCrazy depois que o aluno responde.
+- **Revertido em:** migration 025 dropa colunas; arquivos novos deletados; código modificado restaurado.
+- **Aprendizado documentado:** sempre clarear "quem clica" vs "quem atende" antes de modelar tabelas de autoria.
 
-#### Modelo de dados (migration 024)
+### 03/06/2026 — Painel "Por consultor" (modelo correto)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Decisão:** Identidade do consultor vem do **DataCrazy** (não do nosso app). Snapshot textual gravado em duas fontes:
+  - `activation_responses.consultor_responsavel_nome` — populado pelo webhook do n8n que entrega a resposta (n8n lê o campo customizado do DataCrazy ao processar a resposta).
+  - `caa_protocols.consultor_responsavel_nome` + `consultor_responsavel_updated_at` — populado pelo `crmDesfechoSyncService` que faz polling. Quando detecta desfecho (Sim/Não), também lê o campo "consultor responsável" do mesmo lead e atualiza TODOS os protocolos daquele RGM.
+
+#### Migration 026
 
 ```sql
-alter table activation_dispatch_events
-  add column consultor_id integer,           -- compat com app_users.id (serial) do dcz
-  add column consultor_nome text;            -- snapshot pra histórico íntegro
-
-create index ... (consultor_id, category, created_at desc);
+alter table activation_responses
+  add column consultor_responsavel_nome text;
+alter table caa_protocols
+  add column consultor_responsavel_nome text,
+  add column consultor_responsavel_updated_at timestamptz;
 ```
 
-Sem FK física (os 2 sistemas podem viver em schemas/bancos separados). FK lógica gerenciada pela app.
+Snapshot por texto (não FK) — preserva histórico se o consultor for renomeado/deletado no futuro `app_users`. Depois do merge com `dcz-crm-sync`, resolve nome → user por similarity em `username` / `email_cruzeiro`.
 
-#### Convenção pra escrita
+#### Config necessária
 
-Header HTTP nas rotas que precisam autoria:
-- `X-Consultor-Id` (numérico, opcional)
-- `X-Consultor-Nome` (texto, máx 200 chars)
+- `DATACRAZY_DESFECHO_CAA_FIELD_ID` — campo "Sim/Não" do desfecho (já existia).
+- `DATACRAZY_CONSULTOR_RESPONSAVEL_FIELD_ID` (NOVO) — UUID do campo customizado no DataCrazy onde fica o nome do consultor responsável. Sem ele, sync de desfecho continua funcionando mas atribuição fica vazia.
 
-`runDatacrazyActivationBatch` aceita `opts.consultorId` + `opts.consultorNome` e passa via spread `...consultorFields` nas 6 chamadas a `recordDispatchEvent` (sent / not_found / failed × 4 origens). Disparos sem consultor caem no bucket "Sem consultor" (legados + scheduler).
+#### Contrato do webhook do n8n
 
-#### Atribuição de reversão CAA
+O n8n já posta em `POST /api/activation/responses`. Agora também pode enviar:
 
-Para cada `caa_protocols` com status conclusivo (`won_reverted | lost_*`), atribui ao **último consultor que disparou em CAA pro RGM** dentro dos **14 dias** anteriores a `last_status_change_at` (config via `?attribution_window_days=`). Default 14d cobre operação típica.
+```json
+{
+  "lead": "<datacrazy_lead_id>",
+  "evt": "<external_id>",
+  "rgm": "...",
+  "consultor_responsavel_nome": "Felipe Nolasco"
+}
+```
 
-- **Por quê 14d:** janela CAA é 48h, mas reversão pode demorar dias depois do desfecho do CAA. 14d garante atribuir reversões orgânicas que demoraram + evita atribuir reversões totalmente desconexas (>2 semanas após o último contato).
-- **Conflito:** se o RGM foi disparado por 2 consultores em sequência, leva crédito o **último**. Padrão de comissionamento usual.
+Aceita várias chaves: `consultor_responsavel_nome` | `consultorResponsavelNome` | `consultor` | `responsavel` | `responsible_user_name`. Sem o campo, gravação continua funcional (consultor fica nulo).
+
+#### Atribuição CAA
+
+Quando `crmDesfechoSyncService` detecta `Sim`/`Não` num lead:
+1. Cria entrada em `activation_manual_outcomes` (como já fazia).
+2. **Novo**: Lê `DATACRAZY_CONSULTOR_RESPONSAVEL_FIELD_ID` no mesmo lead via `getLeadAdditionalFieldValue`.
+3. Se preenchido, `UPDATE caa_protocols SET consultor_responsavel_nome=$1, consultor_responsavel_updated_at=now() WHERE rgm=$2` (atualiza todos os protocolos do RGM — realista, o consultor cuida do lead inteiro, não de protocolos individuais).
+4. Best-effort: se falhar leitura/update, loga warning e segue (não bloqueia o sync de desfecho).
 
 #### Endpoint
 
-`GET /api/reports/consultores?period_days=&category=&attribution_window_days=` com `requireApiKey`.
-
-Resposta agrega `consultores[]` ordenado por `totals.dispatches_sent desc`. Cada consultor tem `totals` + `by_category[6]` com: `dispatches_sent`, `unique_recipients`, `total_responses`, `unique_responders/clickers/opt_outs`, `response_rate` (%), e (CAA-only) `caa_revertidos`, `caa_perdidos`, `caa_taxa_reversao` (%).
+`GET /api/reports/consultores?period_days=` (com `requireApiKey`). Resposta:
+- `consultores[]`: `{ consultor_nome, caa_revertidos, caa_perdidos, caa_taxa_reversao, total_respostas, ultima_atribuicao }`.
+- `totals`: agregado.
+- Período padrão 30d, máx 365.
+- Ordenado por `caa_revertidos desc`, tiebreaker `total_respostas desc`.
 
 #### UI
 
-- `ConsultoresPanel` em `/reports` (abaixo de `CaaFunnelPanel`).
-- Filtros: período (7/30/90d) + categoria (Todas + 6).
-- Tabela colapsável: clica na linha do consultor → expande breakdown por categoria.
-- KPIs CAA (revertidos/perdidos/taxa) só aparecem quando categoria='Todas' ou 'CAA'.
-- Hook `useConsultor` em `src/hooks/useConsultor.ts` lê `localStorage.consultor_id` + `consultor_nome`; prompt na 1ª vez. Depois do merge, troca o source pra `useAuth()` sem mudar API pública.
-
-#### Caminho do merge (decisão futura)
-
-Quando for fazer o merge, escolher:
-- **A. SSO por DB compartilhado** — apps separados, Node lê `app_users` do mesmo Postgres (1-2 dias).
-- **B. Sub-app via proxy** — Node sob `/whatsapp/*` do Flask, cookie de sessão compartilhado (3-4 dias).
-- **C. Iframe** — Node embedded no dashboard Flask (2-3 dias, frágil cross-origin).
-- **D. Port pra Flask** — reescreve tudo (2-4 semanas).
-
-Independente do caminho, o painel funciona — só muda a fonte do `X-Consultor-*`.
-
-#### DB topology recomendada
-
-**Mesmo Postgres, schemas separados** (`dcz.app_users`, `whatsapp.activation_dispatch_events`):
-- 1 backup, 1 ponto de monitoramento.
-- Isolamento lógico via schemas.
-- Cross-schema queries possíveis sem FK física.
-
-Alternativas: mesmo schema (acoplamento alto), 2 Postgres separados (precisa sync layer).
+`ConsultoresPanel` em `/reports` (renderizado quando categoria ativa = CAA). Filtros: período 7/30/90d. Tabela compacta com Consultor / Revertidos / Perdidos / Taxa / Respostas / Última atividade. Mensagem informativa quando vazio (explica que dados aparecem quando webhook/sync começarem a popular).
 
 #### Alternativas descartadas
 
-- **Construir auth nativa aqui:** trabalho duplicado; vem pronto do merge.
-- **`consultor_nome` como FK em vez de texto:** snapshot por texto preserva histórico se user for renomeado/deletado.
-- **Atribuir reversão a TODOS que dispararam:** confunde número, contraria padrão de comissionamento.
-- **Tabela `consultores` própria neste projeto:** redundante com `app_users`.
-- **Webhook de resposta carregar nome do consultor:** impossível — o webhook vem do CRM, que não conhece quem disparou do nosso lado.
+- **FK pra `app_users.id`:** acoplaria ao banco do dcz-crm-sync antes do merge. Snapshot textual desacopla.
+- **Atribuir respostas com mesma lógica:** decisão do usuário foi "só reversão" — mais simples e foco no que importa pra comissionamento.
+- **Tabela `consultor_attribution` separada:** redundante, snapshot dentro de `caa_protocols` resolve.
+- **Buscar consultor em todo lead disparado (não só nos com desfecho):** mais custo de API e dado fica obsoleto rápido. Snapshot no momento do desfecho captura quem efetivamente fechou.
+- **Múltiplas tentativas de chave no webhook:** preferido invés de exigir uma chave única — torna o n8n mais resiliente a refactor do nome do campo.
 
 ### 02/06/2026 — Direct search threshold 25→100 + paralelização
 

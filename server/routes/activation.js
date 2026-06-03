@@ -51,6 +51,20 @@ router.post('/responses', requireApiKey, async (req, res) => {
     if (!externalId) {
       return res.status(400).json({ error: 'evt (external_id) é obrigatório' });
     }
+    // Consultor responsável vem do DataCrazy via webhook do n8n. Aceita várias
+    // chaves possíveis pra robustez do contrato com o n8n.
+    const consultorResponsavelNome =
+      body.consultor_responsavel_nome ??
+      body.consultorResponsavelNome ??
+      body.consultor ??
+      body.responsavel ??
+      body.responsible_user_name ??
+      null;
+    const consultorNomeClean =
+      typeof consultorResponsavelNome === 'string' && consultorResponsavelNome.trim()
+        ? consultorResponsavelNome.trim().slice(0, 200)
+        : null;
+
     const row = await activationResponseRepo.recordResponse({
       datacrazyLeadId: datacrazyLeadId ? String(datacrazyLeadId) : null,
       externalId: String(externalId),
@@ -61,6 +75,7 @@ router.post('/responses', requireApiKey, async (req, res) => {
       responseKind: body.response_kind ?? body.responseKind ?? 'message',
       messageText: body.message_text ?? body.messageText ?? null,
       buttonPayload: body.button_payload ?? body.buttonPayload ?? null,
+      consultorResponsavelNome: consultorNomeClean,
       rawPayload: body,
     });
     res.json({ ok: true, inserted: Boolean(row), row: row ?? null });
@@ -187,16 +202,7 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
     const masterKeys = Array.isArray(req.body?.master_keys)
       ? req.body.master_keys.map(String).filter((k) => k.length > 0)
       : undefined;
-    const consultorId = req.headers['x-consultor-id'] ? Number(req.headers['x-consultor-id']) : null;
-    const consultorNome = typeof req.headers['x-consultor-nome'] === 'string'
-      ? req.headers['x-consultor-nome']
-      : null;
-    const data = await runDatacrazyActivationBatch(category, {
-      limit,
-      masterKeys,
-      consultorId: Number.isFinite(consultorId) ? consultorId : null,
-      consultorNome,
-    });
+    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys });
     res.json(data);
   } catch (err) {
     handleError(res, err);

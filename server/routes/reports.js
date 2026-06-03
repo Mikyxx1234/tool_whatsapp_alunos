@@ -266,16 +266,7 @@ router.get('/consultores', requireApiKey, async (req, res) => {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
     const periodDays = Math.min(Math.max(parseInt(req.query.period_days, 10) || 30, 1), 365);
-    const category = String(req.query.category || 'all');
-    const attributionWindowDays = Math.min(
-      Math.max(parseInt(req.query.attribution_window_days, 10) || 14, 1),
-      90
-    );
-    const result = await getConsultorReport({
-      periodDays,
-      category,
-      attributionWindowDays,
-    });
+    const result = await getConsultorReport({ periodDays });
     res.json(result);
   } catch (err) {
     handleError(res, err);

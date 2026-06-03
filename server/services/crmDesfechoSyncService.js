@@ -25,10 +25,40 @@ import {
 } from '../utils/datacrazyCrmLimiter.js';
 
 const DESFECHO_FIELD_ID = process.env.DATACRAZY_DESFECHO_CAA_FIELD_ID || '';
+const CONSULTOR_FIELD_ID = process.env.DATACRAZY_CONSULTOR_RESPONSAVEL_FIELD_ID || '';
 const DEFAULT_LOOKBACK_DAYS = Math.max(
   1,
   parseInt(process.env.CRM_DESFECHO_SYNC_LOOKBACK_DAYS || '14', 10) || 14
 );
+
+/**
+ * Lê o campo "consultor responsável" do lead no DataCrazy e atualiza
+ * caa_protocols (apenas os abertos do RGM, ou todos do lead). É chamado apenas
+ * quando o desfecho é detectado — captura quem efetivamente fechou a operação.
+ * Best-effort: se falhar, loga e segue.
+ */
+async function attributeConsultorToRgm(leadId, rgm) {
+  if (!CONSULTOR_FIELD_ID || !rgm) return null;
+  try {
+    await datacrazyCrmLimiter.acquire();
+    const raw = await datacrazyClient.getLeadAdditionalFieldValue(leadId, CONSULTOR_FIELD_ID);
+    const nome = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : null;
+    if (!nome) return null;
+    await query(
+      `update caa_protocols
+          set consultor_responsavel_nome = $1,
+              consultor_responsavel_updated_at = now()
+        where rgm = $2`,
+      [nome, rgm]
+    );
+    return nome;
+  } catch (err) {
+    console.warn(
+      `[crm-desfecho-sync] não foi possível ler consultor responsável para lead ${leadId}: ${err.message}`
+    );
+    return null;
+  }
+}
 
 function parseOutcome(raw) {
   if (!raw) return null;
@@ -157,6 +187,12 @@ export async function syncCaaDesfechos({ dryRun = false, days = null } = {}) {
         occurred_at: new Date(),
       });
 
+      // Captura quem fechou (snapshot em caa_protocols). Best-effort.
+      const consultorAtribuido = await attributeConsultorToRgm(
+        lead.datacrazy_lead_id,
+        lead.rgm
+      );
+
       // Limpa o campo no CRM (handshake — evita reprocessar na próxima rodada)
       await datacrazyCrmLimiter.acquire();
       await datacrazyClient.updateLeadAdditionalField(
@@ -168,7 +204,7 @@ export async function syncCaaDesfechos({ dryRun = false, days = null } = {}) {
       await logSync({
         datacrazy_lead_id: lead.datacrazy_lead_id,
         rgm: lead.rgm,
-        field_value: raw,
+        field_value: consultorAtribuido ? `${raw} | consultor: ${consultorAtribuido}` : raw,
         outcome_created: outcome,
         overwrote_manual_id: overwriteId,
       });

@@ -978,15 +978,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
     throw err;
   }
 
-  // Identidade do consultor que disparou (vem do header X-Consultor-* na rota).
-  // Spread em todas as chamadas a recordDispatchEvent para preservar histórico.
-  const consultorFields = {
-    consultorId: Number.isFinite(Number(opts.consultorId)) ? Number(opts.consultorId) : null,
-    consultorNome: typeof opts.consultorNome === 'string' && opts.consultorNome.trim()
-      ? opts.consultorNome.trim().slice(0, 200)
-      : null,
-  };
-
   const storedTemplates = await getActivationTemplateConfig();
   const roster = await getActivationRoster(category);
   const lastSentMap = await activationDispatchRepo.getLastSentAtByMasterKey(category);
@@ -1117,7 +1108,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         email: item.email,
         rgm: item.rgm,
         errorMessage: `Template não configurado para ${tierLabel(message_tier)}. Defina ACTIVATION_TEMPLATE_* no .env`,
-        ...consultorFields,
       });
       results.push({ ...item, status: 'failed', error: 'template_nao_configurado' });
       continue;
@@ -1140,7 +1130,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         telefone: item.telefone,
         email: item.email,
         rgm: item.rgm,
-        ...consultorFields,
       });
       not_found_items.push({ ...item, message_tier, template_name });
       results.push({ ...item, status: 'not_found', datacrazy: null });
@@ -1162,7 +1151,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         datacrazyLeadId: String(lead.id ?? ''),
         nome: item.nome,
         errorMessage: 'Lead no DataCrazy sem telefone',
-        ...consultorFields,
       });
       results.push({ ...item, status: 'failed', error: 'sem_telefone' });
       continue;
@@ -1204,7 +1192,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
           email: item.email,
           rgm: item.rgm,
           errorMessage: `origem_ativacao: ${origem_ativacao_error}`,
-          ...consultorFields,
         });
         results.push({
           ...item,
@@ -1245,7 +1232,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         telefone: item.telefone,
         email: item.email,
         rgm: item.rgm,
-        ...consultorFields,
       });
       results.push({
         ...item,
@@ -1269,7 +1255,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         email: item.email,
         rgm: item.rgm,
         errorMessage: err.message,
-        ...consultorFields,
       });
       results.push({ ...item, status: 'failed', error: err.message, datacrazy: mapDatacrazyLead(lead) });
     }

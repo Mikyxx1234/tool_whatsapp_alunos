@@ -5,7 +5,6 @@ import {
   type ActivationCategory,
   type DatacrazyBatchNotFoundItem,
 } from '../services/activationApi';
-import { useConsultor } from '../hooks/useConsultor';
 
 interface Props {
   category: ActivationCategory;
@@ -37,7 +36,6 @@ export function ActivationListActions({
   selectedMasterKeys,
   onClearSelection,
 }: Props) {
-  const { ensure: ensureConsultor } = useConsultor();
   const selectedCount = selectedMasterKeys?.length ?? 0;
   const hasSelection = selectedCount > 0;
   const [running, setRunning] = useState(false);
@@ -65,12 +63,6 @@ export function ActivationListActions({
         'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
     const ok = window.confirm(confirmMsg);
     if (!ok) return;
-
-    const consultor = ensureConsultor();
-    if (!consultor) {
-      setError('É preciso informar seu nome para registrar o disparo no painel "Por consultor".');
-      return;
-    }
 
     setRunning(true);
     setError(null);
