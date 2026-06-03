@@ -7,6 +7,7 @@
 body {
   font-family: 'Inter', sans-serif;
   background-color: #f8fafc;
+  color: #0f172a;
 }
 
 @layer components {
@@ -43,3 +44,215 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ============================================================================
+   DARK MODE — overrides globais integrados com o dcz-crm-sync
+   ----------------------------------------------------------------------------
+   Paleta espelhada do dcz (--bg-main #0b1623, --bg-card #122033,
+   --bg-elevated #1a2942, --text-primary #e6edf6, --border rgba(76,112,154,.25))
+   para que o iframe pareça parte nativa do CRM. Estes overrides atacam as
+   classes neutras do Tailwind (bg-white, bg-gray-*, text-gray-*, border-*)
+   usadas em ~30 componentes do app, evitando ter que editar cada arquivo.
+   O verde-marca whatsapp (#25D366 / 600 / 700) é preservado.
+   ========================================================================== */
+
+html.dark {
+  color-scheme: dark;
+  --dcz-bg: #0b1623;
+  --dcz-card: #122033;
+  --dcz-elevated: #1a2942;
+  --dcz-surface: #16243a;
+  --dcz-border: rgba(76, 112, 154, 0.30);
+  --dcz-border-strong: rgba(116, 174, 233, 0.35);
+  --dcz-text: #e6edf6;
+  --dcz-text-secondary: #9aabc3;
+  --dcz-text-muted: #6b7d97;
+  --dcz-accent: #74AEE9;
+}
+
+html.dark,
+html.dark body {
+  background-color: var(--dcz-bg) !important;
+  color: var(--dcz-text);
+}
+
+/* ── Fundos neutros ─────────────────────────────────────────────────────── */
+.dark .bg-white { background-color: var(--dcz-card) !important; }
+.dark .bg-gray-50 { background-color: var(--dcz-bg) !important; }
+.dark .bg-gray-100 { background-color: var(--dcz-elevated) !important; }
+.dark .bg-gray-200 { background-color: var(--dcz-surface) !important; }
+.dark .bg-gray-300 { background-color: #1f3552 !important; }
+.dark .bg-gray-700 { background-color: #2a3f5f !important; }
+.dark .bg-gray-800 { background-color: #1a2942 !important; }
+.dark .bg-gray-900 { background-color: #0b1623 !important; }
+.dark .bg-slate-50 { background-color: var(--dcz-bg) !important; }
+.dark .bg-slate-100 { background-color: var(--dcz-elevated) !important; }
+.dark .bg-slate-200 { background-color: var(--dcz-surface) !important; }
+.dark .bg-slate-800 { background-color: var(--dcz-card) !important; }
+.dark .bg-slate-900 { background-color: var(--dcz-bg) !important; }
+.dark .bg-zinc-50,
+.dark .bg-neutral-50,
+.dark .bg-stone-50 { background-color: var(--dcz-bg) !important; }
+
+/* Hover backgrounds */
+.dark .hover\:bg-white:hover { background-color: var(--dcz-elevated) !important; }
+.dark .hover\:bg-gray-50:hover { background-color: var(--dcz-surface) !important; }
+.dark .hover\:bg-gray-100:hover { background-color: var(--dcz-surface) !important; }
+.dark .hover\:bg-gray-200:hover { background-color: #1f3552 !important; }
+.dark .hover\:bg-slate-50:hover { background-color: var(--dcz-surface) !important; }
+.dark .hover\:bg-slate-100:hover { background-color: var(--dcz-surface) !important; }
+
+/* Group hover */
+.dark .group:hover .group-hover\:bg-white { background-color: var(--dcz-elevated) !important; }
+.dark .group:hover .group-hover\:bg-gray-50 { background-color: var(--dcz-surface) !important; }
+
+/* ── Texto neutro ───────────────────────────────────────────────────────── */
+.dark .text-white { color: var(--dcz-text) !important; }
+.dark .text-black { color: var(--dcz-text) !important; }
+.dark .text-gray-900 { color: var(--dcz-text) !important; }
+.dark .text-gray-800 { color: #d8e1ee !important; }
+.dark .text-gray-700 { color: #c5d1e2 !important; }
+.dark .text-gray-600 { color: var(--dcz-text-secondary) !important; }
+.dark .text-gray-500 { color: var(--dcz-text-secondary) !important; }
+.dark .text-gray-400 { color: var(--dcz-text-muted) !important; }
+.dark .text-gray-300 { color: #475569 !important; }
+.dark .text-slate-900 { color: var(--dcz-text) !important; }
+.dark .text-slate-800 { color: #d8e1ee !important; }
+.dark .text-slate-700 { color: #c5d1e2 !important; }
+.dark .text-slate-600 { color: var(--dcz-text-secondary) !important; }
+.dark .text-slate-500 { color: var(--dcz-text-secondary) !important; }
+.dark .text-slate-400 { color: var(--dcz-text-muted) !important; }
+
+/* Hover de texto */
+.dark .hover\:text-gray-900:hover { color: var(--dcz-text) !important; }
+.dark .hover\:text-gray-800:hover { color: #d8e1ee !important; }
+.dark .hover\:text-gray-700:hover { color: #c5d1e2 !important; }
+.dark .hover\:text-gray-600:hover { color: var(--dcz-text-secondary) !important; }
+
+/* Placeholders */
+.dark .placeholder-gray-400::placeholder,
+.dark .placeholder\:text-gray-400::placeholder { color: var(--dcz-text-muted) !important; }
+.dark ::placeholder { color: var(--dcz-text-muted) !important; opacity: 1; }
+
+/* ── Bordas ─────────────────────────────────────────────────────────────── */
+.dark .border-white { border-color: var(--dcz-border-strong) !important; }
+.dark .border-gray-100 { border-color: var(--dcz-border) !important; }
+.dark .border-gray-200 { border-color: var(--dcz-border) !important; }
+.dark .border-gray-300 { border-color: var(--dcz-border-strong) !important; }
+.dark .border-gray-700 { border-color: var(--dcz-border-strong) !important; }
+.dark .border-gray-800 { border-color: var(--dcz-border) !important; }
+.dark .border-slate-100,
+.dark .border-slate-200 { border-color: var(--dcz-border) !important; }
+.dark .border-slate-300 { border-color: var(--dcz-border-strong) !important; }
+
+/* Hover border */
+.dark .hover\:border-gray-300:hover { border-color: var(--dcz-border-strong) !important; }
+.dark .hover\:border-gray-400:hover { border-color: var(--dcz-accent) !important; }
+
+/* Divide (entre linhas de tabela/lista) */
+.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--dcz-border) !important;
+}
+
+/* Ring (focus outline) */
+.dark .ring-gray-200,
+.dark .ring-gray-300,
+.dark .ring-slate-200 { --tw-ring-color: var(--dcz-border-strong) !important; }
+.dark .focus\:ring-gray-300:focus { --tw-ring-color: var(--dcz-border-strong) !important; }
+
+/* ── Inputs ─────────────────────────────────────────────────────────────── */
+.dark .input,
+.dark input[type="text"],
+.dark input[type="number"],
+.dark input[type="email"],
+.dark input[type="search"],
+.dark input[type="tel"],
+.dark input[type="url"],
+.dark input[type="date"],
+.dark input[type="time"],
+.dark input[type="datetime-local"],
+.dark input[type="password"],
+.dark textarea,
+.dark select {
+  background-color: var(--dcz-elevated) !important;
+  color: var(--dcz-text) !important;
+  border-color: var(--dcz-border) !important;
+}
+.dark .input:disabled,
+.dark input:disabled,
+.dark textarea:disabled,
+.dark select:disabled {
+  background-color: var(--dcz-surface) !important;
+  color: var(--dcz-text-muted) !important;
+}
+
+/* ── Cores de status (mantém legibilidade dos badges) ───────────────────── */
+.dark .bg-green-50 { background-color: rgba(34, 197, 94, 0.10) !important; }
+.dark .bg-green-100 { background-color: rgba(34, 197, 94, 0.18) !important; }
+.dark .text-green-600 { color: #4ade80 !important; }
+.dark .text-green-700 { color: #4ade80 !important; }
+.dark .text-green-800 { color: #86efac !important; }
+.dark .border-green-200 { border-color: rgba(34, 197, 94, 0.35) !important; }
+
+.dark .bg-red-50 { background-color: rgba(239, 68, 68, 0.10) !important; }
+.dark .bg-red-100 { background-color: rgba(239, 68, 68, 0.18) !important; }
+.dark .text-red-600 { color: #f87171 !important; }
+.dark .text-red-700 { color: #f87171 !important; }
+.dark .text-red-800 { color: #fca5a5 !important; }
+.dark .border-red-200 { border-color: rgba(239, 68, 68, 0.35) !important; }
+
+.dark .bg-yellow-50,
+.dark .bg-amber-50 { background-color: rgba(245, 158, 11, 0.10) !important; }
+.dark .bg-yellow-100,
+.dark .bg-amber-100 { background-color: rgba(245, 158, 11, 0.18) !important; }
+.dark .text-yellow-600,
+.dark .text-amber-600 { color: #fbbf24 !important; }
+.dark .text-yellow-700,
+.dark .text-amber-700 { color: #fbbf24 !important; }
+.dark .text-yellow-800,
+.dark .text-amber-800 { color: #fcd34d !important; }
+.dark .border-yellow-200,
+.dark .border-amber-200 { border-color: rgba(245, 158, 11, 0.35) !important; }
+
+.dark .bg-blue-50 { background-color: rgba(59, 130, 246, 0.10) !important; }
+.dark .bg-blue-100 { background-color: rgba(59, 130, 246, 0.18) !important; }
+.dark .text-blue-600 { color: #60a5fa !important; }
+.dark .text-blue-700 { color: #60a5fa !important; }
+.dark .text-blue-800 { color: #93c5fd !important; }
+.dark .border-blue-200 { border-color: rgba(59, 130, 246, 0.35) !important; }
+
+.dark .bg-purple-50 { background-color: rgba(168, 85, 247, 0.10) !important; }
+.dark .bg-purple-100 { background-color: rgba(168, 85, 247, 0.18) !important; }
+.dark .text-purple-600 { color: #c084fc !important; }
+.dark .text-purple-700 { color: #c084fc !important; }
+.dark .border-purple-200 { border-color: rgba(168, 85, 247, 0.35) !important; }
+
+.dark .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.10) !important; }
+.dark .bg-indigo-100 { background-color: rgba(99, 102, 241, 0.18) !important; }
+.dark .text-indigo-600 { color: #818cf8 !important; }
+.dark .text-indigo-700 { color: #818cf8 !important; }
+.dark .border-indigo-200 { border-color: rgba(99, 102, 241, 0.35) !important; }
+
+/* ── Marca WhatsApp (preserva o verde 500/600/700 — apenas suaviza o 50) ── */
+.dark .bg-whatsapp-50 { background-color: rgba(37, 211, 102, 0.12) !important; }
+.dark .text-whatsapp-700 { color: #6cf8bb !important; }
+.dark .text-whatsapp-600 { color: #4ade80 !important; }
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+.dark .scrollbar-thin::-webkit-scrollbar-thumb { background: #2a3f5f; }
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #3b5478; }
+
+/* ── Shadows menos agressivas em dark ───────────────────────────────────── */
+.dark .shadow,
+.dark .shadow-sm,
+.dark .shadow-md,
+.dark .shadow-lg,
+.dark .shadow-xl { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important; }
+
+/* ── Tabelas zebra ──────────────────────────────────────────────────────── */
+.dark .odd\:bg-white:nth-child(odd) { background-color: var(--dcz-card) !important; }
+.dark .even\:bg-gray-50:nth-child(even),
+.dark .even\:bg-slate-50:nth-child(even) { background-color: var(--dcz-elevated) !important; }

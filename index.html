@@ -8,6 +8,45 @@
     <meta property="og:image" content="https://bolt.new/static/og_default.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:image" content="https://bolt.new/static/og_default.png" />
+    <script>
+      // Tema dark/light — aplicado ANTES do React montar pra evitar flash branco.
+      // Prioridade:
+      //   1) ?theme=dark | ?theme=light na URL (persiste em localStorage)
+      //   2) localStorage.tw_theme
+      //   3) Auto: se estiver em iframe (embed dentro do dcz-crm-sync) -> dark
+      //   4) Caso contrário, prefers-color-scheme do SO
+      (function () {
+        try {
+          var qs = new URLSearchParams(location.search);
+          var qp = qs.get('theme');
+          var stored = null;
+          try { stored = localStorage.getItem('tw_theme'); } catch (_) {}
+          var theme = null;
+          if (qp === 'dark' || qp === 'light') {
+            theme = qp;
+            try { localStorage.setItem('tw_theme', theme); } catch (_) {}
+          } else if (stored === 'dark' || stored === 'light') {
+            theme = stored;
+          } else {
+            var inIframe = false;
+            try { inIframe = window.self !== window.top; } catch (_) { inIframe = true; }
+            if (inIframe) {
+              theme = 'dark';
+            } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+              theme = 'dark';
+            } else {
+              theme = 'light';
+            }
+          }
+          if (theme === 'dark') {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (e) { /* noop */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

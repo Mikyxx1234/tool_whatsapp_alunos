@@ -1,9 +1,22 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
+        // Paleta dark integrada com o dcz-crm-sync (via index.css overrides).
+        // Tokens próprios opcionais — todo o esquema dark real vive em index.css
+        // sobrescrevendo as classes neutras do Tailwind (bg-white, text-gray-*, etc.).
+        dcz: {
+          bg: '#0b1623',
+          card: '#122033',
+          elevated: '#1a2942',
+          border: 'rgba(76, 112, 154, 0.25)',
+          text: '#e6edf6',
+          textSecondary: '#9aabc3',
+          textMuted: '#6b7d97',
+        },
         whatsapp: {
           50: '#e8f5e9',
           100: '#c8e6c9',
