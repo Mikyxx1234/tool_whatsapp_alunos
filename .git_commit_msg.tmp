@@ -1,0 +1,27 @@
+perf(ativacao): paraleliza loop + pula GET redundante do origem_ativacao
+
+Diagnóstico: para 61 pessoas o batch demorava ~5min porque:
+- loop 100% sequencial
+- verifyOrigemAtivacaoForCategory fazia PUT (necessário) E GET na API
+  pública (best-effort, mas rodava sempre) por pessoa = 2× round-trips
+- sendDelay=400ms entre cada um (redundante com whatsappSendLimiter 60/s)
+
+3 mudanças cirúrgicas:
+
+1. datacrazyClient.verifyOrigemAtivacaoForCategory(leadId, category, { skipRead })
+   - skipRead=true pula o GET (mantém PUT). Usado dentro do loop de batch.
+   - Pré-voo (antes do loop) continua com verify completo (PUT+GET) para
+     validar o caminho 1× por batch.
+
+2. ACTIVATION_SEND_DELAY_MS default: 400 → 0
+   - whatsappSendLimiter (60/s) já controla o ritmo. Manter > 0 só se
+     quiser espaçamento extra (override via env).
+
+3. ACTIVATION_BATCH_CONCURRENCY (novo, default 5, max 10)
+   - Loop processa em chunks paralelos via Promise.all.
+   - Ordem dos resultados preservada.
+   - Rate limiters (WhatsApp 60/s, DataCrazy CRM 10/s) protegem contra
+     burst — concorrência só preenche o pipeline durante latência da rede.
+   - Sentinel origem_ativacao_blocked continua interrompendo entre chunks.
+
+Estimativa pra 61 pessoas: 5min → ~30-40s.

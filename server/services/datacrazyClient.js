@@ -509,7 +509,8 @@ async function updateLeadAdditionalField(leadId, fieldDefinitionId, value) {
  * Grava `origem_ativacao` e confirma leitura no lead (GET com additionalFields).
  * Usado no disparo — falha deve interromper a ativação.
  */
-async function verifyOrigemAtivacaoForCategory(leadId, category) {
+async function verifyOrigemAtivacaoForCategory(leadId, category, opts = {}) {
+  const skipRead = Boolean(opts.skipRead);
   const expected = origemAtivacaoForCategory(category);
   if (!expected) {
     return { ok: false, skipped: true, reason: 'categoria_sem_mapeamento' };
@@ -529,6 +530,8 @@ async function verifyOrigemAtivacaoForCategory(leadId, category) {
   // 2) GET na API pública é só double-check best-effort: se o campo voltar
   //    correto, marcamos verified=true; se não voltar (config "campo não
   //    exposto via API"), seguimos com ok=true, verified=false e warning no log.
+  // skipRead=true pula o GET (usado dentro do loop de batch — pré-voo
+  // já validou o caminho completo, repetir o GET por pessoa é desperdício).
   try {
     const data = await updateLeadAdditionalField(
       leadId,
@@ -536,6 +539,16 @@ async function verifyOrigemAtivacaoForCategory(leadId, category) {
       expected
     );
     const putValue = data?.value ?? expected;
+
+    if (skipRead) {
+      return {
+        ok: true,
+        verified: false,
+        field: ORIGEM_ATIVACAO_FIELD,
+        value: putValue,
+      };
+    }
+
     let lead = null;
     let readErrMsg = null;
     try {

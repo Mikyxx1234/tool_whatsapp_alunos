@@ -1061,7 +1061,16 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
     break;
   }
 
-  const sendDelay = Math.max(Number(process.env.ACTIVATION_SEND_DELAY_MS) || 400, 0);
+  // Delay redundante com whatsappSendLimiter (60/s). Default 0 = só o limiter
+  // controla o ritmo. Manter > 0 só pra forçar espaçamento extra.
+  const sendDelay = Math.max(Number(process.env.ACTIVATION_SEND_DELAY_MS) || 0, 0);
+  // Concorrência: até N envios em paralelo. Rate limiters (WhatsApp 60/s e
+  // DataCrazy CRM 10/s) protegem contra burst — concorrência só preenche o
+  // pipeline enquanto cada chamada está esperando resposta da rede.
+  const batchConcurrency = Math.max(
+    1,
+    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 5, 10)
+  );
   const sendChannel = messagingProvider.getName();
   /** @type {Map<string, object[]>} */
   const templateComponentsByName = new Map();
@@ -1087,8 +1096,10 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
   /** @type {string|null} */
   let origem_ativacao_error = null;
 
-  for (const item of toProcess) {
-    if (origem_ativacao_blocked) break;
+  // Processa 1 item. Retorna o outcome (não acumula contadores — quem chama
+  // soma fora). Mantém todos os side-effects originais (DB writes, logs).
+  /** @returns {Promise<{ status: 'sent'|'not_found'|'failed', result: object, blocked?: boolean, blockedError?: string, notFoundItem?: object }>} */
+  const processItem = async (item) => {
     const master_key = item.master_key || masterKeyFromActivationItem(item);
     const prior = item.prior_activation_count ?? 0;
     const message_tier = resolveMessageTier(prior);
@@ -1097,7 +1108,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
       resolveTemplateForActivation(category, prior, storedTemplates);
 
     if (!template_name) {
-      failed += 1;
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1109,8 +1119,10 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         rgm: item.rgm,
         errorMessage: `Template não configurado para ${tierLabel(message_tier)}. Defina ACTIVATION_TEMPLATE_* no .env`,
       });
-      results.push({ ...item, status: 'failed', error: 'template_nao_configurado' });
-      continue;
+      return {
+        status: 'failed',
+        result: { ...item, status: 'failed', error: 'template_nao_configurado' },
+      };
     }
 
     const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
@@ -1119,7 +1131,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
     });
 
     if (!lead) {
-      not_found += 1;
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1131,9 +1142,11 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         email: item.email,
         rgm: item.rgm,
       });
-      not_found_items.push({ ...item, message_tier, template_name });
-      results.push({ ...item, status: 'not_found', datacrazy: null });
-      continue;
+      return {
+        status: 'not_found',
+        result: { ...item, status: 'not_found', datacrazy: null },
+        notFoundItem: { ...item, message_tier, template_name },
+      };
     }
 
     let phone =
@@ -1141,7 +1154,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
       datacrazyClient.normalizePhoneDigits(item.telefone);
     if (phone && phone.length <= 11) phone = `55${phone}`;
     if (!phone) {
-      failed += 1;
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1152,14 +1164,19 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         nome: item.nome,
         errorMessage: 'Lead no DataCrazy sem telefone',
       });
-      results.push({ ...item, status: 'failed', error: 'sem_telefone' });
-      continue;
+      return {
+        status: 'failed',
+        result: { ...item, status: 'failed', error: 'sem_telefone' },
+      };
     }
 
     try {
+      // skipRead=true: pré-voo já validou o caminho PUT+GET; aqui só PUT.
+      // Corta ~50% do tempo por pessoa (GET na API pública leva 1-2s).
       const origemResult = await datacrazyClient.verifyOrigemAtivacaoForCategory(
         lead.id,
-        category
+        category,
+        { skipRead: true }
       );
       try {
         await activationOrigemRepo.recordOrigemAtivacaoLog({
@@ -1177,9 +1194,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         console.warn('[ativacao] log origem_ativacao:', logErr.message);
       }
       if (!origemResult.ok) {
-        failed += 1;
-        origem_ativacao_blocked = true;
-        origem_ativacao_error = origemResult.error || 'origem_ativacao';
+        const errMsg = origemResult.error || 'origem_ativacao';
         await activationDispatchRepo.recordDispatchEvent({
           category,
           masterKey: master_key,
@@ -1191,18 +1206,22 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
           telefone: item.telefone,
           email: item.email,
           rgm: item.rgm,
-          errorMessage: `origem_ativacao: ${origem_ativacao_error}`,
+          errorMessage: `origem_ativacao: ${errMsg}`,
         });
-        results.push({
-          ...item,
+        return {
           status: 'failed',
-          error: 'origem_ativacao',
-          template_name,
-          message_tier,
-          origem_ativacao_error,
-          datacrazy: mapDatacrazyLead(lead),
-        });
-        break;
+          blocked: true,
+          blockedError: errMsg,
+          result: {
+            ...item,
+            status: 'failed',
+            error: 'origem_ativacao',
+            template_name,
+            message_tier,
+            origem_ativacao_error: errMsg,
+            datacrazy: mapDatacrazyLead(lead),
+          },
+        };
       }
 
       const variables = {
@@ -1219,7 +1238,6 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         variables,
         templateComponents: templateComponentsByName.get(template_name) || [],
       });
-      sent += 1;
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1233,16 +1251,18 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         email: item.email,
         rgm: item.rgm,
       });
-      results.push({
-        ...item,
+      return {
         status: 'sent',
-        template_name,
-        message_tier,
-        origem_ativacao: origemResult.value,
-        datacrazy: mapDatacrazyLead(lead),
-      });
+        result: {
+          ...item,
+          status: 'sent',
+          template_name,
+          message_tier,
+          origem_ativacao: origemResult.value,
+          datacrazy: mapDatacrazyLead(lead),
+        },
+      };
     } catch (err) {
-      failed += 1;
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1256,10 +1276,36 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         rgm: item.rgm,
         errorMessage: err.message,
       });
-      results.push({ ...item, status: 'failed', error: err.message, datacrazy: mapDatacrazyLead(lead) });
+      return {
+        status: 'failed',
+        result: { ...item, status: 'failed', error: err.message, datacrazy: mapDatacrazyLead(lead) },
+      };
     }
+  };
 
-    if (sendDelay > 0) await sleep(sendDelay);
+  // Processa em chunks de batchConcurrency em paralelo. Mantém ordem dos
+  // resultados (Promise.all preserva). Se algum item bloquear por
+  // origem_ativacao, sinaliza e os chunks seguintes não rodam — itens já
+  // em voo nesse chunk completam normalmente.
+  for (let i = 0; i < toProcess.length; i += batchConcurrency) {
+    if (origem_ativacao_blocked) break;
+    const chunk = toProcess.slice(i, i + batchConcurrency);
+    const outcomes = await Promise.all(chunk.map(processItem));
+    for (const o of outcomes) {
+      if (o.status === 'sent') sent += 1;
+      else if (o.status === 'not_found') {
+        not_found += 1;
+        if (o.notFoundItem) not_found_items.push(o.notFoundItem);
+      } else if (o.status === 'failed') failed += 1;
+      results.push(o.result);
+      if (o.blocked) {
+        origem_ativacao_blocked = true;
+        origem_ativacao_error = o.blockedError || 'origem_ativacao';
+      }
+    }
+    if (sendDelay > 0 && i + batchConcurrency < toProcess.length) {
+      await sleep(sendDelay);
+    }
   }
 
   invalidateActivationListCache(category);
