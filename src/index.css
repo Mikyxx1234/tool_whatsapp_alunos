@@ -256,3 +256,76 @@ html.dark body {
 .dark .odd\:bg-white:nth-child(odd) { background-color: var(--dcz-card) !important; }
 .dark .even\:bg-gray-50:nth-child(even),
 .dark .even\:bg-slate-50:nth-child(even) { background-color: var(--dcz-elevated) !important; }
+
+/* ============================================================================
+   DARK MODE — classes COM MODIFICADOR DE OPACIDADE (Tailwind /N)
+   ----------------------------------------------------------------------------
+   Tailwind compila `bg-gray-50/80` em CSS hardcoded `rgb(249 250 251 / 0.8)`,
+   bypassando classes simples. Aqui sobrescrevemos cada variante usada no app
+   pra evitar caixas brancas/cinzas sobre o fundo escuro.
+   ========================================================================== */
+
+/* Brancos com opacidade — vira tom de card escuro com transparência */
+.dark .bg-white\/60 { background-color: rgba(18, 32, 51, 0.60) !important; }
+.dark .bg-white\/70 { background-color: rgba(18, 32, 51, 0.70) !important; }
+.dark .bg-white\/80 { background-color: rgba(18, 32, 51, 0.80) !important; }
+.dark .bg-white\/90 { background-color: rgba(18, 32, 51, 0.90) !important; }
+.dark .hover\:bg-white\/60:hover { background-color: rgba(26, 41, 66, 0.60) !important; }
+.dark .hover\:bg-white\/70:hover { background-color: rgba(26, 41, 66, 0.70) !important; }
+.dark .hover\:bg-white\/80:hover { background-color: rgba(26, 41, 66, 0.80) !important; }
+
+/* Gray-50 com opacidade — vira tom elevated com transparência */
+.dark .bg-gray-50\/30 { background-color: rgba(26, 41, 66, 0.30) !important; }
+.dark .bg-gray-50\/40 { background-color: rgba(26, 41, 66, 0.40) !important; }
+.dark .bg-gray-50\/50 { background-color: rgba(26, 41, 66, 0.50) !important; }
+.dark .bg-gray-50\/60 { background-color: rgba(26, 41, 66, 0.60) !important; }
+.dark .bg-gray-50\/70 { background-color: rgba(26, 41, 66, 0.70) !important; }
+.dark .bg-gray-50\/80 { background-color: rgba(26, 41, 66, 0.80) !important; }
+.dark .bg-gray-50\/90 { background-color: rgba(26, 41, 66, 0.90) !important; }
+.dark .hover\:bg-gray-50\/30:hover { background-color: rgba(31, 53, 82, 0.30) !important; }
+.dark .hover\:bg-gray-50\/40:hover { background-color: rgba(31, 53, 82, 0.40) !important; }
+.dark .hover\:bg-gray-50\/50:hover { background-color: rgba(31, 53, 82, 0.50) !important; }
+.dark .hover\:bg-gray-50\/60:hover { background-color: rgba(31, 53, 82, 0.60) !important; }
+.dark .hover\:bg-gray-50\/80:hover { background-color: rgba(31, 53, 82, 0.80) !important; }
+
+/* Gray-100/200 com opacidade — variantes raras mas cobertura */
+.dark .bg-gray-100\/50 { background-color: rgba(26, 41, 66, 0.50) !important; }
+.dark .bg-gray-100\/80 { background-color: rgba(26, 41, 66, 0.80) !important; }
+.dark .bg-gray-200\/50 { background-color: rgba(22, 36, 58, 0.50) !important; }
+
+/* Slate com opacidade (mesmas paletas) */
+.dark .bg-slate-50\/30 { background-color: rgba(26, 41, 66, 0.30) !important; }
+.dark .bg-slate-50\/50 { background-color: rgba(26, 41, 66, 0.50) !important; }
+.dark .bg-slate-50\/60 { background-color: rgba(26, 41, 66, 0.60) !important; }
+.dark .bg-slate-50\/80 { background-color: rgba(26, 41, 66, 0.80) !important; }
+.dark .hover\:bg-slate-50\/50:hover { background-color: rgba(31, 53, 82, 0.50) !important; }
+.dark .hover\:bg-slate-50\/60:hover { background-color: rgba(31, 53, 82, 0.60) !important; }
+
+/* Gray-900 e Black com opacidade — overlays de modal, ficam ainda mais escuros */
+.dark .bg-gray-900\/40 { background-color: rgba(0, 0, 0, 0.65) !important; }
+.dark .bg-gray-900\/50 { background-color: rgba(0, 0, 0, 0.70) !important; }
+.dark .bg-gray-900\/60 { background-color: rgba(0, 0, 0, 0.75) !important; }
+.dark .bg-black\/40 { background-color: rgba(0, 0, 0, 0.65) !important; }
+.dark .bg-black\/50 { background-color: rgba(0, 0, 0, 0.70) !important; }
+.dark .bg-black\/60 { background-color: rgba(0, 0, 0, 0.75) !important; }
+
+/* Emerald com opacidade — verde suave preservado, ajuste de luminosidade */
+.dark .bg-emerald-50\/30 { background-color: rgba(34, 197, 94, 0.10) !important; }
+.dark .bg-emerald-50\/50 { background-color: rgba(34, 197, 94, 0.14) !important; }
+.dark .bg-emerald-50\/60 { background-color: rgba(34, 197, 94, 0.17) !important; }
+.dark .bg-emerald-50\/80 { background-color: rgba(34, 197, 94, 0.20) !important; }
+.dark .hover\:bg-emerald-50\/30:hover { background-color: rgba(34, 197, 94, 0.12) !important; }
+.dark .hover\:bg-emerald-50\/50:hover { background-color: rgba(34, 197, 94, 0.16) !important; }
+.dark .text-emerald-700\/70 { color: rgba(110, 231, 183, 0.75) !important; }
+.dark .text-emerald-700\/90 { color: rgba(110, 231, 183, 0.92) !important; }
+
+/* Whatsapp com opacidade (cor de marca) */
+.dark .bg-whatsapp-50\/50 { background-color: rgba(37, 211, 102, 0.14) !important; }
+.dark .bg-whatsapp-50\/60 { background-color: rgba(37, 211, 102, 0.17) !important; }
+.dark .bg-whatsapp-50\/80 { background-color: rgba(37, 211, 102, 0.20) !important; }
+
+/* Cores de status com opacidade */
+.dark .bg-red-50\/50 { background-color: rgba(239, 68, 68, 0.10) !important; }
+.dark .bg-yellow-50\/50,
+.dark .bg-amber-50\/50 { background-color: rgba(245, 158, 11, 0.10) !important; }
+.dark .bg-blue-50\/50 { background-color: rgba(59, 130, 246, 0.10) !important; }
