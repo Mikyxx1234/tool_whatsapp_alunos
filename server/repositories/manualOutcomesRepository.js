@@ -229,3 +229,163 @@ export async function createFromCrm(data) {
     occurred_at: data.occurred_at ?? new Date(),
   });
 }
+
+/* ============================================================================
+   MEU PAINEL — funções para a página de marcação por consultor
+   ----------------------------------------------------------------------------
+   Cruzam activation_responses (leads atribuídos via webhook do n8n) com
+   caa_protocols (status atual do CAA) e activation_manual_outcomes (última
+   marcação manual do consultor). Usadas em GET /api/activation/meu-painel/*.
+   ========================================================================== */
+
+/**
+ * Lista leads atribuídos ao consultor (consultor_responsavel_nome) com status
+ * CAA atual e última marcação manual (se houver). Se consultorNome for null
+ * ou '*', retorna todos (modo admin).
+ *
+ * @param {{
+ *   consultor?: string|null,
+ *   from?: string|Date|null,
+ *   to?: string|Date|null,
+ *   category?: string|null,
+ *   limit?: number,
+ *   offset?: number,
+ * }} filters
+ * @returns {Promise<Array<object>>}
+ */
+export async function listMeuPainel(filters = {}) {
+  const isAdmin = !filters.consultor || filters.consultor === '*';
+  const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
+  const fromDate = filters.from ? new Date(filters.from) : null;
+  const toDate = filters.to ? new Date(filters.to) : null;
+  const category = filters.category ? String(filters.category).trim() : null;
+  const limit = Math.min(Math.max(parseInt(String(filters.limit ?? '200'), 10) || 200, 1), 1000);
+  const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
+
+  const { rows } = await query(
+    `
+    select
+      ar.id                            as response_id,
+      ar.category                      as category,
+      ar.master_key                    as master_key,
+      ar.rgm                           as rgm,
+      ar.telefone                      as telefone,
+      ar.consultor_responsavel_nome    as consultor_responsavel_nome,
+      ar.response_kind                 as response_kind,
+      ar.message_text                  as message_text,
+      ar.button_payload                as button_payload,
+      ar.received_at                   as received_at,
+      cp.protocolo                     as protocolo,
+      cp.nome                          as nome,
+      cp.cpf                           as cpf,
+      cp.curso                         as curso,
+      cp.polo                          as polo,
+      cp.status                        as caa_status,
+      cp.last_status_change_at         as caa_last_change_at,
+      amo.id                           as outcome_id,
+      amo.outcome                      as outcome,
+      amo.motivo                       as outcome_motivo,
+      amo.notes                        as outcome_notes,
+      amo.occurred_at                  as outcome_occurred_at,
+      amo.consultor_nome               as outcome_consultor_nome,
+      amo.proof_path is not null       as outcome_has_proof
+    from activation_responses ar
+    left join caa_protocols cp
+      on cp.rgm = ar.rgm
+     and ar.rgm is not null
+    left join lateral (
+      select id, outcome, motivo, notes, occurred_at, consultor_nome, proof_path
+        from activation_manual_outcomes
+       where rgm = ar.rgm
+         and category = ar.category
+         and ar.rgm is not null
+       order by occurred_at desc
+       limit 1
+    ) amo on true
+    where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
+      and ($2::timestamptz is null or ar.received_at >= $2)
+      and ($3::timestamptz is null or ar.received_at <= $3)
+      and ($4::text is null or ar.category = $4)
+    order by ar.received_at desc
+    limit $5 offset $6
+    `,
+    [consultorPattern, fromDate, toDate, category, limit, offset]
+  );
+  return rows;
+}
+
+/**
+ * KPIs do consultor: total atribuído, marcados (qualquer outcome),
+ * revertido, confirmado, sem_contato, outro, opt_outs.
+ * Quando consultor é null/'*', retorna estatísticas globais.
+ *
+ * @param {{
+ *   consultor?: string|null,
+ *   from?: string|Date|null,
+ *   to?: string|Date|null,
+ *   category?: string|null,
+ * }} filters
+ * @returns {Promise<{
+ *   total_atribuido: number,
+ *   total_opt_out: number,
+ *   total_marcado: number,
+ *   total_revertido: number,
+ *   total_confirmado: number,
+ *   total_sem_contato: number,
+ *   total_outro: number,
+ *   taxa_reversao: number,
+ * }>}
+ */
+export async function meuPainelStats(filters = {}) {
+  const isAdmin = !filters.consultor || filters.consultor === '*';
+  const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
+  const fromDate = filters.from ? new Date(filters.from) : null;
+  const toDate = filters.to ? new Date(filters.to) : null;
+  const category = filters.category ? String(filters.category).trim() : null;
+
+  const { rows } = await query(
+    `
+    with my_responses as (
+      select ar.id, ar.category, ar.rgm, ar.response_kind
+        from activation_responses ar
+       where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
+         and ($2::timestamptz is null or ar.received_at >= $2)
+         and ($3::timestamptz is null or ar.received_at <= $3)
+         and ($4::text is null or ar.category = $4)
+    ),
+    latest_outcomes as (
+      select distinct on (mr.rgm, mr.category)
+             mr.id as response_id, amo.outcome
+        from my_responses mr
+        left join activation_manual_outcomes amo
+          on amo.rgm = mr.rgm
+         and amo.category = mr.category
+       where mr.rgm is not null
+       order by mr.rgm, mr.category, amo.occurred_at desc nulls last
+    )
+    select
+      (select count(*)::int from my_responses)                                              as total_atribuido,
+      (select count(*)::int from my_responses where response_kind = 'opt_out')              as total_opt_out,
+      (select count(*)::int from latest_outcomes where outcome is not null)                 as total_marcado,
+      (select count(*)::int from latest_outcomes where outcome = 'revertido')               as total_revertido,
+      (select count(*)::int from latest_outcomes where outcome = 'confirmado')              as total_confirmado,
+      (select count(*)::int from latest_outcomes where outcome = 'sem_contato')             as total_sem_contato,
+      (select count(*)::int from latest_outcomes where outcome = 'outro')                   as total_outro
+    `,
+    [consultorPattern, fromDate, toDate, category]
+  );
+  const r = rows[0] || {};
+  const totalMarcado = Number(r.total_marcado || 0);
+  const totalRevertido = Number(r.total_revertido || 0);
+  const taxaReversao = totalMarcado > 0 ? totalRevertido / totalMarcado : 0;
+  return {
+    total_atribuido: Number(r.total_atribuido || 0),
+    total_opt_out: Number(r.total_opt_out || 0),
+    total_marcado: totalMarcado,
+    total_revertido: totalRevertido,
+    total_confirmado: Number(r.total_confirmado || 0),
+    total_sem_contato: Number(r.total_sem_contato || 0),
+    total_outro: Number(r.total_outro || 0),
+    taxa_reversao: taxaReversao,
+  };
+}

@@ -7,6 +7,7 @@ import JourneyRulesPage from './pages/JourneyRulesPage';
 import ReportsPage from './pages/ReportsPage';
 import BasesPage from './pages/BasesPage';
 import ActivationConversionPage from './pages/ActivationConversionPage';
+import MeuPainelPage from './pages/MeuPainelPage';
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/bases" element={<BasesPage />} />
         <Route path="/journey-rules" element={<JourneyRulesPage />} />
         <Route path="/conversao" element={<ActivationConversionPage />} />
+        <Route path="/meu-painel" element={<MeuPainelPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

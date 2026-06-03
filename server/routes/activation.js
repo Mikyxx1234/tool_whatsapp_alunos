@@ -20,7 +20,13 @@ import {
   setActivationTemplateConfig,
 } from '../services/activationTemplateConfigService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
+import * as manualOutcomesRepo from '../repositories/manualOutcomesRepository.js';
 import { requireApiKey } from '../middleware/requireApiKey.js';
+
+const VALID_OUTCOMES = new Set(['revertido', 'confirmado', 'sem_contato', 'outro']);
+const VALID_MEU_PAINEL_CATEGORIES = new Set([
+  'docs-pendentes', 'financeiro', 'acessos-blackboard', 'processos-caa', 'provavel-evasao',
+]);
 
 const router = Router();
 
@@ -79,6 +85,141 @@ router.post('/responses', requireApiKey, async (req, res) => {
       rawPayload: body,
     });
     res.json({ ok: true, inserted: Boolean(row), row: row ?? null });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+/* ============================================================================
+   MEU PAINEL — endpoints da pagina de marcacao manual por consultor
+   ----------------------------------------------------------------------------
+   Identidade do consultor vem via query param (passado pelo dcz-crm-sync no
+   src do iframe). Admin envia role=admin ou consultor=* para ver tudo.
+   ========================================================================== */
+
+function resolveConsultor(req) {
+  const role = String(req.query.role || '').trim().toLowerCase();
+  const consultorRaw = String(req.query.consultor || '').trim();
+  if (role === 'admin' || consultorRaw === '*') {
+    return { consultor: null, isAdmin: true };
+  }
+  if (!consultorRaw) {
+    return { consultor: null, isAdmin: false, missing: true };
+  }
+  return { consultor: consultorRaw, isAdmin: false };
+}
+
+/** GET /api/activation/meu-painel/list */
+router.get('/meu-painel/list', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const { consultor, isAdmin, missing } = resolveConsultor(req);
+    if (missing) {
+      return res.json({ consultor: null, is_admin: false, total: 0, items: [], missing_consultor: true });
+    }
+    const category = String(req.query.category || '').trim() || null;
+    if (category && !VALID_MEU_PAINEL_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category invalida: ${category}` });
+    }
+    const rows = await manualOutcomesRepo.listMeuPainel({
+      consultor,
+      from: req.query.from || null,
+      to: req.query.to || null,
+      category,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json({
+      consultor: consultor || null,
+      is_admin: isAdmin,
+      total: rows.length,
+      items: rows,
+    });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+/** GET /api/activation/meu-painel/stats */
+router.get('/meu-painel/stats', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const { consultor, isAdmin, missing } = resolveConsultor(req);
+    if (missing) {
+      return res.json({
+        consultor: null,
+        is_admin: false,
+        missing_consultor: true,
+        stats: {
+          total_atribuido: 0, total_opt_out: 0, total_marcado: 0,
+          total_revertido: 0, total_confirmado: 0, total_sem_contato: 0,
+          total_outro: 0, taxa_reversao: 0,
+        },
+      });
+    }
+    const category = String(req.query.category || '').trim() || null;
+    if (category && !VALID_MEU_PAINEL_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category invalida: ${category}` });
+    }
+    const stats = await manualOutcomesRepo.meuPainelStats({
+      consultor,
+      from: req.query.from || null,
+      to: req.query.to || null,
+      category,
+    });
+    res.json({ consultor: consultor || null, is_admin: isAdmin, stats });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+/** POST /api/activation/meu-painel/outcomes
+ *  Grava marcacao manual. Body:
+ *    { category, rgm?, cpf?, nome?, protocolo?, master_key?,
+ *      outcome, motivo?, notes?, consultor_nome, occurred_at? }
+ *  consultor_nome aceita o nome vindo do dcz (session full_name derivado).
+ */
+router.post('/meu-painel/outcomes', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const body = req.body ?? {};
+    const category = String(body.category || '').trim();
+    const outcome = String(body.outcome || '').trim();
+    const consultorNome =
+      String(body.consultor_nome || body.consultorNome || '').trim().slice(0, 200);
+    const rgm = body.rgm ? String(body.rgm).trim() : null;
+    if (!VALID_MEU_PAINEL_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category invalida: ${category}` });
+    }
+    if (!VALID_OUTCOMES.has(outcome)) {
+      return res.status(400).json({ error: `outcome invalido: ${outcome}. Use revertido | confirmado | sem_contato | outro` });
+    }
+    if (!consultorNome) {
+      return res.status(400).json({ error: 'consultor_nome e obrigatorio' });
+    }
+    if (!rgm && !body.master_key) {
+      return res.status(400).json({ error: 'rgm ou master_key e obrigatorio' });
+    }
+    const row = await manualOutcomesRepo.insertOutcome({
+      category,
+      master_key: body.master_key ?? (rgm ? `RGM:${rgm}` : null),
+      rgm,
+      cpf: body.cpf ? String(body.cpf).trim() : null,
+      nome: body.nome ? String(body.nome).trim().slice(0, 200) : null,
+      protocolo: body.protocolo ? String(body.protocolo).trim() : null,
+      outcome,
+      motivo: body.motivo ? String(body.motivo).trim().slice(0, 500) : null,
+      notes: body.notes ? String(body.notes).trim().slice(0, 2000) : null,
+      consultor_nome: consultorNome,
+      occurred_at: body.occurred_at || null,
+    });
+    res.status(201).json({ ok: true, outcome: row });
   } catch (err) {
     handleError(res, err);
   }

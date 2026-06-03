@@ -7,6 +7,7 @@ import {
   BarChart3,
   Files,
   TrendingUp,
+  ClipboardCheck,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -46,6 +47,12 @@ const NAV: Array<{
     label: 'Conversão',
     icon: TrendingUp,
     match: (p) => p.startsWith('/conversao'),
+  },
+  {
+    to: '/meu-painel',
+    label: 'Meu Painel',
+    icon: ClipboardCheck,
+    match: (p) => p.startsWith('/meu-painel'),
   },
   {
     to: '/journey-rules',
