@@ -250,6 +250,80 @@ Body: {"value": ""}
 - **Endpoint da app `POST /api/activation/responses` fazer o PUT de limpeza:** acopla a app ao fluxo de respostas e duplica responsabilidade — o n8n já é o ponto natural pra isso.
 - **Marcar o campo `origem_ativacao` como "exposto via API" no CRM:** seria mais limpo, mas requer config no DataCrazy que pode não estar disponível na conta. A solução com PUT-trust funciona sem depender disso.
 
+### 03/06/2026 — Painel "Por consultor" (preparação para merge com dcz-crm-sync)
+
+- **Modelo usado:** Opus 4.7 (principal)
+- **Contexto:** Usuário vai mergear este app com `dcz-crm-sync` (Flask, em produção) que já tem `app_users` (id serial, username, pw_hash, role, kommo_user_id, email_cruzeiro, categoria, datacrazy_user_id) + `user_permissions` por página. O merge vai acontecer depois — esta entrega prepara o terreno do lado WhatsApp.
+- **Decisão:** Adicionar identidade do consultor a cada dispatch + painel agregado, **sem** construir auth aqui (vem do merge). A fonte da identidade fica **plugável**: hoje vem de `localStorage` via prompt; depois do merge, o middleware Flask injeta nos headers HTTP.
+
+#### Modelo de dados (migration 024)
+
+```sql
+alter table activation_dispatch_events
+  add column consultor_id integer,           -- compat com app_users.id (serial) do dcz
+  add column consultor_nome text;            -- snapshot pra histórico íntegro
+
+create index ... (consultor_id, category, created_at desc);
+```
+
+Sem FK física (os 2 sistemas podem viver em schemas/bancos separados). FK lógica gerenciada pela app.
+
+#### Convenção pra escrita
+
+Header HTTP nas rotas que precisam autoria:
+- `X-Consultor-Id` (numérico, opcional)
+- `X-Consultor-Nome` (texto, máx 200 chars)
+
+`runDatacrazyActivationBatch` aceita `opts.consultorId` + `opts.consultorNome` e passa via spread `...consultorFields` nas 6 chamadas a `recordDispatchEvent` (sent / not_found / failed × 4 origens). Disparos sem consultor caem no bucket "Sem consultor" (legados + scheduler).
+
+#### Atribuição de reversão CAA
+
+Para cada `caa_protocols` com status conclusivo (`won_reverted | lost_*`), atribui ao **último consultor que disparou em CAA pro RGM** dentro dos **14 dias** anteriores a `last_status_change_at` (config via `?attribution_window_days=`). Default 14d cobre operação típica.
+
+- **Por quê 14d:** janela CAA é 48h, mas reversão pode demorar dias depois do desfecho do CAA. 14d garante atribuir reversões orgânicas que demoraram + evita atribuir reversões totalmente desconexas (>2 semanas após o último contato).
+- **Conflito:** se o RGM foi disparado por 2 consultores em sequência, leva crédito o **último**. Padrão de comissionamento usual.
+
+#### Endpoint
+
+`GET /api/reports/consultores?period_days=&category=&attribution_window_days=` com `requireApiKey`.
+
+Resposta agrega `consultores[]` ordenado por `totals.dispatches_sent desc`. Cada consultor tem `totals` + `by_category[6]` com: `dispatches_sent`, `unique_recipients`, `total_responses`, `unique_responders/clickers/opt_outs`, `response_rate` (%), e (CAA-only) `caa_revertidos`, `caa_perdidos`, `caa_taxa_reversao` (%).
+
+#### UI
+
+- `ConsultoresPanel` em `/reports` (abaixo de `CaaFunnelPanel`).
+- Filtros: período (7/30/90d) + categoria (Todas + 6).
+- Tabela colapsável: clica na linha do consultor → expande breakdown por categoria.
+- KPIs CAA (revertidos/perdidos/taxa) só aparecem quando categoria='Todas' ou 'CAA'.
+- Hook `useConsultor` em `src/hooks/useConsultor.ts` lê `localStorage.consultor_id` + `consultor_nome`; prompt na 1ª vez. Depois do merge, troca o source pra `useAuth()` sem mudar API pública.
+
+#### Caminho do merge (decisão futura)
+
+Quando for fazer o merge, escolher:
+- **A. SSO por DB compartilhado** — apps separados, Node lê `app_users` do mesmo Postgres (1-2 dias).
+- **B. Sub-app via proxy** — Node sob `/whatsapp/*` do Flask, cookie de sessão compartilhado (3-4 dias).
+- **C. Iframe** — Node embedded no dashboard Flask (2-3 dias, frágil cross-origin).
+- **D. Port pra Flask** — reescreve tudo (2-4 semanas).
+
+Independente do caminho, o painel funciona — só muda a fonte do `X-Consultor-*`.
+
+#### DB topology recomendada
+
+**Mesmo Postgres, schemas separados** (`dcz.app_users`, `whatsapp.activation_dispatch_events`):
+- 1 backup, 1 ponto de monitoramento.
+- Isolamento lógico via schemas.
+- Cross-schema queries possíveis sem FK física.
+
+Alternativas: mesmo schema (acoplamento alto), 2 Postgres separados (precisa sync layer).
+
+#### Alternativas descartadas
+
+- **Construir auth nativa aqui:** trabalho duplicado; vem pronto do merge.
+- **`consultor_nome` como FK em vez de texto:** snapshot por texto preserva histórico se user for renomeado/deletado.
+- **Atribuir reversão a TODOS que dispararam:** confunde número, contraria padrão de comissionamento.
+- **Tabela `consultores` própria neste projeto:** redundante com `app_users`.
+- **Webhook de resposta carregar nome do consultor:** impossível — o webhook vem do CRM, que não conhece quem disparou do nosso lado.
+
 ### 02/06/2026 — Direct search threshold 25→100 + paralelização
 
 - **Modelo usado:** Opus 4.7 (principal)

@@ -1,4 +1,5 @@
 import { apiAuthHeaders } from './apiAuth';
+import { consultorHeaders } from '../hooks/useConsultor';
 
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
@@ -279,6 +280,7 @@ export const activationApi = {
     return jsonFetch<DatacrazyBatchResponse>(`/api/activation/${category}/run-datacrazy-batch`, {
       method: 'POST',
       body: JSON.stringify(body),
+      headers: consultorHeaders(),
     });
   },
 

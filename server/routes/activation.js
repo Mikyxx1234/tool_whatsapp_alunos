@@ -187,7 +187,16 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
     const masterKeys = Array.isArray(req.body?.master_keys)
       ? req.body.master_keys.map(String).filter((k) => k.length > 0)
       : undefined;
-    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys });
+    const consultorId = req.headers['x-consultor-id'] ? Number(req.headers['x-consultor-id']) : null;
+    const consultorNome = typeof req.headers['x-consultor-nome'] === 'string'
+      ? req.headers['x-consultor-nome']
+      : null;
+    const data = await runDatacrazyActivationBatch(category, {
+      limit,
+      masterKeys,
+      consultorId: Number.isFinite(consultorId) ? consultorId : null,
+      consultorNome,
+    });
     res.json(data);
   } catch (err) {
     handleError(res, err);

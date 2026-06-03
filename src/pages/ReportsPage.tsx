@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { BarChart3, RefreshCw } from 'lucide-react';
 import { CaaDailyPanel } from '../components/CaaDailyPanel';
 import { CaaFunnelPanel } from '../components/CaaFunnelPanel';
+import { ConsultoresPanel } from '../components/ConsultoresPanel';
 import { Header } from '../components/Header';
 import { MatriculadosComparisonPanel } from '../components/MatriculadosComparisonPanel';
 import {
@@ -376,6 +377,8 @@ export default function ReportsPage() {
         <CaaDailyPanel />
 
         {active === 'processos-caa' && <CaaFunnelPanel />}
+
+        <ConsultoresPanel />
 
         {active !== 'processos-caa' && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
