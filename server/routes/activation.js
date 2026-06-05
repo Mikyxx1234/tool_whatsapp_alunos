@@ -177,6 +177,50 @@ router.get('/meu-painel/stats', async (req, res) => {
   }
 });
 
+/** PATCH /api/activation/responses/:id/assign-consultor
+ *  Apenas admin (role=admin). Atualiza consultor_responsavel_nome.
+ *  Body: { consultor_nome: string|null, role: string }
+ */
+router.patch('/responses/:id/assign-consultor', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const body = req.body ?? {};
+    const role = String(body.role || req.query.role || '').trim().toLowerCase();
+    if (role !== 'admin') {
+      return res.status(403).json({ error: 'Apenas admin pode atribuir consultor manualmente.', code: 'forbidden' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ error: 'id da resposta e obrigatorio' });
+    }
+    const consultorNome = body.consultor_nome ?? body.consultorNome ?? null;
+    const updated = await activationResponseRepo.updateConsultorResponsavel(id, consultorNome);
+    if (!updated) {
+      return res.status(404).json({ error: `resposta ${id} nao encontrada` });
+    }
+    res.json({ ok: true, row: updated });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+/** GET /api/activation/consultores-distintos
+ *  Lista nomes ja gravados em activation_responses para autocomplete.
+ */
+router.get('/consultores-distintos', async (_req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const consultores = await activationResponseRepo.listDistinctConsultores();
+    res.json({ consultores });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 /** POST /api/activation/meu-painel/outcomes
  *  Grava marcacao manual. Body:
  *    { category, rgm?, cpf?, nome?, protocolo?, master_key?,

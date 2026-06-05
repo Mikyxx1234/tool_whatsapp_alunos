@@ -268,6 +268,48 @@ export async function countSince(category, since) {
   return rows[0] ?? { n: 0, clicks: 0, opt_outs: 0 };
 }
 
+/**
+ * Atualiza consultor_responsavel_nome de uma resposta especifica.
+ * Aceita null pra desatribuir. Retorna a linha atualizada ou null se id nao existe.
+ *
+ * @param {string} id
+ * @param {string|null} consultorNome
+ * @returns {Promise<ActivationResponseRow|null>}
+ */
+export async function updateConsultorResponsavel(id, consultorNome) {
+  const clean =
+    typeof consultorNome === 'string' && consultorNome.trim()
+      ? consultorNome.trim().slice(0, 200)
+      : null;
+  const { rows } = await query(
+    `update activation_responses
+        set consultor_responsavel_nome = $2
+      where id = $1
+      returning id, category, master_key, rgm, telefone,
+                response_kind, received_at, consultor_responsavel_nome`,
+    [id, clean]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Lista valores distintos de consultor_responsavel_nome ja gravados no banco.
+ * Usado pelo autocomplete do modal de atribuicao manual.
+ *
+ * @returns {Promise<string[]>}
+ */
+export async function listDistinctConsultores() {
+  const { rows } = await query(
+    `select distinct consultor_responsavel_nome as nome
+       from activation_responses
+      where consultor_responsavel_nome is not null
+        and trim(consultor_responsavel_nome) <> ''
+      order by nome asc
+      limit 500`
+  );
+  return rows.map((r) => r.nome).filter(Boolean);
+}
+
 /** Lista paginada para a aba "interagiram" — opcional.
  * @param {string} category
  * @param {{ since?: Date, limit?: number }} [opts]

@@ -9,9 +9,11 @@ import {
   TrendingUp,
   Edit3,
   AlertCircle,
+  UserPlus,
 } from 'lucide-react';
 import { Header } from '../components/Header';
 import { OutcomeMarkerModal } from '../components/OutcomeMarkerModal';
+import { AssignConsultorModal } from '../components/AssignConsultorModal';
 import {
   CATEGORY_LABEL,
   MEU_PAINEL_CATEGORIES,
@@ -93,6 +95,7 @@ export default function MeuPainelPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalItem, setModalItem] = useState<MeuPainelItem | null>(null);
+  const [assignItem, setAssignItem] = useState<MeuPainelItem | null>(null);
 
   const reload = useCallback(async () => {
     if (!consultorParaApi) {
@@ -323,14 +326,29 @@ export default function MeuPainelPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => setModalItem(it)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-semibold text-whatsapp-700 bg-whatsapp-50 hover:bg-whatsapp-100 border border-whatsapp-200 rounded-md"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          {it.outcome ? 'Editar' : 'Marcar'}
-                        </button>
+                        <div className="inline-flex items-center gap-1.5 justify-end">
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => setAssignItem(it)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md"
+                              title={it.consultor_responsavel_nome
+                                ? `Reatribuir (atual: ${it.consultor_responsavel_nome})`
+                                : 'Atribuir consultor'}
+                            >
+                              <UserPlus className="w-3 h-3" />
+                              {it.consultor_responsavel_nome ? 'Reatribuir' : 'Atribuir'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setModalItem(it)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-whatsapp-700 bg-whatsapp-50 hover:bg-whatsapp-100 border border-whatsapp-200 rounded-md"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            {it.outcome ? 'Editar' : 'Marcar'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -346,6 +364,14 @@ export default function MeuPainelPage() {
         item={modalItem}
         consultorNome={consultorNomeParaInsert}
         onClose={() => setModalItem(null)}
+        onSaved={reload}
+      />
+
+      <AssignConsultorModal
+        open={Boolean(assignItem)}
+        item={assignItem}
+        role={identity.role || ''}
+        onClose={() => setAssignItem(null)}
         onSaved={reload}
       />
     </div>

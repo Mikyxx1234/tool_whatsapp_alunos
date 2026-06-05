@@ -142,6 +142,25 @@ export async function createOutcome(payload: CreateOutcomePayload) {
   });
 }
 
+/** Apenas para admin: atribui consultor_responsavel_nome a uma resposta. */
+export async function assignConsultorToResponse(
+  responseId: string,
+  consultorNome: string | null,
+  role: string
+) {
+  return jsonFetch<{ ok: true; row: MeuPainelItem }>(
+    `/api/activation/responses/${encodeURIComponent(responseId)}/assign-consultor`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ consultor_nome: consultorNome, role }),
+    }
+  );
+}
+
+export async function fetchConsultoresDistintos() {
+  return jsonFetch<{ consultores: string[] }>('/api/activation/consultores-distintos');
+}
+
 /** Lê identidade do consultor passada via query param pelo dcz-crm-sync.
  *  Persistência: na primeira carga, se a URL traz os params, salva em localStorage.
  *  Em navegações internas (react-router não preserva ?query) cai pro localStorage.
