@@ -194,6 +194,99 @@ export function getConsultoresAcademicos(): string[] {
   return [];
 }
 
+/* ============================================================================
+   Abas permitidas — filtragem de paginas para nao-admin
+   ----------------------------------------------------------------------------
+   O dcz-crm-sync passa &abas_permitidas=disparador|alunos|... na URL do
+   iframe APENAS quando o usuario nao-admin tem sub-permissoes setadas.
+   Sem o param (admin, ou usuario sem sub-permissoes especificas, ou app
+   aberto fora do iframe), TUDO e permitido (compat).
+   ========================================================================== */
+
+export type AbaSlug =
+  | 'disparador'
+  | 'alunos'
+  | 'calendario'
+  | 'bases'
+  | 'relatorios'
+  | 'conversao'
+  | 'meu_painel'
+  | 'regras';
+
+export const ABA_SLUGS_VALIDOS: AbaSlug[] = [
+  'disparador', 'alunos', 'calendario', 'bases',
+  'relatorios', 'conversao', 'meu_painel', 'regras',
+];
+
+/** Le ?abas_permitidas=a|b|c da URL e persiste em localStorage.
+ *  null = sem restricao (admin ou compat). [] = bloqueia tudo. */
+export function readAbasPermitidasFromUrl(): AbaSlug[] | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.has('abas_permitidas')) {
+      const raw = qs.get('abas_permitidas') || '';
+      const list = raw
+        .split('|')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s): s is AbaSlug => (ABA_SLUGS_VALIDOS as string[]).includes(s));
+      try {
+        localStorage.setItem(LS_ABAS_PERMITIDAS_KEY, JSON.stringify(list));
+      } catch { /* noop */ }
+      return list;
+    }
+    // Quando a URL nao traz o param na primeira carga, removemos eventual
+    // restricao antiga (admin pode ter logado depois de um nao-admin).
+    try { localStorage.removeItem(LS_ABAS_PERMITIDAS_KEY); } catch { /* noop */ }
+  } catch { /* noop */ }
+  return null;
+}
+
+/** Le do localStorage. null = sem restricao. */
+export function getAbasPermitidas(): AbaSlug[] | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LS_ABAS_PERMITIDAS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((x): x is AbaSlug => (ABA_SLUGS_VALIDOS as string[]).includes(x));
+      }
+    }
+  } catch { /* noop */ }
+  return null;
+}
+
+export function isAbaPermitida(slug: AbaSlug): boolean {
+  const allowed = getAbasPermitidas();
+  if (allowed === null) return true;
+  return allowed.includes(slug);
+}
+
+/** Mapping rota react-router -> slug da aba. Usado pelo App.tsx pra
+ *  redirecionar quando o usuario tenta acessar uma rota negada. */
+export const ROUTE_TO_ABA: Array<{ path: string; slug: AbaSlug; match: (p: string) => boolean }> = [
+  { path: '/',              slug: 'disparador',  match: (p) => p === '/' },
+  { path: '/students',      slug: 'alunos',      match: (p) => p === '/students' || p.startsWith('/students/') },
+  { path: '/academic-terms',slug: 'calendario',  match: (p) => p.startsWith('/academic-terms') },
+  { path: '/bases',         slug: 'bases',       match: (p) => p.startsWith('/bases') },
+  { path: '/reports',       slug: 'relatorios',  match: (p) => p.startsWith('/reports') },
+  { path: '/conversao',     slug: 'conversao',   match: (p) => p.startsWith('/conversao') },
+  { path: '/meu-painel',    slug: 'meu_painel',  match: (p) => p.startsWith('/meu-painel') },
+  { path: '/journey-rules', slug: 'regras',      match: (p) => p.startsWith('/journey-rules') },
+];
+
+/** Primeira rota permitida ao usuario (pra fallback em "/" quando o
+ *  usuario nao tem `disparador` permitido). */
+export function firstAllowedRoute(): string {
+  const allowed = getAbasPermitidas();
+  if (allowed === null || allowed.length === 0) return '/';
+  for (const r of ROUTE_TO_ABA) {
+    if (allowed.includes(r.slug)) return r.path;
+  }
+  return '/';
+}
+
 /** Lê identidade do consultor passada via query param pelo dcz-crm-sync.
  *  Persistência: na primeira carga, se a URL traz os params, salva em localStorage.
  *  Em navegações internas (react-router não preserva ?query) cai pro localStorage.
@@ -201,6 +294,7 @@ export function getConsultoresAcademicos(): string[] {
  */
 const LS_KEY = 'dw_consultor_identity_v1';
 const LS_CONSULTORES_KEY = 'dw_consultores_academicos_admin_v1';
+const LS_ABAS_PERMITIDAS_KEY = 'dw_abas_permitidas_v1';
 
 interface ConsultorIdentity {
   username: string | null;

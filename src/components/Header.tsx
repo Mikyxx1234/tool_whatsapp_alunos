@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
+import { type AbaSlug, getAbasPermitidas } from '../services/meuPainelApi';
 
 interface HeaderProps {
   onShowHistory?: () => void;
@@ -21,49 +22,60 @@ const NAV: Array<{
   label: string;
   icon?: typeof Users;
   match: (path: string) => boolean;
+  slug: AbaSlug;
 }> = [
-  { to: '/', label: 'Disparador', match: (p) => p === '/' },
-  { to: '/students', label: 'Alunos', icon: Users, match: (p) => p.startsWith('/students') },
+  { to: '/', label: 'Disparador', slug: 'disparador', match: (p) => p === '/' },
+  { to: '/students', label: 'Alunos', icon: Users, slug: 'alunos', match: (p) => p.startsWith('/students') },
   {
     to: '/academic-terms',
     label: 'Calendário',
     icon: CalendarDays,
+    slug: 'calendario',
     match: (p) => p.startsWith('/academic-terms'),
   },
   {
     to: '/bases',
     label: 'Bases',
     icon: Files,
+    slug: 'bases',
     match: (p) => p.startsWith('/bases'),
   },
   {
     to: '/reports',
     label: 'Relatórios',
     icon: BarChart3,
+    slug: 'relatorios',
     match: (p) => p.startsWith('/reports'),
   },
   {
     to: '/conversao',
     label: 'Conversão',
     icon: TrendingUp,
+    slug: 'conversao',
     match: (p) => p.startsWith('/conversao'),
   },
   {
     to: '/meu-painel',
     label: 'Meu Painel',
     icon: ClipboardCheck,
+    slug: 'meu_painel',
     match: (p) => p.startsWith('/meu-painel'),
   },
   {
     to: '/journey-rules',
     label: 'Regras',
     icon: SlidersHorizontal,
+    slug: 'regras',
     match: (p) => p.startsWith('/journey-rules'),
   },
 ];
 
 export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps) {
   const { pathname } = useLocation();
+  const abasPermitidas = getAbasPermitidas();
+  const navVisible = abasPermitidas === null
+    ? NAV
+    : NAV.filter((item) => abasPermitidas.includes(item.slug));
 
   return (
     <header className="bg-white border-b border-gray-100 sticky top-0 z-40">
@@ -99,7 +111,7 @@ export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps)
           className="flex items-center gap-1 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-thin"
           aria-label="Navegação principal"
         >
-          {NAV.map((item) => {
+          {navVisible.map((item) => {
             const active = item.match(pathname);
             const Icon = item.icon;
             return (

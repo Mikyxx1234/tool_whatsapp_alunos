@@ -2,7 +2,11 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
-import { readConsultorIdentity, readConsultoresAcademicosFromUrl } from './services/meuPainelApi';
+import {
+  readConsultorIdentity,
+  readConsultoresAcademicosFromUrl,
+  readAbasPermitidasFromUrl,
+} from './services/meuPainelApi';
 
 // Captura identidade do consultor (passada via ?consultor=&consultor_nome=&role=
 // pelo dcz-crm-sync no src do iframe) ANTES do React montar qualquer pagina.
@@ -13,6 +17,9 @@ readConsultorIdentity();
 // Pra admin: captura tambem a lista de consultores academicos (?consultores=A|B|C)
 // pra alimentar o autocomplete do modal de atribuicao manual.
 readConsultoresAcademicosFromUrl();
+// Filtragem de abas: ?abas_permitidas=a|b|c pra nao-admin com sub-perms.
+// Sem o param na URL, remove restricao antiga (compat e troca de usuario).
+readAbasPermitidasFromUrl();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
