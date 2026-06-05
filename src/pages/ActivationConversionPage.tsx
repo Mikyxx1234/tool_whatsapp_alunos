@@ -79,6 +79,12 @@ export default function ActivationConversionPage() {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [appliedFrom, setAppliedFrom] = useState<string | null>(null);
+  const [appliedTo, setAppliedTo] = useState<string | null>(null);
+  const [usingCustomRange, setUsingCustomRange] = useState(false);
+
   useEffect(() => {
     if (!popoverOpen) return;
     function handleClickOutside(e: MouseEvent) {
@@ -96,7 +102,9 @@ export default function ActivationConversionPage() {
     try {
       const result = await reportApi.activationConversion({
         category,
-        period_days: periodDays,
+        ...(usingCustomRange
+          ? { from: appliedFrom, to: appliedTo }
+          : { period_days: periodDays }),
         offset: 0,
         ciclo: cicloFilter !== 'all' ? cicloFilter : undefined,
       });
@@ -107,7 +115,7 @@ export default function ActivationConversionPage() {
     } finally {
       setLoading(false);
     }
-  }, [category, periodDays, cicloFilter]);
+  }, [category, periodDays, cicloFilter, usingCustomRange, appliedFrom, appliedTo]);
 
   useEffect(() => {
     void load();
@@ -119,7 +127,9 @@ export default function ActivationConversionPage() {
     try {
       const result = await reportApi.activationConversion({
         category,
-        period_days: periodDays,
+        ...(usingCustomRange
+          ? { from: appliedFrom, to: appliedTo }
+          : { period_days: periodDays }),
         offset: recentRows.length,
         ciclo: cicloFilter !== 'all' ? cicloFilter : undefined,
       });
@@ -148,7 +158,9 @@ export default function ActivationConversionPage() {
             <h2 className="text-xl font-semibold text-gray-900">Conversão de Ativação</h2>
             <p className="text-sm text-gray-500 mt-0.5">
               {data
-                ? `Mostrando dados dos últimos ${periodDays} dias para ${selectedCatLabel}.`
+                ? usingCustomRange
+                  ? `Mostrando dados de ${appliedFrom || '...'} até ${appliedTo || 'hoje'} para ${selectedCatLabel}.`
+                  : `Mostrando dados dos últimos ${periodDays} dias para ${selectedCatLabel}.`
                 : 'Carregando…'}
             </p>
           </div>
@@ -207,9 +219,16 @@ export default function ActivationConversionPage() {
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => setPeriodDays(opt.value)}
+                onClick={() => {
+                  setPeriodDays(opt.value);
+                  setUsingCustomRange(false);
+                  setAppliedFrom(null);
+                  setAppliedTo(null);
+                  setCustomFrom('');
+                  setCustomTo('');
+                }}
                 className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  periodDays === opt.value
+                  !usingCustomRange && periodDays === opt.value
                     ? 'bg-whatsapp-50 text-whatsapp-700 border border-whatsapp-300'
                     : 'text-gray-600 hover:bg-gray-50'
                 }`}
@@ -217,6 +236,36 @@ export default function ActivationConversionPage() {
                 {opt.label}
               </button>
             ))}
+          </div>
+
+          {/* Custom date range */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-gray-500">De</span>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 accent-indigo-500"
+            />
+            <span className="text-xs text-gray-500">Até</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 accent-indigo-500"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!customFrom && !customTo) return;
+                setAppliedFrom(customFrom || null);
+                setAppliedTo(customTo || null);
+                setUsingCustomRange(true);
+              }}
+              className="px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors"
+            >
+              Aplicar
+            </button>
           </div>
 
           {/* Ciclo select */}

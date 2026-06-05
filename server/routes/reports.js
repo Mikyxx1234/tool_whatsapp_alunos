@@ -15,6 +15,15 @@ import { getActivationConversion } from '../services/activationConversionService
 import { getConsultorReport } from '../services/consultorReportService.js';
 import { getRgmToCicloMap, getAvailableCiclos } from '../services/cicloResolverService.js';
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseDateRange(fromRaw, toRaw) {
+  const from = fromRaw && DATE_RE.test(String(fromRaw)) ? String(fromRaw) : null;
+  const to = toRaw && DATE_RE.test(String(toRaw)) ? String(toRaw) : null;
+  if (from && to && from > to) return { from: to, to: from };
+  return { from, to };
+}
+
 const router = Router();
 
 function handleError(res, err) {
@@ -253,7 +262,8 @@ router.get('/activation-conversion', requireApiKey, async (req, res) => {
     const period_days = Math.min(Math.max(parseInt(req.query.period_days, 10) || 30, 1), 365);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : null;
-    const result = await getActivationConversion({ category, period_days, offset, ciclo });
+    const { from, to } = parseDateRange(req.query.from, req.query.to);
+    const result = await getActivationConversion({ category, period_days, offset, ciclo, from, to });
     res.json(result);
   } catch (err) {
     handleError(res, err);

@@ -218,13 +218,15 @@ export const reportApi = {
   },
 
   activationConversion(
-    params: { category?: string; period_days?: number; offset?: number; ciclo?: string } = {}
+    params: { category?: string; period_days?: number; offset?: number; ciclo?: string; from?: string | null; to?: string | null } = {}
   ) {
     const p = new URLSearchParams();
     if (params.category) p.set('category', params.category);
     if (params.period_days != null) p.set('period_days', String(params.period_days));
     if (params.offset != null) p.set('offset', String(params.offset));
     if (params.ciclo) p.set('ciclo', params.ciclo);
+    if (params.from) p.set('from', params.from);
+    if (params.to) p.set('to', params.to);
     const q = p.toString();
     return fetchJson<ActivationConversionResponse>(
       `/api/reports/activation-conversion${q ? `?${q}` : ''}`,
@@ -281,6 +283,7 @@ export interface ActivationConversionResponse {
     category: string;
     period_days: number;
     since: string;
+    until?: string | null;
     now: string;
     ciclo?: string | null;
   };

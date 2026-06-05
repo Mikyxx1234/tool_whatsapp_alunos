@@ -43,13 +43,24 @@ function buildValidResponseExists(rAlias, staleHoursParamIdx) {
 }
 
 /**
- * @param {{ category?: string, period_days?: number, offset?: number, ciclo?: string }} opts
+ * @param {{ category?: string, period_days?: number, offset?: number, ciclo?: string, from?: string|null, to?: string|null }} opts
  */
-export async function getActivationConversion({ category = 'all', period_days = 30, offset = 0, ciclo = null } = {}) {
+export async function getActivationConversion({ category = 'all', period_days = 30, offset = 0, ciclo = null, from = null, to = null } = {}) {
   const periodDays = Math.min(Math.max(Number(period_days) || 30, 1), 365);
   const offsetNum = Math.max(Number(offset) || 0, 0);
-  const sinceDate = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000);
-  const sinceIso = sinceDate.toISOString();
+
+  let sinceIso;
+  let untilIso = null;
+  if (from || to) {
+    sinceIso = from ? new Date(from + 'T00:00:00.000Z').toISOString() : '1970-01-01T00:00:00.000Z';
+    if (to) {
+      const untilDate = new Date(to + 'T00:00:00.000Z');
+      untilDate.setDate(untilDate.getDate() + 1);
+      untilIso = untilDate.toISOString();
+    }
+  } else {
+    sinceIso = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
+  }
   const catFilter = category !== 'all' ? category : null;
 
   const settings = await journeySettingsRepo.resolveForTerm(null);
@@ -78,10 +89,16 @@ export async function getActivationConversion({ category = 'all', period_days = 
     return baseCond;
   }
 
+  function withUntil(params, colExpr) {
+    if (!untilIso) return { params, cond: '' };
+    return { params: [...params, untilIso], cond: `AND ${colExpr} < $${params.length + 1}` };
+  }
+
   const dispBaseParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
   const dispBaseCond = catFilter ? 'AND category = $2' : '';
-  const dispParams = buildDispParams(dispBaseParams);
+  const dispParamsPreUntil = buildDispParams(dispBaseParams);
   const dispCatCond = buildDispCond(dispBaseCond, dispBaseParams.length);
+  const { params: dispParams, cond: dispUntilCond } = withUntil(dispParamsPreUntil, 'created_at');
 
   // --- KPIs from dispatches ---
   const { rows: [dk] } = await query(
@@ -91,7 +108,8 @@ export async function getActivationConversion({ category = 'all', period_days = 
     FROM activation_dispatch_events
     WHERE status = 'sent'
       AND created_at >= $1
-      ${dispCatCond}`,
+      ${dispCatCond}
+      ${dispUntilCond}`,
     dispParams
   );
 
@@ -100,12 +118,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const respKpiCatCond = catFilter ? 'AND r.category = $2' : '';
   const respKpiStaleIdx = catFilter ? 3 : 2;
   const validResponseExistsR = buildValidResponseExists('r', respKpiStaleIdx);
-  const respKpiParams = cicloMasterKeys
+  const respKpiParamsPreUntil = cicloMasterKeys
     ? [...respKpiBaseParams, cicloMasterKeys]
     : respKpiBaseParams;
   const respKpiCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${respKpiBaseParams.length + 1})`
     : '';
+  const { params: respKpiParams, cond: respKpiUntilCond } = withUntil(respKpiParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
 
   const { rows: [rk] } = await query(
     `SELECT
@@ -117,6 +136,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
     WHERE COALESCE(r.received_at, r.created_at) >= $1
       ${respKpiCatCond}
       ${respKpiCicloCond}
+      ${respKpiUntilCond}
       AND ${validResponseExistsR}`,
     respKpiParams
   );
@@ -142,11 +162,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const byCatValidExists = buildValidResponseExists('r', 3);
   const byCatRows = await Promise.all(
     ALL_CATEGORIES.map(async (cat) => {
-      const byCatDispParams = cicloMasterKeys ? [sinceIso, cat, cicloMasterKeys] : [sinceIso, cat];
-      const byCatRespParams = cicloMasterKeys ? [sinceIso, cat, staleHours, cicloMasterKeys] : [sinceIso, cat, staleHours];
-      const byCatCicloCond = cicloMasterKeys ? `AND master_key = ANY($${4})` : '';
-      const byCatRespCicloCond = cicloMasterKeys ? `AND r.master_key = ANY($${4})` : '';
+      const byCatDispBase = cicloMasterKeys ? [sinceIso, cat, cicloMasterKeys] : [sinceIso, cat];
+      const byCatRespBase = cicloMasterKeys ? [sinceIso, cat, staleHours, cicloMasterKeys] : [sinceIso, cat, staleHours];
+      const byCatDispCicloCond = cicloMasterKeys ? `AND master_key = ANY($3)` : '';
+      const byCatRespCicloCond = cicloMasterKeys ? `AND r.master_key = ANY($4)` : '';
       const byCatRespValidExists = buildValidResponseExists('r', 3);
+      const { params: byCatDispParams, cond: byCatDispUntilCond } = withUntil(byCatDispBase, 'created_at');
+      const { params: byCatRespParams, cond: byCatRespUntilCond } = withUntil(byCatRespBase, 'COALESCE(r.received_at, r.created_at)');
 
       const [{ rows: [dr] }, { rows: [rr] }] = await Promise.all([
         query(
@@ -154,7 +176,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
             COUNT(*)::bigint AS total_dispatches,
             COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL)::bigint AS unique_dispatched
           FROM activation_dispatch_events
-          WHERE status = 'sent' AND created_at >= $1 AND category = $2 ${byCatCicloCond}`,
+          WHERE status = 'sent' AND created_at >= $1 AND category = $2 ${byCatDispCicloCond} ${byCatDispUntilCond}`,
           byCatDispParams
         ),
         query(
@@ -165,6 +187,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
           WHERE COALESCE(r.received_at, r.created_at) >= $1
             AND r.category = $2
             ${byCatRespCicloCond}
+            ${byCatRespUntilCond}
             AND ${byCatRespValidExists}`,
           byCatRespParams
         ),
@@ -191,12 +214,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const topBtnCatCond = catFilter ? 'AND r.category = $2' : '';
   const topBtnStaleIdx = catFilter ? 3 : 2;
   const topBtnValidExists = buildValidResponseExists('r', topBtnStaleIdx);
-  const topBtnParams = cicloMasterKeys
+  const topBtnParamsPreUntil = cicloMasterKeys
     ? [...topBtnBaseParams, cicloMasterKeys]
     : topBtnBaseParams;
   const topBtnCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${topBtnBaseParams.length + 1})`
     : '';
+  const { params: topBtnParams, cond: topBtnUntilCond } = withUntil(topBtnParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
 
   const { rows: topButtons } = await query(
     `SELECT r.button_payload, COUNT(*)::int AS count
@@ -205,6 +229,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
       AND r.button_payload IS NOT NULL
       ${topBtnCatCond}
       ${topBtnCicloCond}
+      ${topBtnUntilCond}
       AND ${topBtnValidExists}
     GROUP BY r.button_payload
     ORDER BY count DESC
@@ -217,12 +242,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const recentCatCond = catFilter ? 'AND ar.category = $2' : '';
   const recentStaleIdx = catFilter ? 3 : 2;
   const recentValidExists = buildValidResponseExists('ar', recentStaleIdx);
-  const recentParams = cicloMasterKeys
+  const recentParamsPreUntil = cicloMasterKeys
     ? [...recentBaseParams, cicloMasterKeys]
     : recentBaseParams;
   const recentCicloCond = cicloMasterKeys
     ? `AND ar.master_key = ANY($${recentBaseParams.length + 1})`
     : '';
+  const { params: recentParams, cond: recentUntilCond } = withUntil(recentParamsPreUntil, 'COALESCE(ar.received_at, ar.created_at)');
   const recentLimitIdx = recentParams.length + 1;
   const recentOffsetIdx = recentParams.length + 2;
 
@@ -249,6 +275,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
     WHERE COALESCE(ar.received_at, ar.created_at) >= $1
       ${recentCatCond}
       ${recentCicloCond}
+      ${recentUntilCond}
       AND ${recentValidExists}
     ORDER BY COALESCE(ar.received_at, ar.created_at) DESC
     LIMIT $${recentLimitIdx} OFFSET $${recentOffsetIdx}`,
@@ -256,18 +283,21 @@ export async function getActivationConversion({ category = 'all', period_days = 
   );
 
   // --- Total recent ---
-  const totalRecentValidExists = buildValidResponseExists('r', recentStaleIdx);
   const totalRecentCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${recentBaseParams.length + 1})`
     : '';
+  const { params: totalRecentParams, cond: totalRecentUntilCond } = withUntil(recentParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const totalRecentValidExists = buildValidResponseExists('r', recentStaleIdx);
+  const totalRecentCatCond = catFilter ? 'AND r.category = $2' : '';
   const { rows: [{ total_recent }] } = await query(
     `SELECT COUNT(*)::int AS total_recent
     FROM activation_responses r
     WHERE COALESCE(r.received_at, r.created_at) >= $1
-      ${catFilter ? 'AND r.category = $2' : ''}
+      ${totalRecentCatCond}
       ${totalRecentCicloCond}
+      ${totalRecentUntilCond}
       AND ${totalRecentValidExists}`,
-    recentParams
+    totalRecentParams
   );
 
   // --- kpis_by_ciclo ---
@@ -275,11 +305,12 @@ export async function getActivationConversion({ category = 'all', period_days = 
   let kpis_by_ciclo = {};
   if (hasCiclos) {
     // Pull raw dispatch master_keys (with count) to group by ciclo
-    const rawDispAllParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
+    const rawDispAllBaseParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
     const rawDispAllCatCond = catFilter ? 'AND category = $2' : '';
+    const { params: rawDispAllParams, cond: rawDispAllUntilCond } = withUntil(rawDispAllBaseParams, 'created_at');
     const { rows: rawDispAllRows } = await query(
       `SELECT master_key FROM activation_dispatch_events
-       WHERE status = 'sent' AND created_at >= $1 ${rawDispAllCatCond}`,
+       WHERE status = 'sent' AND created_at >= $1 ${rawDispAllCatCond} ${rawDispAllUntilCond}`,
       rawDispAllParams
     );
 
@@ -288,12 +319,14 @@ export async function getActivationConversion({ category = 'all', period_days = 
     const rawRespAllCatCond = catFilter ? 'AND r.category = $2' : '';
     const rawRespAllStaleIdx = catFilter ? 3 : 2;
     const rawRespAllValidExists = buildValidResponseExists('r', rawRespAllStaleIdx);
+    const { params: rawRespAllParams, cond: rawRespAllUntilCond } = withUntil(rawRespAllBaseParams, 'COALESCE(r.received_at, r.created_at)');
     const { rows: rawRespAllRows } = await query(
       `SELECT r.master_key, r.response_kind FROM activation_responses r
        WHERE COALESCE(r.received_at, r.created_at) >= $1
          ${rawRespAllCatCond}
+         ${rawRespAllUntilCond}
          AND ${rawRespAllValidExists}`,
-      rawRespAllBaseParams
+      rawRespAllParams
     );
 
     for (const cicloKey of available_ciclos) {
@@ -336,6 +369,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
       category,
       period_days: periodDays,
       since: sinceIso,
+      until: untilIso ?? undefined,
       now: new Date().toISOString(),
       stale_window_hours: staleHours,
       ciclo: activeCiclo,
