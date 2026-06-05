@@ -257,7 +257,13 @@ export async function listMeuPainel(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
   const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
   const fromDate = filters.from ? new Date(filters.from) : null;
-  const toDate = filters.to ? new Date(filters.to) : null;
+  // Advance to midnight of the next day so the full `to` calendar day is included.
+  let toDate = null;
+  if (filters.to) {
+    const d = filters.to instanceof Date ? new Date(filters.to) : new Date(filters.to);
+    d.setUTCDate(d.getUTCDate() + 1);
+    toDate = d;
+  }
   const category = filters.category ? String(filters.category).trim() : null;
   const limit = Math.min(Math.max(parseInt(String(filters.limit ?? '200'), 10) || 200, 1), 1000);
   const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
@@ -304,7 +310,7 @@ export async function listMeuPainel(filters = {}) {
     ) amo on true
     where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
       and ($2::timestamptz is null or ar.received_at >= $2)
-      and ($3::timestamptz is null or ar.received_at <= $3)
+      and ($3::timestamptz is null or ar.received_at < $3)
       and ($4::text is null or ar.category = $4)
     order by ar.received_at desc
     limit $5 offset $6
@@ -340,7 +346,12 @@ export async function meuPainelStats(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
   const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
   const fromDate = filters.from ? new Date(filters.from) : null;
-  const toDate = filters.to ? new Date(filters.to) : null;
+  let toDate = null;
+  if (filters.to) {
+    const d = filters.to instanceof Date ? new Date(filters.to) : new Date(filters.to);
+    d.setUTCDate(d.getUTCDate() + 1);
+    toDate = d;
+  }
   const category = filters.category ? String(filters.category).trim() : null;
 
   const { rows } = await query(
@@ -350,7 +361,7 @@ export async function meuPainelStats(filters = {}) {
         from activation_responses ar
        where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
          and ($2::timestamptz is null or ar.received_at >= $2)
-         and ($3::timestamptz is null or ar.received_at <= $3)
+         and ($3::timestamptz is null or ar.received_at < $3)
          and ($4::text is null or ar.category = $4)
     ),
     latest_outcomes as (

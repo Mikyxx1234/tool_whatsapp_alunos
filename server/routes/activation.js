@@ -28,6 +28,19 @@ const VALID_MEU_PAINEL_CATEGORIES = new Set([
   'docs-pendentes', 'financeiro', 'acessos-blackboard', 'processos-caa', 'provavel-evasao',
 ]);
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Valida e normaliza um par de datas YYYY-MM-DD vindas de query string.
+ *  Datas inválidas são silenciosamente descartadas (retornam null).
+ *  Se from > to, os valores são trocados automaticamente.
+ */
+function parseDateRange(fromRaw, toRaw) {
+  const from = fromRaw && DATE_RE.test(String(fromRaw)) ? String(fromRaw) : null;
+  const to = toRaw && DATE_RE.test(String(toRaw)) ? String(toRaw) : null;
+  if (from && to && from > to) return { from: to, to: from };
+  return { from, to };
+}
+
 const router = Router();
 
 function handleError(res, err) {
@@ -123,10 +136,11 @@ router.get('/meu-painel/list', async (req, res) => {
     if (category && !VALID_MEU_PAINEL_CATEGORIES.has(category)) {
       return res.status(400).json({ error: `category invalida: ${category}` });
     }
+    const { from, to } = parseDateRange(req.query.from, req.query.to);
     const rows = await manualOutcomesRepo.listMeuPainel({
       consultor,
-      from: req.query.from || null,
-      to: req.query.to || null,
+      from,
+      to,
       category,
       limit: req.query.limit,
       offset: req.query.offset,
@@ -165,10 +179,11 @@ router.get('/meu-painel/stats', async (req, res) => {
     if (category && !VALID_MEU_PAINEL_CATEGORIES.has(category)) {
       return res.status(400).json({ error: `category invalida: ${category}` });
     }
+    const { from: statsFrom, to: statsTo } = parseDateRange(req.query.from, req.query.to);
     const stats = await manualOutcomesRepo.meuPainelStats({
       consultor,
-      from: req.query.from || null,
-      to: req.query.to || null,
+      from: statsFrom,
+      to: statsTo,
       category,
     });
     res.json({ consultor: consultor || null, is_admin: isAdmin, stats });

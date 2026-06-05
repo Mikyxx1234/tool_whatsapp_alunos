@@ -97,6 +97,30 @@ export default function MeuPainelPage() {
   const [modalItem, setModalItem] = useState<MeuPainelItem | null>(null);
   const [assignItem, setAssignItem] = useState<MeuPainelItem | null>(null);
 
+  // Custom date range — input state (tracks what user typed, not yet applied)
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  // Applied state: only changes on "Aplicar" click or preset click
+  const [appliedFrom, setAppliedFrom] = useState<string | null>(null);
+  const [appliedTo, setAppliedTo] = useState<string | null>(null);
+  const [usingCustomRange, setUsingCustomRange] = useState(false);
+
+  const applyCustomRange = useCallback(() => {
+    if (!customFrom && !customTo) return;
+    setAppliedFrom(customFrom || null);
+    setAppliedTo(customTo || null);
+    setUsingCustomRange(true);
+  }, [customFrom, customTo]);
+
+  const selectPresetRange = useCallback((key: RangeKey) => {
+    setRange(key);
+    setUsingCustomRange(false);
+    setAppliedFrom(null);
+    setAppliedTo(null);
+    setCustomFrom('');
+    setCustomTo('');
+  }, []);
+
   const reload = useCallback(async () => {
     if (!consultorParaApi) {
       setLoading(false);
@@ -105,12 +129,14 @@ export default function MeuPainelPage() {
     setLoading(true);
     setError(null);
     try {
-      const from = rangeToFrom(range);
+      const from = usingCustomRange ? appliedFrom : rangeToFrom(range);
+      const to = usingCustomRange ? appliedTo : null;
       const filters = {
         consultor: consultorParaApi,
         role: isAdmin && adminViewAll ? 'admin' : null,
         category: (category || null) as MeuPainelCategory | null,
         from,
+        to,
         limit: 300,
       };
       const [s, l] = await Promise.all([
@@ -125,7 +151,7 @@ export default function MeuPainelPage() {
     } finally {
       setLoading(false);
     }
-  }, [consultorParaApi, isAdmin, adminViewAll, range, category]);
+  }, [consultorParaApi, isAdmin, adminViewAll, range, category, usingCustomRange, appliedFrom, appliedTo]);
 
   useEffect(() => {
     reload();
@@ -200,9 +226,9 @@ export default function MeuPainelPage() {
               <button
                 key={r.key}
                 type="button"
-                onClick={() => setRange(r.key)}
+                onClick={() => selectPresetRange(r.key)}
                 className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                  range === r.key
+                  !usingCustomRange && range === r.key
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:bg-white/60'
                 }`}
@@ -210,6 +236,30 @@ export default function MeuPainelPage() {
                 {r.label}
               </button>
             ))}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-gray-500">De</span>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 accent-indigo-500"
+            />
+            <span className="text-xs text-gray-500">Até</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 accent-indigo-500"
+            />
+            <button
+              type="button"
+              onClick={applyCustomRange}
+              className="px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors"
+            >
+              Aplicar
+            </button>
           </div>
 
           <span className="ml-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Base</span>
