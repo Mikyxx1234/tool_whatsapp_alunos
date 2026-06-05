@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, UserPlus, Trash2 } from 'lucide-react';
 import {
   type MeuPainelItem,
+  type ConsultorAcademico,
   CATEGORY_LABEL,
   assignConsultorToResponse,
   fetchConsultoresDistintos,
+  readConsultoresAcademico,
+  subscribeConsultoresAcademico,
 } from '../services/meuPainelApi';
 
 interface Props {
@@ -17,7 +20,8 @@ interface Props {
 
 export function AssignConsultorModal({ open, item, role, onClose, onSaved }: Props) {
   const [nome, setNome] = useState('');
-  const [sugestoes, setSugestoes] = useState<string[]>([]);
+  const [jaGravados, setJaGravados] = useState<string[]>([]);
+  const [academicos, setAcademicos] = useState<ConsultorAcademico[]>(() => readConsultoresAcademico());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,15 +37,40 @@ export function AssignConsultorModal({ open, item, role, onClose, onSaved }: Pro
     let cancelled = false;
     fetchConsultoresDistintos()
       .then((r) => {
-        if (!cancelled) setSugestoes(r.consultores || []);
+        if (!cancelled) setJaGravados(r.consultores || []);
       })
       .catch(() => {
-        if (!cancelled) setSugestoes([]);
+        if (!cancelled) setJaGravados([]);
       });
     return () => {
       cancelled = true;
     };
   }, [open]);
+
+  useEffect(() => {
+    setAcademicos(readConsultoresAcademico());
+    const unsub = subscribeConsultoresAcademico(() => {
+      setAcademicos(readConsultoresAcademico());
+    });
+    return unsub;
+  }, []);
+
+  /** Lista final: acadêmicos do dcz + nomes já gravados que não estão na primeira. */
+  const sugestoesFinal = useMemo(() => {
+    const fromAcad = academicos.map((c) => c.nome);
+    const set = new Set<string>(fromAcad);
+    const extras: string[] = [];
+    for (const n of jaGravados) {
+      if (n && !set.has(n)) {
+        extras.push(n);
+        set.add(n);
+      }
+    }
+    return [
+      ...fromAcad.map((nome) => ({ nome, fonte: 'academico' as const })),
+      ...extras.map((nome) => ({ nome, fonte: 'historico' as const })),
+    ];
+  }, [academicos, jaGravados]);
 
   if (!open || !item) return null;
 
@@ -113,19 +142,50 @@ export function AssignConsultorModal({ open, item, role, onClose, onSaved }: Pro
               onChange={(e) => setNome(e.target.value)}
               maxLength={200}
               list="consultores-sugestoes"
-              placeholder="Ex.: Wesley Guerreiro"
+              placeholder="Comece a digitar ou selecione abaixo"
               autoFocus
               className="input"
             />
             <datalist id="consultores-sugestoes">
-              {sugestoes.map((s) => (
-                <option key={s} value={s} />
+              {sugestoesFinal.map((s) => (
+                <option key={s.nome} value={s.nome}>
+                  {s.fonte === 'academico' ? 'Acadêmico' : 'Já gravado'}
+                </option>
               ))}
             </datalist>
             <p className="text-[11px] text-gray-400 mt-1">
-              {sugestoes.length} {sugestoes.length === 1 ? 'nome já gravado' : 'nomes já gravados'} no banco
-              {sugestoes.length > 0 ? ' · digite pra ver sugestões' : ''}
+              {academicos.length} acadêmicos · {sugestoesFinal.length - academicos.length} históricos
             </p>
+
+            {/* Lista clicável quando há acadêmicos. Mais rápido que digitar. */}
+            {academicos.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                {academicos.map((c) => {
+                  const active = nome.trim() === c.nome;
+                  return (
+                    <button
+                      key={c.username}
+                      type="button"
+                      onClick={() => setNome(c.nome)}
+                      title={c.username}
+                      className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
+                        active
+                          ? 'bg-whatsapp-50 border-whatsapp-300 text-whatsapp-800 font-semibold'
+                          : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {c.nome}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {academicos.length === 0 && (
+              <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800 px-2.5 py-1.5">
+                Lista de acadêmicos ainda não chegou do dcz. Aguarde 1-2 segundos ou recarregue.
+              </div>
+            )}
           </div>
 
           {error && (
