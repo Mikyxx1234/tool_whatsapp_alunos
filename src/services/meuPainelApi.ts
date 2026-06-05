@@ -161,79 +161,37 @@ export async function fetchConsultoresDistintos() {
   return jsonFetch<{ consultores: string[] }>('/api/activation/consultores-distintos');
 }
 
-/* ============================================================================
-   CONSULTORES ACADEMICO — lista recebida via postMessage do dcz-crm-sync
-   ----------------------------------------------------------------------------
-   O dcz renderiza server-side os usuarios da categoria 'academico' (helper
-   _consultores_academico_list em app.py) e envia via postMessage pro iframe
-   no boot. Persistimos em localStorage pra sobreviver a navegacoes internas.
-   ========================================================================== */
-
-const LS_CONSULTORES_ACAD = 'dw_consultores_academico_v1';
-const CONSULTORES_UPDATED_EVENT = 'dw:consultores-academico-updated';
-
-export interface ConsultorAcademico {
-  username: string;
-  nome: string;
-  role?: string;
-}
-
-export function readConsultoresAcademico(): ConsultorAcademico[] {
+/** Le ?consultores=A|B|C da URL (injetado pelo dcz-crm-sync APENAS para admin)
+ *  e persiste em localStorage pra sobreviver a navegacao client-side.
+ *  Chamada uma vez no boot do app, em main.tsx. */
+export function readConsultoresAcademicosFromUrl(): string[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(LS_CONSULTORES_ACAD);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (x): x is ConsultorAcademico =>
-        x && typeof x.username === 'string' && typeof x.nome === 'string'
-    );
-  } catch {
-    return [];
-  }
-}
-
-/** Listener global; chamado uma vez no main.tsx. */
-export function installConsultoresAcademicoListener(): void {
-  if (typeof window === 'undefined') return;
-  window.addEventListener('message', (event: MessageEvent) => {
-    const payload = event.data;
-    if (
-      payload &&
-      typeof payload === 'object' &&
-      payload.type === 'dw:consultores_academico' &&
-      Array.isArray(payload.data)
-    ) {
-      try {
-        const clean = payload.data
-          .filter(
-            (x: unknown): x is ConsultorAcademico =>
-              !!x &&
-              typeof x === 'object' &&
-              typeof (x as ConsultorAcademico).username === 'string' &&
-              typeof (x as ConsultorAcademico).nome === 'string'
-          )
-          .map((x) => ({
-            username: x.username.trim(),
-            nome: x.nome.trim(),
-            role: typeof x.role === 'string' ? x.role : undefined,
-          }))
-          .filter((x) => x.username && x.nome);
-        localStorage.setItem(LS_CONSULTORES_ACAD, JSON.stringify(clean));
-        window.dispatchEvent(new CustomEvent(CONSULTORES_UPDATED_EVENT));
-      } catch {
-        /* noop */
-      }
+    const qs = new URLSearchParams(window.location.search);
+    const raw = qs.get('consultores');
+    if (raw) {
+      const list = raw
+        .split('|')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      try { localStorage.setItem(LS_CONSULTORES_KEY, JSON.stringify(list)); } catch { /* noop */ }
+      return list;
     }
-  });
+  } catch { /* noop */ }
+  return getConsultoresAcademicos();
 }
 
-/** Hook-ready: subscreve em updates da lista. */
-export function subscribeConsultoresAcademico(cb: () => void): () => void {
-  if (typeof window === 'undefined') return () => {};
-  window.addEventListener(CONSULTORES_UPDATED_EVENT, cb);
-  return () => window.removeEventListener(CONSULTORES_UPDATED_EVENT, cb);
+/** Le do localStorage a lista persistida em readConsultoresAcademicosFromUrl. */
+export function getConsultoresAcademicos(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(LS_CONSULTORES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === 'string');
+    }
+  } catch { /* noop */ }
+  return [];
 }
 
 /** Lê identidade do consultor passada via query param pelo dcz-crm-sync.
@@ -242,6 +200,7 @@ export function subscribeConsultoresAcademico(cb: () => void): () => void {
  *  Limpa quando role/identidade muda — qualquer query nova sobrescreve.
  */
 const LS_KEY = 'dw_consultor_identity_v1';
+const LS_CONSULTORES_KEY = 'dw_consultores_academicos_admin_v1';
 
 interface ConsultorIdentity {
   username: string | null;
