@@ -1,10 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Download, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   activationApi,
   type ActivationCategory,
   type DatacrazyBatchNotFoundItem,
 } from '../services/activationApi';
+import { LoadingOverlay } from './LoadingOverlay';
 
 interface Props {
   category: ActivationCategory;
@@ -39,7 +40,12 @@ export function ActivationListActions({
   const selectedCount = selectedMasterKeys?.length ?? 0;
   const hasSelection = selectedCount > 0;
   const [running, setRunning] = useState(false);
+  const [overlayMinimized, setOverlayMinimized] = useState(false);
   const eligible = total;
+
+  useEffect(() => {
+    if (!running) setOverlayMinimized(false);
+  }, [running]);
   const [marking, setMarking] = useState(false);
   const [batch, setBatch] = useState<{
     sent: number;
@@ -237,11 +243,19 @@ export function ActivationListActions({
           </p>
         </div>
       )}
-      {running && (
-        <p className="text-[10px] text-gray-600">
-          Sincronizando DataCrazy, enviando templates e registrando histórico…
-        </p>
-      )}
+      <LoadingOverlay
+        open={running && !overlayMinimized}
+        title={`Disparando campanha — ${CATEGORY_LABEL[category]}`}
+        subtitle="Sincronizando com o DataCrazy, enviando templates do WhatsApp e gravando histórico no banco."
+        hint={`Pode levar até ${estMinutes} min em filas grandes. Você pode minimizar — a operação continua em segundo plano.`}
+        stages={[
+          'Buscando alunos no DataCrazy',
+          'Enviando templates via WhatsApp',
+          'Registrando histórico',
+        ]}
+        currentStageIndex={0}
+        onClose={() => setOverlayMinimized(true)}
+      />
       {batch && !running && (
         <p className="text-[10px] text-emerald-700">
           Concluído: {batch.sent.toLocaleString('pt-BR')} enviada(s),{' '}

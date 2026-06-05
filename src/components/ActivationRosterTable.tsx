@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, MessageCircle } from 'lucide-react';
+import { TableLoadingState } from './TableLoadingState';
 import {
   activationApi,
   type ActivationCategory,
@@ -470,20 +471,15 @@ export function ActivationRosterTable({
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
-              <tr>
-                <td
-                  colSpan={
-                    (category === 'processos-caa' ? 9
-                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
-                      : 7) + (selectedMasterKeys ? 1 : 0)
-                  }
-                  className="px-3 py-8 text-center text-gray-500 text-xs"
-                >
-                  {slowLoad
-                    ? 'Montando fila (cruzamento matrícula × base). Aguarde…'
-                    : 'Carregando página…'}
-                </td>
-              </tr>
+              <TableLoadingState
+                colSpan={
+                  (category === 'processos-caa' ? 9
+                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
+                    : 7) + (selectedMasterKeys ? 1 : 0)
+                }
+                slow={slowLoad}
+                variant={slowLoad ? 'big' : 'normal'}
+              />
             ) : items.length === 0 ? (
               <tr>
                 <td
