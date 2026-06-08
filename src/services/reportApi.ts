@@ -244,6 +244,7 @@ export interface ActivationConversionKpis {
   unique_clickers: number;
   unique_messages: number;
   unique_opt_outs: number;
+  unique_reverted: number;
   response_rate: number;
   opt_out_rate: number;
 }
@@ -257,6 +258,7 @@ export interface ActivationConversionByCategoryItem {
   unique_dispatched: number;
   unique_responders: number;
   unique_opt_outs: number;
+  unique_reverted: number;
   response_rate: number;
   opt_out_rate: number;
 }

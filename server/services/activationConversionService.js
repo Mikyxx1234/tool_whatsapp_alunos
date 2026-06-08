@@ -147,6 +147,27 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const um = Number(rk.unique_messages) || 0;
   const uo = Number(rk.unique_opt_outs) || 0;
 
+  // --- KPI de revertidos (marcações manuais do Meu Painel) ---
+  // activation_manual_outcomes tem master_key (text, nullable) — usa DISTINCT master_key
+  const rkBaseParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
+  const rkCatCond = catFilter ? 'AND category = $2' : '';
+  const rkParamsPreCiclo = cicloMasterKeys ? [...rkBaseParams, cicloMasterKeys] : rkBaseParams;
+  const rkCicloCond = cicloMasterKeys
+    ? `AND master_key = ANY($${rkBaseParams.length + 1})`
+    : '';
+  const { params: rkParams, cond: rkUntilCond } = withUntil(rkParamsPreCiclo, 'occurred_at');
+
+  const { rows: [rev] } = await query(
+    `SELECT COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL)::bigint AS unique_reverted
+       FROM activation_manual_outcomes
+      WHERE outcome = 'revertido'
+        AND occurred_at >= $1
+        ${rkCatCond}
+        ${rkCicloCond}
+        ${rkUntilCond}`,
+    rkParams
+  );
+
   const kpis = {
     total_dispatches: Number(dk.total_dispatches) || 0,
     unique_dispatched: ud,
@@ -154,9 +175,28 @@ export async function getActivationConversion({ category = 'all', period_days = 
     unique_clickers: uc,
     unique_messages: um,
     unique_opt_outs: uo,
+    unique_reverted: Number(rev?.unique_reverted ?? 0),
     response_rate: ud > 0 ? ur / ud : 0,
     opt_out_rate: ud > 0 ? uo / ud : 0,
   };
+
+  // --- by_category: revertidos pre-fetched via GROUP BY (single query for all 6 cats) ---
+  const revByCatBaseParams = [sinceIso];
+  const revByCatParamsPreCiclo = cicloMasterKeys ? [...revByCatBaseParams, cicloMasterKeys] : revByCatBaseParams;
+  const revByCatCicloCond = cicloMasterKeys ? `AND master_key = ANY($2)` : '';
+  const { params: revByCatParams, cond: revByCatUntilCond } = withUntil(revByCatParamsPreCiclo, 'occurred_at');
+  const { rows: revByCatRows } = await query(
+    `SELECT category,
+            COUNT(DISTINCT master_key) FILTER (WHERE master_key IS NOT NULL)::bigint AS unique_reverted
+       FROM activation_manual_outcomes
+      WHERE outcome = 'revertido'
+        AND occurred_at >= $1
+        ${revByCatCicloCond}
+        ${revByCatUntilCond}
+      GROUP BY category`,
+    revByCatParams
+  );
+  const revByCatMap = new Map(revByCatRows.map((r) => [r.category, Number(r.unique_reverted) || 0]));
 
   // --- by_category: always computed for all categories ---
   const byCatValidExists = buildValidResponseExists('r', 3);
@@ -202,6 +242,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
         unique_dispatched: catUd,
         unique_responders: catUr,
         unique_opt_outs: catUo,
+        unique_reverted: revByCatMap.get(cat) ?? 0,
         response_rate: catUd > 0 ? catUr / catUd : 0,
         opt_out_rate: catUd > 0 ? catUo / catUd : 0,
       };
@@ -314,6 +355,17 @@ export async function getActivationConversion({ category = 'all', period_days = 
       rawDispAllParams
     );
 
+    // Pull raw reverted master_keys for kpis_by_ciclo grouping
+    const rawRevAllBaseParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
+    const rawRevAllCatCond = catFilter ? 'AND category = $2' : '';
+    const { params: rawRevAllParams, cond: rawRevAllUntilCond } = withUntil(rawRevAllBaseParams, 'occurred_at');
+    const { rows: rawRevAllRows } = await query(
+      `SELECT master_key FROM activation_manual_outcomes
+       WHERE outcome = 'revertido' AND occurred_at >= $1 AND master_key IS NOT NULL
+         ${rawRevAllCatCond} ${rawRevAllUntilCond}`,
+      rawRevAllParams
+    );
+
     // Pull raw response master_keys with response_kind
     const rawRespAllBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
     const rawRespAllCatCond = catFilter ? 'AND r.category = $2' : '';
@@ -351,6 +403,11 @@ export async function getActivationConversion({ category = 'all', period_days = 
       const cicloUco = [...respMap.values()].filter((s) => s.has('click')).length;
       const cicloUmo = [...respMap.values()].filter((s) => s.has('message')).length;
       const cicloUoo = [...respMap.values()].filter((s) => s.has('opt_out')).length;
+      const revSet = new Set();
+      for (const { master_key } of rawRevAllRows) {
+        const rgm = rgmFromMasterKey(master_key);
+        if (rgm && cicloMap.get(rgm) === cicloKey) revSet.add(master_key);
+      }
       kpis_by_ciclo[cicloKey] = {
         total_dispatches: totalDisp,
         unique_dispatched: cicloCud,
@@ -358,6 +415,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
         unique_clickers: cicloUco,
         unique_messages: cicloUmo,
         unique_opt_outs: cicloUoo,
+        unique_reverted: revSet.size,
         response_rate: cicloCud > 0 ? cicloCur / cicloCud : 0,
         opt_out_rate: cicloCud > 0 ? cicloUoo / cicloCud : 0,
       };

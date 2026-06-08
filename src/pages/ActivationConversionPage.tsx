@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   RefreshCw,
+  RotateCcw,
   Send,
   Users,
-  MousePointerClick,
-  XCircle,
 } from 'lucide-react';
 import { Header } from '../components/Header';
 import {
@@ -67,6 +66,14 @@ function catLabel(cat: string): string {
   return CATEGORY_OPTIONS.find((o) => o.value === cat)?.label ?? cat;
 }
 
+function todayISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export default function ActivationConversionPage() {
   const [data, setData] = useState<ActivationConversionResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,11 +86,11 @@ export default function ActivationConversionPage() {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
-  const [appliedFrom, setAppliedFrom] = useState<string | null>(null);
-  const [appliedTo, setAppliedTo] = useState<string | null>(null);
-  const [usingCustomRange, setUsingCustomRange] = useState(false);
+  const [customFrom, setCustomFrom] = useState(() => todayISO());
+  const [customTo, setCustomTo] = useState(() => todayISO());
+  const [appliedFrom, setAppliedFrom] = useState<string | null>(() => todayISO());
+  const [appliedTo, setAppliedTo] = useState<string | null>(() => todayISO());
+  const [usingCustomRange, setUsingCustomRange] = useState(true);
 
   useEffect(() => {
     if (!popoverOpen) return;
@@ -159,7 +166,9 @@ export default function ActivationConversionPage() {
             <p className="text-sm text-gray-500 mt-0.5">
               {data
                 ? usingCustomRange
-                  ? `Mostrando dados de ${appliedFrom || '...'} até ${appliedTo || 'hoje'} para ${selectedCatLabel}.`
+                  ? appliedFrom && appliedFrom === appliedTo
+                    ? `Mostrando dados de hoje (${appliedFrom}) para ${selectedCatLabel}.`
+                    : `Mostrando dados de ${appliedFrom || '...'} até ${appliedTo || 'hoje'} para ${selectedCatLabel}.`
                   : `Mostrando dados dos últimos ${periodDays} dias para ${selectedCatLabel}.`
                 : 'Carregando…'}
             </p>
@@ -296,7 +305,7 @@ export default function ActivationConversionPage() {
         )}
 
         {/* KPI cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-3 gap-3">
           <KpiCard
             icon={<Send className="w-4 h-4" />}
             tone="sky"
@@ -320,25 +329,14 @@ export default function ActivationConversionPage() {
               : undefined}
           />
           <KpiCard
-            icon={<MousePointerClick className="w-4 h-4" />}
-            tone="blue"
-            label="Clicaram em botão"
-            value={(data?.kpis.unique_clickers ?? 0).toLocaleString('pt-BR')}
-            hint={`de ${(data?.kpis.unique_responders ?? 0).toLocaleString('pt-BR')} que responderam`}
+            icon={<RotateCcw className="w-4 h-4" />}
+            tone="emerald"
+            label="Revertidos"
+            value={(data?.kpis.unique_reverted ?? 0).toLocaleString('pt-BR')}
+            hint="marcados como revertidos pelos consultores"
             loading={loading}
             cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
-              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_clickers ?? 0 }))
-              : undefined}
-          />
-          <KpiCard
-            icon={<XCircle className="w-4 h-4" />}
-            tone="rose"
-            label="Opt-out"
-            value={(data?.kpis.unique_opt_outs ?? 0).toLocaleString('pt-BR')}
-            hint={`${fmtPct(data?.kpis.opt_out_rate ?? 0)} do total enviado`}
-            loading={loading}
-            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
-              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_opt_outs ?? 0 }))
+              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_reverted ?? 0 }))
               : undefined}
           />
         </div>
@@ -361,7 +359,7 @@ export default function ActivationConversionPage() {
                     <th className="px-4 py-2 text-right">Únicos</th>
                     <th className="px-4 py-2 text-right">Respondidos</th>
                     <th className="px-4 py-2 text-right">Taxa</th>
-                    <th className="px-4 py-2 text-right">Opt-out</th>
+                    <th className="px-4 py-2 text-right">Revertidos</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -395,7 +393,7 @@ export default function ActivationConversionPage() {
                         </span>
                       </td>
                       <td className="px-4 py-2 text-right text-gray-700 tabular-nums">
-                        {row.unique_opt_outs.toLocaleString('pt-BR')}
+                        {row.unique_reverted.toLocaleString('pt-BR')}
                       </td>
                     </tr>
                   ))}
