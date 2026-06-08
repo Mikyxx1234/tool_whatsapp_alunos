@@ -839,6 +839,10 @@ export function parseActivationStageFilter(raw) {
 export async function getActivationRoster(category, opts = {}) {
   assertActivationCategory(category);
   const stageFilter = parseActivationStageFilter(opts.activationStage);
+  const responseFilter = (() => {
+    const v = String(opts.responseFilter || 'all').toLowerCase();
+    return v === 'responded' || v === 'not_responded' ? v : 'all';
+  })();
 
   if (opts.countOnly) {
     const list = await getIntersectionActivationList(category, {
@@ -914,6 +918,23 @@ export async function getActivationRoster(category, opts = {}) {
     filtered = filtered.filter((row) => normalizeCiclo(row.ciclo || '') === cicloFilterRaw);
   }
 
+  if (responseFilter !== 'all' && filtered.length > 0) {
+    const allKeys = filtered.map((it) => it.master_key).filter(Boolean);
+    let stale = 72;
+    try {
+      const sett = await journeySettingsRepo.resolveForTerm(null);
+      stale = Math.max(1, Math.floor(Number(sett?.origem_ativacao_stale_hours) || 72));
+    } catch { /* default */ }
+    const respondedSet = await activationResponseRepo.findRespondedMasterKeys(
+      category, allKeys, stale
+    );
+    if (responseFilter === 'responded') {
+      filtered = filtered.filter((it) => it.master_key && respondedSet.has(it.master_key));
+    } else {
+      filtered = filtered.filter((it) => !it.master_key || !respondedSet.has(it.master_key));
+    }
+  }
+
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const limitRaw = Number(opts.limit);
   const pageItems =
@@ -954,6 +975,7 @@ export async function getActivationRoster(category, opts = {}) {
     total: filtered.length,
     total_unfiltered: rows.length,
     activation_stage: stageFilter,
+    response_filter: responseFilter,
     items,
     offset,
     limit: limitRaw > 0 ? Math.min(limitRaw, 500) : items.length,

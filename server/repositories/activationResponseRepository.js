@@ -252,6 +252,38 @@ export async function findLastByMasterKeys(category, masterKeys, staleHours = 72
   return new Map(rows.map((r) => [r.master_key, r]));
 }
 
+/**
+ * Retorna um Set com os master_keys que TÊM resposta válida (correlacionada
+ * com dispatch dentro da janela staleHours). Versão mais barata do que
+ * findLastByMasterKeys quando só importa saber "respondeu ou não".
+ *
+ * @param {string} category
+ * @param {string[]} masterKeys
+ * @param {number} [staleHours=72]
+ * @returns {Promise<Set<string>>}
+ */
+export async function findRespondedMasterKeys(category, masterKeys, staleHours = 72) {
+  const keys = [...new Set(masterKeys.filter(Boolean))];
+  if (!keys.length) return new Set();
+  const safeHours = Math.max(1, Math.floor(Number(staleHours) || 72));
+  const { rows } = await query(
+    `select distinct r.master_key
+       from activation_responses r
+      where r.category = $1
+        and r.master_key = any($2::text[])
+        and exists (
+          select 1 from activation_dispatch_events d
+          where d.master_key = r.master_key
+            and d.category = r.category
+            and d.status = 'sent'
+            and d.created_at <= coalesce(r.received_at, r.created_at)
+            and d.created_at >= coalesce(r.received_at, r.created_at) - ($3::int * interval '1 hour')
+        )`,
+    [category, keys, safeHours]
+  );
+  return new Set(rows.map((r) => r.master_key));
+}
+
 /** Quantidade de respostas recebidas na janela.
  * @param {string} category
  * @param {Date} since

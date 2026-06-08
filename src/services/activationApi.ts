@@ -100,6 +100,8 @@ export type ActivationMessageTier = 'first' | 'repeat' | 'fifth';
 /** Mesmos grupos dos templates: 1ª, reativação (2ª–4ª), 5ª+. */
 export type ActivationStageFilter = 'all' | 'first' | 'repeat' | 'fifth';
 
+export type ActivationResponseFilter = 'all' | 'responded' | 'not_responded';
+
 export type ActivationResponseKind = 'click' | 'message' | 'opt_out' | 'other';
 
 export interface CaaJanelaInfo {
@@ -268,6 +270,7 @@ export const activationApi = {
       activationStage?: ActivationStageFilter;
       bbSubgrupo?: BbSubgrupo | 'all';
       ciclo?: string;
+      responseFilter?: ActivationResponseFilter;
     }
   ) {
     const params = new URLSearchParams();
@@ -281,6 +284,9 @@ export const activationApi = {
     }
     if (opts?.ciclo) {
       params.set('ciclo', opts.ciclo);
+    }
+    if (opts?.responseFilter && opts.responseFilter !== 'all') {
+      params.set('responseFilter', opts.responseFilter);
     }
     const q = params.toString() ? `?${params}` : '';
     return jsonFetch<ActivationRosterResponse>(`/api/activation/${category}/roster${q}`);

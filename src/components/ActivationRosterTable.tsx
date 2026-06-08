@@ -6,6 +6,7 @@ import {
   activationApi,
   type ActivationCategory,
   type ActivationRosterItem,
+  type ActivationResponseFilter,
   type ActivationStageFilter,
   type BbSubgrupo,
 } from '../services/activationApi';
@@ -182,6 +183,11 @@ const STAGE_FILTERS: { id: ActivationStageFilter; label: string; title: string }
   { id: 'fifth', label: '5ª ativação', title: 'Quinta vez ou mais nesta categoria' },
 ];
 
+const RESPONSE_FILTERS: { id: ActivationResponseFilter; label: string; title: string }[] = [
+  { id: 'not_responded', label: 'Sem resposta', title: 'Pessoas que ainda não responderam ao último disparo' },
+  { id: 'responded', label: 'Respondidos', title: 'Pessoas que já responderam (clicaram em botão ou mandaram mensagem)' },
+];
+
 interface Props {
   category: ActivationCategory;
   /** Incrementar após salvar templates para atualizar a coluna Template. */
@@ -207,6 +213,7 @@ export function ActivationRosterTable({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stageFilter, setStageFilter] = useState<ActivationStageFilter>('all');
+  const [responseFilter, setResponseFilter] = useState<ActivationResponseFilter>('not_responded');
   const [bbSubgrupo, setBbSubgrupo] = useState<BbSubgrupo | 'all'>('all');
   const [cicloFilter, setCicloFilter] = useState('');
   const [availableCiclos, setAvailableCiclos] = useState<string[]>([]);
@@ -233,6 +240,7 @@ export function ActivationRosterTable({
           activationStage: stageFilter,
           bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
           ciclo: cicloFilter || undefined,
+          responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
         });
         setItems(r.items);
         setTotal(r.total);
@@ -251,12 +259,12 @@ export function ActivationRosterTable({
         setLoading(false);
       }
     },
-    [category, stageFilter, bbSubgrupo, cicloFilter]
+    [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter]
   );
 
   useEffect(() => {
     setPage(0);
-  }, [category, stageFilter, bbSubgrupo, cicloFilter]);
+  }, [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter]);
 
   useEffect(() => {
     void load(page);
@@ -288,6 +296,24 @@ export function ActivationRosterTable({
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-gray-600 dark:text-slate-400 mr-1">Resposta:</span>
+          {RESPONSE_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              title={f.title}
+              onClick={() => setResponseFilter(f.id)}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-colors ${
+                responseFilter === f.id
+                  ? 'border-whatsapp-500 bg-whatsapp-50 text-whatsapp-800 dark:bg-whatsapp-600/20 dark:text-whatsapp-300'
+                  : 'border-gray-200 dark:border-slate-700 text-gray-600 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
           <span>
             {loading ? (
@@ -297,7 +323,9 @@ export function ActivationRosterTable({
                 'Carregando…'
               )
             ) : total === 0 ? (
-              stageFilter === 'all' ? (
+              responseFilter === 'responded' ? (
+                'Nenhum respondido nesta fila ainda.'
+              ) : stageFilter === 'all' ? (
                 'Nenhum registro na fila'
               ) : (
                 <>Nenhum aluno neste filtro de ativação</>

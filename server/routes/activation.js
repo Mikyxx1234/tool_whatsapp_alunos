@@ -391,7 +391,10 @@ router.get('/:category/roster', async (req, res) => {
     const activationStage = req.query.activation_stage;
     const bbSubgrupo = req.query.bb_subgrupo || null;
     const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : undefined;
-    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, ciclo });
+    const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
+    const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
+    const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
+    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, ciclo, responseFilter });
     res.json(data);
   } catch (err) {
     handleError(res, err);
