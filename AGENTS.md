@@ -5,6 +5,36 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 08/06/2026 — Preflight DataCrazy escalável (dedupe por pessoa + métrica corrigida)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu + implementou diretamente.
+- **Problema:** Disparos de 100+ pessoas travavam em "Buscando alunos no DataCrazy" por minutos a fio (usuário reportou >10min em 100 leads). Em escala (4k–10k leads, base que entra periodicamente) o gargalo ficaria intolerável.
+- **Causa raiz** em `server/services/datacrazyClient.js#buildLeadsLookupIndex`:
+  1. **Métrica errada do threshold**: a condição que escolhia entre atalho rápido (busca direta `?search=<termo>`) e caminho lento (paginação completa) usava `totalRemaining = emails.size + phones.size`. Como cada pessoa contribui com 2 termos (email + telefone), 100 pessoas viravam "200" e caíam fora do default `DATACRAZY_DIRECT_SEARCH_THRESHOLD=100`. Disparavam pro loop de paginação (`take=100` × `maxPages=500` × `pageDelay=400ms` = potencialmente minutos).
+  2. **Sem dedupe por pessoa**: o atalho consultava email E telefone separadamente da mesma pessoa, dobrando chamadas à API DataCrazy (200 chamadas pra 100 leads).
+- **Decisão (Onda 1, commit único):**
+  1. **API nova `{contacts: [{email, phone}]}`** em `buildLeadsLookupIndex`, retrocompat com formato antigo `{emails, phones}`. Permite vincular email↔telefone por pessoa.
+  2. **Threshold passa a contar pessoas** (`Math.max(emails, phones)` ou `personList.length` quando há `contacts`), não termos. Default subiu de `100` pra `250`.
+  3. **Concorrência default subiu** de `5` pra `10` (env `DATACRAZY_DIRECT_SEARCH_CONCURRENCY`).
+  4. **Estratégia 2-passadas no atalho** quando há `contacts`:
+     - 1ª passada: 1 termo por pessoa (telefone preferido, email fallback se sem telefone).
+     - 2ª passada: pessoas ainda não encontradas tentam o email. Cobre casos onde telefone diverge entre nossa base e o CRM, sem custo no caso comum.
+  5. **Callers atualizados**: `runDatacrazyActivationBatch` e `previewDatacrazyMatches` (no `activationService.js`) passam `contacts` em vez de `emails`+`phones`.
+- **Quick fix sem rebuild** (env vars no Easypanel, válidas imediatamente): `DATACRAZY_DIRECT_SEARCH_THRESHOLD=300` e `DATACRAZY_DIRECT_SEARCH_CONCURRENCY=15`. Útil enquanto o commit não foi rebuildado.
+- **Impacto esperado:**
+  - 100 leads: passa de minutos (paginação) pra ~5–10s (1 passada de ~10 batches × 1s).
+  - 250 leads: ~15–25s ainda via atalho.
+  - >250 leads: cai no caminho de paginação completa (que pra base de ~50k leads do CRM dá ~100 páginas com early_stop — ~40s).
+- **Onda 2 — pendente (decisão estrutural, não implementada):** cache persistente `cpf → datacrazy_lead_id` em tabela própria, populado por job noturno varrendo a base do DataCrazy 1x/dia. Disparos consultariam o cache em ms; só iriam à API em cache miss. Pra 10k leads cairia de ~11min pra ~100ms total quando todos estiverem em cache. Spec a escrever quando houver demanda concreta de >300 leads recorrentes.
+- **Alternativas descartadas (Onda 1):**
+  - **Só env vars (sem commit):** resolveria pro disparo atual mas continuaria gastando 2× chamadas à API por pessoa (sem dedupe). Não escala pra 4k+.
+  - **Cache persistente agora (Onda 2 antecipada):** escopo maior (migration + repo + cron + invalidação). Onda 1 + env vars destrava o caso atual com 1 commit.
+  - **Manter formato antigo `{emails, phones}` e dedupe no caller:** quebraria o ponto de extensibilidade — qualquer caller futuro reescreveria a lógica de dedupe.
+- **Onde:**
+  - `server/services/datacrazyClient.js#buildLeadsLookupIndex` — nova API + lógica de 2 passadas + métrica corrigida.
+  - `server/services/activationService.js` (2 chamadores: `runDatacrazyActivationBatch` e `previewDatacrazyMatches`) — passam `contacts`.
+- **Retrocompat:** formato antigo `{emails, phones}` continua funcionando (sem dedupe, sem 2 passadas) — qualquer chamador externo não quebra.
+
 ### 02/06/2026 — Breakdown por ciclo em Conversão, CAA Daily, CAA Funil e Disparador
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu + implementou diretamente (Executor foi interrompido pelo usuário no meio da tarefa; trabalho parcial estava em commits intermediários que o Opus auditou e completou).

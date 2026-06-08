@@ -1041,19 +1041,14 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   const toProcess = filteredEligible.slice(0, maxProcess);
   onTotal({ total: toProcess.length });
 
-  const neededEmails = new Set();
-  const neededPhones = new Set();
-  for (const item of toProcess) {
-    const e = datacrazyClient.normalizeEmailForMatch(item.email);
-    const p = datacrazyClient.normalizePhoneDigits(item.telefone);
-    if (e) neededEmails.add(e);
-    if (p) neededPhones.add(p);
-  }
+  // Passa vínculo email↔telefone por pessoa pro client (formato `contacts`).
+  // Permite dedupe e 1 chamada por pessoa em vez de email + telefone duplicados.
+  const contacts = toProcess.map((item) => ({
+    email: item.email,
+    phone: item.telefone,
+  }));
 
-  const built = await datacrazyClient.buildLeadsLookupIndex({
-    emails: [...neededEmails],
-    phones: [...neededPhones],
-  });
+  const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
 
   // Pré-voo: confirma que origem_ativacao grava no CRM antes de enviar qualquer template.
@@ -1440,19 +1435,12 @@ export async function enrichActivationWithDatacrazy(category, opts = {}) {
       ? list.items
       : list.items.slice(offset, offset + Math.min(Math.max(limitNum, 1), 500));
 
-  const neededEmails = new Set();
-  const neededPhones = new Set();
-  for (const item of items) {
-    const e = datacrazyClient.normalizeEmailForMatch(item.email);
-    const p = datacrazyClient.normalizePhoneDigits(item.telefone);
-    if (e) neededEmails.add(e);
-    if (p) neededPhones.add(p);
-  }
+  const contacts = items.map((item) => ({
+    email: item.email,
+    phone: item.telefone,
+  }));
 
-  const built = await datacrazyClient.buildLeadsLookupIndex({
-    emails: [...neededEmails],
-    phones: [...neededPhones],
-  });
+  const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
 
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
   let found = 0;

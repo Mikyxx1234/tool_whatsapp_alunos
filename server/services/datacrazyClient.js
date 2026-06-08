@@ -327,61 +327,136 @@ async function buildLeadsLookupIndex(needed = {}) {
   const useShared = sharedLeadsIndex.expires > Date.now();
   const byEmail = useShared ? new Map(sharedLeadsIndex.byEmail) : new Map();
   const byPhone = useShared ? new Map(sharedLeadsIndex.byPhone) : new Map();
+
+  // Normaliza entrada: aceita formato novo `{contacts: [{email, phone}]}` (preferido,
+  // permite dedupe por pessoa) e o antigo `{emails, phones}` (sem vínculo).
+  // O novo formato evita disparar 2 chamadas (email + telefone) pra mesma pessoa.
+  const contacts = Array.isArray(needed.contacts) ? needed.contacts : null;
   const remainingEmails = new Set();
   const remainingPhones = new Set();
-  for (const e of needed.emails || []) {
-    if (!byEmail.has(e)) remainingEmails.add(e);
-  }
-  for (const p of needed.phones || []) {
-    if (!byPhone.has(p)) remainingPhones.add(p);
+  /** @type {Array<{ email: string, phone: string }>} */
+  const personList = [];
+  if (contacts) {
+    const seenKey = new Set();
+    for (const c of contacts) {
+      const e = normalizeEmailForMatch(c?.email);
+      const p = normalizePhoneDigits(c?.phone);
+      if (!e && !p) continue;
+      // Dedup pessoa por (email|phone) — evita reconsultar mesma pessoa quando
+      // a base local tem duplicatas.
+      const key = `${e}::${p}`;
+      if (seenKey.has(key)) continue;
+      seenKey.add(key);
+      if (e && !byEmail.has(e)) remainingEmails.add(e);
+      if (p && !byPhone.has(p)) remainingPhones.add(p);
+      // Se nenhum dos termos ainda precisa busca, pula a pessoa.
+      const needsEmail = e && remainingEmails.has(e);
+      const needsPhone = p && remainingPhones.has(p);
+      if (needsEmail || needsPhone) personList.push({ email: e || '', phone: p || '' });
+    }
+  } else {
+    for (const e of needed.emails || []) {
+      if (!byEmail.has(e)) remainingEmails.add(e);
+    }
+    for (const p of needed.phones || []) {
+      if (!byPhone.has(p)) remainingPhones.add(p);
+    }
   }
 
   // Atalho: para lotes pequenos (<= threshold), usa busca direta da API
   // (`?search=<termo>`) em vez de varrer centenas de páginas. Reduz de minutos
   // pra segundos quando o disparo é de poucas pessoas.
-  // Default 100 cobre seleções típicas (até ~100 alunos por vez); acima disso
-  // a paginação completa fica mais eficiente em volume.
+  // Threshold passou a representar "pessoas" (não "termos"). Default 250 cobre
+  // a maior parte dos disparos manuais; acima disso a paginação completa
+  // (1 página resolve ~100 pessoas) fica mais eficiente em volume.
   const directThreshold = Math.max(
-    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 100,
+    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 250,
     0
   );
   // Concorrência paralela das buscas diretas. DataCrazy não publica limite oficial;
-  // 5 simultâneas é seguro e reduz 29 leads de ~30s pra ~6s.
+  // 10 simultâneas mantém pipeline cheio sem estressar o CRM.
   const directConcurrency = Math.max(
-    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 5, 20),
+    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 10, 20),
     1
   );
-  const totalRemaining = remainingEmails.size + remainingPhones.size;
+  // Métrica do threshold: `Math.max(emails, phones)` (não soma) — representa
+  // "pessoas" quando todas têm email + phone. Bug antigo somava os dois e
+  // dobrava o tamanho aparente do lote (100 pessoas viravam 200 e caíam fora
+  // do atalho).
+  const totalRemaining = personList.length > 0
+    ? personList.length
+    : Math.max(remainingEmails.size, remainingPhones.size);
   let directHits = 0;
   let directQueries = 0;
   if (totalRemaining > 0 && totalRemaining <= directThreshold) {
-    const terms = [...remainingPhones, ...remainingEmails];
-    for (let i = 0; i < terms.length; i += directConcurrency) {
-      const slice = terms.slice(i, i + directConcurrency);
-      const results = await Promise.all(
-        slice.map(async (term) => {
-          try {
-            const page = await searchLeads({ search: term, take: 5 });
-            return { term, page };
-          } catch (err) {
-            console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
-            return { term, page: null };
+    // Estratégia: 1ª passada consulta 1 termo por pessoa (telefone preferido,
+    // email só se sem telefone). 2ª passada cobre quem não foi encontrado,
+    // tentando o termo restante (email). Economiza ~50% das chamadas no caso
+    // comum, mantendo cobertura quando email/telefone divergem entre nossa
+    // base e o CRM.
+    const queriedTerms = new Set();
+    const runDirectBatch = async (terms) => {
+      for (let i = 0; i < terms.length; i += directConcurrency) {
+        const slice = terms.slice(i, i + directConcurrency);
+        const results = await Promise.all(
+          slice.map(async (term) => {
+            try {
+              const page = await searchLeads({ search: term, take: 5 });
+              return { term, page };
+            } catch (err) {
+              console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
+              return { term, page: null };
+            }
+          })
+        );
+        for (const { page } of results) {
+          directQueries += 1;
+          if (!page) continue;
+          for (const lead of page.data) {
+            mergeLeadIntoMaps(lead, byEmail, byPhone);
+            const e = normalizeEmailForMatch(lead.email);
+            const p = leadPhoneDigits(lead);
+            if (e) remainingEmails.delete(e);
+            if (p) remainingPhones.delete(p);
+            directHits += 1;
           }
-        })
-      );
-      for (const { page } of results) {
-        directQueries += 1;
-        if (!page) continue;
-        for (const lead of page.data) {
-          mergeLeadIntoMaps(lead, byEmail, byPhone);
-          const e = normalizeEmailForMatch(lead.email);
-          const p = leadPhoneDigits(lead);
-          if (e) remainingEmails.delete(e);
-          if (p) remainingPhones.delete(p);
-          directHits += 1;
         }
       }
+    };
+
+    if (personList.length > 0) {
+      // 1ª passada: 1 termo por pessoa (prefere telefone)
+      const firstPass = [];
+      for (const person of personList) {
+        const term = person.phone || person.email;
+        if (term && !queriedTerms.has(term)) {
+          queriedTerms.add(term);
+          firstPass.push(term);
+        }
+      }
+      await runDirectBatch(firstPass);
+
+      // 2ª passada: pessoas ainda não encontradas tentam termo alternativo (email)
+      const secondPass = [];
+      for (const person of personList) {
+        const found =
+          (person.email && byEmail.has(person.email)) ||
+          (person.phone && byPhone.has(person.phone));
+        if (found) continue;
+        const term = person.email && !queriedTerms.has(person.email) ? person.email : '';
+        if (term) {
+          queriedTerms.add(term);
+          secondPass.push(term);
+        }
+      }
+      if (secondPass.length > 0) await runDirectBatch(secondPass);
+    } else {
+      // Formato antigo: sem vínculo email↔telefone, consulta todos os termos
+      // remanescentes sem dedupe por pessoa.
+      const terms = [...remainingPhones, ...remainingEmails];
+      await runDirectBatch(terms);
     }
+
     sharedLeadsIndex.byEmail = byEmail;
     sharedLeadsIndex.byPhone = byPhone;
     sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
@@ -393,6 +468,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       direct_search: true,
       direct_queries: directQueries,
       direct_concurrency: directConcurrency,
+      direct_persons: personList.length,
       early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
       remaining_emails: remainingEmails.size,
       remaining_phones: remainingPhones.size,
