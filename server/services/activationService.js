@@ -1041,9 +1041,11 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   const toProcess = filteredEligible.slice(0, maxProcess);
   onTotal({ total: toProcess.length });
 
-  // Passa vínculo email↔telefone por pessoa pro client (formato `contacts`).
+  // Passa vínculo email↔telefone↔cpf por pessoa pro client (formato `contacts`).
   // Permite dedupe e 1 chamada por pessoa em vez de email + telefone duplicados.
+  // cpf habilita a Onda 2: lookup no cache persistente antes da API DataCrazy.
   const contacts = toProcess.map((item) => ({
+    cpf: item.cpf,
     email: item.email,
     phone: item.telefone,
   }));
@@ -1436,6 +1438,7 @@ export async function enrichActivationWithDatacrazy(category, opts = {}) {
       : list.items.slice(offset, offset + Math.min(Math.max(limitNum, 1), 500));
 
   const contacts = items.map((item) => ({
+    cpf: item.cpf,
     email: item.email,
     phone: item.telefone,
   }));

@@ -12,6 +12,8 @@
  *   Ajustar `SEND_MESSAGE_PATH` e o formato de `payload` conforme a doc.
  */
 
+import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
+
 const SEND_MESSAGE_PATH = '/v1/messages';
 const LIST_TEMPLATES_PATH = '/v1/templates';
 const SEARCH_LEADS_PATH = '/api/v1/leads';
@@ -290,7 +292,7 @@ async function searchLeads(opts = {}) {
   return { data: list, count: data?.count ?? list.length };
 }
 
-function normalizeEmailForMatch(v) {
+export function normalizeEmailForMatch(v) {
   const s = String(v ?? '').trim().toLowerCase();
   if (s.length < 6 || !s.includes('@')) return '';
   const [local, domain] = s.split('@');
@@ -303,7 +305,7 @@ function normalizePhoneDigits(v) {
   return d.length >= 10 && d.length <= 11 ? d : '';
 }
 
-function leadPhoneDigits(lead) {
+export function leadPhoneDigits(lead) {
   return String(lead?.rawPhone || lead?.phone || '')
     .replace(/\D/g, '')
     .replace(/^55/, '');
@@ -363,6 +365,65 @@ async function buildLeadsLookupIndex(needed = {}) {
     }
   }
 
+  // FASE 0 (Onda 2): consulta cache persistente Postgres por CPF antes de
+  // bater na API DataCrazy. Hits quentes (~<1ms cada) eliminam chamadas de
+  // API para pessoas já conhecidas.
+  const cacheEnabled = String(process.env.DATACRAZY_CACHE_ENABLED ?? '1') !== '0';
+  const ttlDays = Math.max(Number(process.env.DATACRAZY_CACHE_TTL_DAYS) || 7, 1);
+  const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
+  let cacheHits = 0;
+  let cacheStaleSkipped = 0;
+  if (cacheEnabled && contacts) {
+    const cpfList = [];
+    for (const c of contacts) {
+      const cpf = String(c?.cpf ?? '').replace(/\D/g, '');
+      if (cpf.length === 11) cpfList.push(cpf);
+    }
+    if (cpfList.length > 0) {
+      try {
+        const cached = await datacrazyLeadCacheRepo.getByCpfBatch(cpfList);
+        const touchList = [];
+        for (const [cpf, row] of cached) {
+          const lastSyncedMs = row.last_synced_at
+            ? new Date(row.last_synced_at).getTime()
+            : 0;
+          if (lastSyncedMs && Date.now() - lastSyncedMs > ttlMs) {
+            cacheStaleSkipped += 1;
+            continue;
+          }
+          const lead = row.raw_lead || {
+            id: row.datacrazy_lead_id,
+            email: row.email_norm,
+            rawPhone: row.phone_norm,
+            name: row.nome,
+          };
+          mergeLeadIntoMaps(lead, byEmail, byPhone);
+          if (row.email_norm) remainingEmails.delete(row.email_norm);
+          if (row.phone_norm) remainingPhones.delete(row.phone_norm);
+          touchList.push(cpf);
+          cacheHits += 1;
+        }
+        if (touchList.length > 0) {
+          datacrazyLeadCacheRepo
+            .touchLastSeen(touchList)
+            .catch((e) => console.warn('[datacrazy-cache] touchLastSeen falhou:', e.message));
+        }
+        // Remove pessoas já resolvidas pelo cache de personList
+        for (let i = personList.length - 1; i >= 0; i--) {
+          const person = personList[i];
+          if (
+            (person.email && byEmail.has(person.email)) ||
+            (person.phone && byPhone.has(person.phone))
+          ) {
+            personList.splice(i, 1);
+          }
+        }
+      } catch (e) {
+        console.warn('[datacrazy-cache] consulta cache falhou:', e.message);
+      }
+    }
+  }
+
   // Atalho: para lotes pequenos (<= threshold), usa busca direta da API
   // (`?search=<termo>`) em vez de varrer centenas de páginas. Reduz de minutos
   // pra segundos quando o disparo é de poucas pessoas.
@@ -379,10 +440,8 @@ async function buildLeadsLookupIndex(needed = {}) {
     Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 10, 20),
     1
   );
-  // Métrica do threshold: `Math.max(emails, phones)` (não soma) — representa
-  // "pessoas" quando todas têm email + phone. Bug antigo somava os dois e
-  // dobrava o tamanho aparente do lote (100 pessoas viravam 200 e caíam fora
-  // do atalho).
+  // Métrica do threshold calculada APÓS FASE 0 — personList já está filtrado
+  // pelos hits do cache, representando apenas quem precisa de consulta à API.
   const totalRemaining = personList.length > 0
     ? personList.length
     : Math.max(remainingEmails.size, remainingPhones.size);
@@ -460,6 +519,25 @@ async function buildLeadsLookupIndex(needed = {}) {
     sharedLeadsIndex.byEmail = byEmail;
     sharedLeadsIndex.byPhone = byPhone;
     sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+
+    // FASE 2 (Onda 2): upsert oportunista de leads resolvidos via API no cache
+    // pra acelerar próximos disparos. Fire-and-forget — não bloqueia o caller.
+    if (cacheEnabled) {
+      const upsertList = [];
+      const seenId = new Set();
+      for (const lead of [...byEmail.values(), ...byPhone.values()]) {
+        if (!lead?.taxId) continue;
+        if (seenId.has(lead.id)) continue;
+        seenId.add(lead.id);
+        upsertList.push(lead);
+      }
+      if (upsertList.length > 0) {
+        datacrazyLeadCacheRepo
+          .upsertLeadFromCrmBatch(upsertList, 'preflight')
+          .catch((e) => console.warn('[datacrazy-cache] upsert oportunista falhou:', e.message));
+      }
+    }
+
     return {
       byEmail,
       byPhone,
@@ -473,6 +551,8 @@ async function buildLeadsLookupIndex(needed = {}) {
       remaining_emails: remainingEmails.size,
       remaining_phones: remainingPhones.size,
       index_reused: useShared,
+      cache_hits: cacheHits,
+      cache_stale_skipped: cacheStaleSkipped,
     };
   }
 
@@ -509,6 +589,24 @@ async function buildLeadsLookupIndex(needed = {}) {
   sharedLeadsIndex.byPhone = byPhone;
   sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
 
+  // FASE 2 (Onda 2): upsert oportunista de leads resolvidos via paginação.
+  // Fire-and-forget — não bloqueia o caller.
+  if (cacheEnabled) {
+    const upsertList = [];
+    const seenId = new Set();
+    for (const lead of [...byEmail.values(), ...byPhone.values()]) {
+      if (!lead?.taxId) continue;
+      if (seenId.has(lead.id)) continue;
+      seenId.add(lead.id);
+      upsertList.push(lead);
+    }
+    if (upsertList.length > 0) {
+      datacrazyLeadCacheRepo
+        .upsertLeadFromCrmBatch(upsertList, 'preflight')
+        .catch((e) => console.warn('[datacrazy-cache] upsert oportunista falhou:', e.message));
+    }
+  }
+
   return {
     byEmail,
     byPhone,
@@ -519,6 +617,8 @@ async function buildLeadsLookupIndex(needed = {}) {
     remaining_emails: remainingEmails.size,
     remaining_phones: remainingPhones.size,
     index_reused: useShared,
+    cache_hits: cacheHits,
+    cache_stale_skipped: cacheStaleSkipped,
   };
 }
 

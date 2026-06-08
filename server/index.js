@@ -23,6 +23,7 @@ import maintenanceRoute from './routes/maintenance.js';
 import { isDbConfigured } from './db/client.js';
 import { startScheduler } from './services/schedulerService.js';
 import { isApiKeyEnforced } from './middleware/requireApiKey.js';
+import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -159,5 +160,14 @@ app.listen(PORT, '0.0.0.0', () => {
           console.error('[crm-desfecho-sync] FAIL:', err.message);
         });
     }, CRM_DESFECHO_SYNC_INTERVAL_HOURS * 60 * 60 * 1000);
+
+    // Cron diário de sync do cache persistente cpf → datacrazy_lead_id.
+    // Hora configurada em DATACRAZY_CACHE_SYNC_HOUR_UTC (default 03:00 UTC).
+    // Endpoint manual: POST /api/maintenance/sync-datacrazy-cache.
+    try {
+      startDatacrazyCacheSyncCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron cache DataCrazy:', err.message);
+    }
   }
 });

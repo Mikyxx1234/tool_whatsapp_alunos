@@ -6,6 +6,8 @@ import { Router } from 'express';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 import { cleanStaleOrigemAtivacao } from '../services/activationOrigemCleanupService.js';
 import { syncCaaDesfechos } from '../services/crmDesfechoSyncService.js';
+import { runFullSync } from '../services/datacrazyLeadCacheSyncService.js';
+import { query } from '../db/client.js';
 
 const router = Router();
 
@@ -60,6 +62,58 @@ router.post('/sync-crm-desfechos', requireApiKey, async (req, res, next) => {
     res.json(result);
   } catch (err) {
     next(err);
+  }
+});
+
+/**
+ * POST /api/maintenance/sync-datacrazy-cache
+ *
+ * Dispara o sync completo do cache cpf → datacrazy_lead_id varrendo todas as
+ * páginas da API DataCrazy. Idempotente — pode ser chamado a qualquer hora.
+ *
+ * Query: ?dryRun=1  → conta sem persistir.
+ *
+ * Response:
+ *   { logId, pages, leadsSeen, upserted, skipped, durationMs, dry_run }
+ */
+router.post('/sync-datacrazy-cache', requireApiKey, async (req, res) => {
+  try {
+    const result = await runFullSync({
+      dryRun: req.query.dryRun === '1',
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[sync-datacrazy-cache]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/maintenance/invalidate-datacrazy-cache
+ *
+ * Invalida entradas do cache. Útil para forçar re-consulta à API.
+ *
+ * Query: ?all=1       → apaga todo o cache.
+ *        ?cpf=<cpf>   → apaga entrada de um CPF específico.
+ */
+router.post('/invalidate-datacrazy-cache', requireApiKey, async (req, res) => {
+  try {
+    const cpf = req.query.cpf;
+    const all = req.query.all === '1';
+    if (all) {
+      await query('delete from datacrazy_lead_cache');
+      return res.json({ ok: true, invalidated: 'all' });
+    }
+    if (cpf) {
+      await query(
+        'delete from datacrazy_lead_cache where cpf = $1',
+        [String(cpf).replace(/\D/g, '')]
+      );
+      return res.json({ ok: true, invalidated: cpf });
+    }
+    res.status(400).json({ error: 'cpf or all=1 required' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

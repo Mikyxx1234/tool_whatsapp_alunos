@@ -5,6 +5,50 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 08/06/2026 — Onda 2: cache persistente Postgres `cpf → datacrazy_lead_id` (resolve escala 4k–10k leads)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu/escreveu a spec; Executor (Sonnet 4.6) implementou. Opus revisou diff antes do commit.
+- **Problema:** Onda 1 (commit anterior `f66f15a`) corrigiu o preflight pra disparos de até ~250 pessoas (~10s), mas pra 4k–10k leads (volume que a base recebe periodicamente) ainda paga ~1 chamada à API DataCrazy por pessoa → 6–17 minutos por disparo. Inaceitável quando vira rotina.
+- **Decisão:** Cache local Postgres `cpf → datacrazy_lead_id`, populado por cron noturno + hits oportunistas. Disparos consultam o cache em milissegundos antes de cair na API.
+- **Schema:**
+  - **Migration `029_datacrazy_lead_cache.sql`** — `datacrazy_lead_cache(cpf PK, datacrazy_lead_id, email_norm, phone_norm, nome, raw_lead jsonb, source, last_synced_at, last_seen_at)` + índices em email_norm/phone_norm/last_synced_at. Tabela auxiliar `datacrazy_lead_cache_sync_log` com auditoria de cada execução do cron.
+  - **CPF como PK** (não `datacrazy_lead_id`): nossa base local indexa por CPF; CPF é o ponto de entrada estável. `datacrazy_lead_id` também é único, mas a chamada típica é "tenho um CPF, quero o lead_id".
+- **Componentes novos:**
+  - `server/repositories/datacrazyLeadCacheRepository.js` — `getByCpf`/`getByCpfBatch` (lookup), `upsertLeadFromCrm`/`upsertLeadFromCrmBatch` (write via `unnest` em chunks de 500), `touchLastSeen` (atualiza only `last_seen_at`), `recordSyncStart`/`recordSyncFinish` (log). Cópias locais de `normalizeEmailForMatch`/`leadPhoneDigits` pra evitar dependência circular com `datacrazyClient.js`.
+  - `server/services/datacrazyLeadCacheSyncService.js` — `runFullSync({ dryRun })` varre todas as páginas via `datacrazyClient.searchLeads`, upsert em batch. `startDatacrazyCacheSyncCron()` agenda execução diária na hora UTC configurada (default 03:00 UTC = 00:00 BRT). `setTimeout` + `setInterval(...).unref()` pra não bloquear shutdown.
+  - `server/routes/maintenance.js` — endpoints `POST /api/maintenance/sync-datacrazy-cache?dryRun=1` e `POST /api/maintenance/invalidate-datacrazy-cache?all=1|?cpf=...`, protegidos por `requireApiKey`.
+- **Integração com `buildLeadsLookupIndex`** (em `datacrazyClient.js`):
+  - **FASE 0 (nova):** consulta `getByCpfBatch(cpfs)` antes do atalho/paginação. Pessoas com cache hit (e dentro do TTL `DATACRAZY_CACHE_TTL_DAYS` default 7d) são removidas de `personList` e do `remainingEmails/Phones`. `touchLastSeen` é fire-and-forget.
+  - **FASE 2 (nova):** leads resolvidos via API (atalho ou paginação) são upsertados no cache automaticamente — `upsertLeadFromCrmBatch(..., 'preflight')` fire-and-forget. Cache auto-aquece com uso.
+  - Retorno ganhou `cache_hits` e `cache_stale_skipped` em ambos os caminhos.
+- **Mudança nos callers (`activationService.js`):** `contacts` passa a incluir `cpf: item.cpf` (já existia no roster desde sempre, linha 314). Sem CPF, FASE 0 simplesmente não acha — cai no caminho da Onda 1.
+- **Env vars novas:**
+  - `DATACRAZY_CACHE_ENABLED=1` — flag de kill switch (`0` desativa cache + cron).
+  - `DATACRAZY_CACHE_SYNC_HOUR_UTC=3` — hora do cron diário (0–23).
+  - `DATACRAZY_CACHE_SYNC_MAX_PAGES=2000` — safety limit (cobre ~200k leads).
+  - `DATACRAZY_CACHE_TTL_DAYS=7` — quantos dias um lead pode ficar sem re-sync antes de ser considerado stale.
+- **Impacto esperado:**
+  - 100 leads: ~10s (Onda 1) → <100ms (cache cheio).
+  - 1k leads: ~100s (Onda 1) → <500ms.
+  - 10k leads: ~17min (Onda 1) → ~3–5s.
+  - Cold start (cache vazio ou pessoas novas no CRM): cai no caminho da Onda 1, sem regressão.
+- **Trade-offs aceitos:**
+  - **Tabela cresce ~100MB** pra base de 50k leads (raw_lead jsonb). Aceitável; se virar problema, dropar `raw_lead` e manter só campos chave.
+  - **Sync noturno custa ~3min** de chamadas à API CRM, fora de horário comercial. Sem usuário ativo, sem rate-limit conflict.
+  - **Dados podem ter até 7 dias** de defasagem para pessoas que mudaram telefone/email — mesma janela do problema atual (sem cache, telefone errado da nossa base já entrega mensagem no número errado). Aceitável.
+  - **Pessoas sem CPF** (raras em Inadimplentes/CAA) caem no caminho sem cache.
+  - **Multi-instância não suportada** se o tool rodar em N réplicas: cada réplica tem seu próprio cron, mas o DB é compartilhado → upserts idempotentes não conflitam. OK.
+- **Alternativas descartadas:**
+  - **Redis** em vez de Postgres: introduz dependência nova; tool já usa Postgres pra tudo; volume não justifica.
+  - **Cache em memória estendido (sem persistir)**: perde tudo no restart do Easypanel (que acontece a cada deploy).
+  - **Sync sob demanda só (sem cron)**: primeiro disparo do dia paga ~3min. Cron noturno tira isso do caminho crítico.
+  - **Webhook do DataCrazy notificando mudanças**: DataCrazy não publica esse webhook.
+  - **Endpoint "lookup by tax_id"** no DataCrazy: provavelmente não existe (a API só expõe `search` genérico).
+- **Aplicação:** migration aplicada manualmente pelo usuário via `npm run migrate` apontando pra produção; Easypanel rebuilda o app no push pro `main`.
+- **Onde (resumo):**
+  - Novos: `server/db/migrations/029_datacrazy_lead_cache.sql`, `server/repositories/datacrazyLeadCacheRepository.js`, `server/services/datacrazyLeadCacheSyncService.js`.
+  - Modificados: `server/routes/maintenance.js` (2 endpoints), `server/index.js` (cron no boot), `server/services/datacrazyClient.js` (FASE 0 + FASE 2 + 2 exports novos: `normalizeEmailForMatch` e `leadPhoneDigits`), `server/services/activationService.js` (2 callers passam `cpf`), `.env.example` (bloco novo).
+
 ### 08/06/2026 — Preflight DataCrazy escalável (dedupe por pessoa + métrica corrigida)
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu + implementou diretamente.
