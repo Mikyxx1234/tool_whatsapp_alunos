@@ -255,7 +255,7 @@ export async function createFromCrm(data) {
  */
 export async function listMeuPainel(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
-  const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
+  const consultorTrim = isAdmin ? null : String(filters.consultor).trim();
   const fromDate = filters.from ? new Date(filters.from) : null;
   // Advance to midnight of the next day so the full `to` calendar day is included.
   let toDate = null;
@@ -308,14 +308,24 @@ export async function listMeuPainel(filters = {}) {
        order by occurred_at desc
        limit 1
     ) amo on true
-    where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
+    -- match bidirecional: "Danubia" salvo casa com consultor "Danubia Sousa" e vice-versa
+    where (
+      $1::text is null
+      or (
+        ar.consultor_responsavel_nome is not null
+        and (
+          ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
+          or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
+        )
+      )
+    )
       and ($2::timestamptz is null or ar.received_at >= $2)
       and ($3::timestamptz is null or ar.received_at < $3)
       and ($4::text is null or ar.category = $4)
     order by ar.received_at desc
     limit $5 offset $6
     `,
-    [consultorPattern, fromDate, toDate, category, limit, offset]
+    [consultorTrim, fromDate, toDate, category, limit, offset]
   );
   return rows;
 }
@@ -344,7 +354,7 @@ export async function listMeuPainel(filters = {}) {
  */
 export async function meuPainelStats(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
-  const consultorPattern = isAdmin ? null : `%${filters.consultor.trim()}%`;
+  const consultorTrim = isAdmin ? null : String(filters.consultor).trim();
   const fromDate = filters.from ? new Date(filters.from) : null;
   let toDate = null;
   if (filters.to) {
@@ -359,7 +369,17 @@ export async function meuPainelStats(filters = {}) {
     with my_responses as (
       select ar.id, ar.category, ar.rgm, ar.response_kind
         from activation_responses ar
-       where ($1::text is null or ar.consultor_responsavel_nome ilike $1)
+       -- match bidirecional: "Danubia" salvo casa com consultor "Danubia Sousa" e vice-versa
+       where (
+         $1::text is null
+         or (
+           ar.consultor_responsavel_nome is not null
+           and (
+             ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
+             or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
+           )
+         )
+       )
          and ($2::timestamptz is null or ar.received_at >= $2)
          and ($3::timestamptz is null or ar.received_at < $3)
          and ($4::text is null or ar.category = $4)
@@ -383,7 +403,7 @@ export async function meuPainelStats(filters = {}) {
       (select count(*)::int from latest_outcomes where outcome = 'sem_contato')             as total_sem_contato,
       (select count(*)::int from latest_outcomes where outcome = 'outro')                   as total_outro
     `,
-    [consultorPattern, fromDate, toDate, category]
+    [consultorTrim, fromDate, toDate, category]
   );
   const r = rows[0] || {};
   const totalMarcado = Number(r.total_marcado || 0);
