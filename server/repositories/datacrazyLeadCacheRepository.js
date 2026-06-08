@@ -134,13 +134,17 @@ export async function upsertLeadFromCrm(lead, source = 'preflight') {
  * @returns {Promise<number>}  quantidade de rows upsertadas
  */
 export async function upsertLeadFromCrmBatch(leads, source = 'preflight') {
-  const valid = [];
+  // Dedup por CPF dentro do batch (Postgres recusa ON CONFLICT quando a mesma
+  // chave aparece 2x no mesmo INSERT). A API DataCrazy às vezes retorna o
+  // mesmo CPF em múltiplos leads (registros duplicados na base CRM).
+  // Mantém a última ocorrência (Map preserva ordem de inserção).
+  const byCpf = new Map();
   for (const lead of leads) {
     const cpf = normalizeCpf(lead?.taxId);
     if (!cpf) continue;
     const leadId = String(lead?.id ?? '').trim();
     if (!leadId) continue;
-    valid.push({
+    byCpf.set(cpf, {
       cpf,
       leadId,
       email_norm: _normalizeEmail(lead?.email) || null,
@@ -149,6 +153,7 @@ export async function upsertLeadFromCrmBatch(leads, source = 'preflight') {
       raw: JSON.stringify(lead),
     });
   }
+  const valid = [...byCpf.values()];
   if (!valid.length) return 0;
 
   const CHUNK = 500;
