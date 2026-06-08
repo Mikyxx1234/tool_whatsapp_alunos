@@ -169,7 +169,7 @@ export function ActivationPanel() {
           onSaved={() => setTemplateConfigVersion((v) => v + 1)}
         />
 
-        <div className="mt-4 rounded-xl border border-rose-100 bg-rose-50/40 px-4 py-3">
+        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-3">
           <ActivationListActions
             category={category}
             label={label}
