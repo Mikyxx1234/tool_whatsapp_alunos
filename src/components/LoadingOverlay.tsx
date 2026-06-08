@@ -1,6 +1,13 @@
 import { useEffect } from 'react';
 import { Loader2, Check, Circle, X } from 'lucide-react';
 
+interface ProgressInfo {
+  processed: number;
+  total: number;
+  percent: number;
+  stats?: string;
+}
+
 interface LoadingOverlayProps {
   open: boolean;
   title: string;
@@ -9,6 +16,7 @@ interface LoadingOverlayProps {
   stages?: string[];
   currentStageIndex?: number;
   onClose?: () => void;
+  progress?: ProgressInfo;
 }
 
 export function LoadingOverlay({
@@ -19,6 +27,7 @@ export function LoadingOverlay({
   stages,
   currentStageIndex,
   onClose,
+  progress,
 }: LoadingOverlayProps) {
   useEffect(() => {
     if (open) {
@@ -106,6 +115,38 @@ export function LoadingOverlay({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {progress && (
+            <div className="w-full space-y-1.5 mt-1">
+              <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-slate-800 overflow-hidden">
+                {progress.total === 0 ? (
+                  <div className="h-full w-full bg-whatsapp-600 animate-pulse" />
+                ) : (
+                  <div
+                    className="h-full bg-whatsapp-600 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${progress.percent}%` }}
+                  />
+                )}
+              </div>
+              <p className="text-xs text-gray-700 dark:text-slate-300 text-center">
+                {progress.total === 0 ? (
+                  'Preparando…'
+                ) : (
+                  <>
+                    <strong>{progress.percent}%</strong>
+                    {' · '}
+                    {progress.processed.toLocaleString('pt-BR')} de{' '}
+                    {progress.total.toLocaleString('pt-BR')}
+                  </>
+                )}
+              </p>
+              {progress.stats && (
+                <p className="text-[11px] text-gray-500 dark:text-slate-500 text-center">
+                  {progress.stats}
+                </p>
+              )}
             </div>
           )}
 

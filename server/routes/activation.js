@@ -16,6 +16,13 @@ import {
   runDatacrazyActivationBatch,
 } from '../services/activationService.js';
 import {
+  createJob,
+  updateProgress,
+  completeJob,
+  failJob,
+  getJob,
+} from '../services/activationJobsRegistry.js';
+import {
   getActivationTemplateConfig,
   setActivationTemplateConfig,
 } from '../services/activationTemplateConfigService.js';
@@ -402,11 +409,39 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
     const masterKeys = Array.isArray(req.body?.master_keys)
       ? req.body.master_keys.map(String).filter((k) => k.length > 0)
       : undefined;
+
+    if (req.query.async === '1') {
+      const { jobId } = createJob({ category, total: 0 });
+      res.status(202).json({ jobId, status: 'running' });
+      (async () => {
+        try {
+          const data = await runDatacrazyActivationBatch(
+            category,
+            { limit, masterKeys },
+            {
+              onTotal: ({ total }) => updateProgress(jobId, { total: total ?? 0 }),
+              onProgress: (patch) => updateProgress(jobId, patch),
+            }
+          );
+          completeJob(jobId, { result: data });
+        } catch (err) {
+          failJob(jobId, { error: err?.message || String(err) });
+        }
+      })();
+      return;
+    }
+
     const data = await runDatacrazyActivationBatch(category, { limit, masterKeys });
     res.json(data);
   } catch (err) {
     handleError(res, err);
   }
+});
+
+router.get('/jobs/:jobId/progress', requireApiKey, (req, res) => {
+  const job = getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'job não encontrado' });
+  res.json(job);
 });
 
 router.post('/:category/not-found-export.csv', async (req, res) => {

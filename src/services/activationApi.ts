@@ -178,6 +178,24 @@ export interface DatacrazyBatchResponse {
   message?: string | null;
 }
 
+export interface ActivationJobProgress {
+  jobId: string;
+  category: ActivationCategory;
+  status: 'running' | 'completed' | 'failed';
+  total: number;
+  processed: number;
+  sent: number;
+  failed: number;
+  not_found: number;
+  skipped: number;
+  scanned: number | null;
+  pages: number | null;
+  started_at: string;
+  finished_at: string | null;
+  result: DatacrazyBatchResponse | null;
+  error: string | null;
+}
+
 export interface DatacrazyEnrichResponse {
   category?: ActivationCategory;
   total: number;
@@ -280,6 +298,24 @@ export const activationApi = {
       method: 'POST',
       body: JSON.stringify(body),
     });
+  },
+
+  runDatacrazyBatchAsync(
+    category: ActivationCategory,
+    opts?: { masterKeys?: string[] }
+  ): Promise<{ jobId: string; status: 'running' }> {
+    const body: Record<string, unknown> = { limit: 0 };
+    if (Array.isArray(opts?.masterKeys) && opts!.masterKeys!.length > 0) {
+      body.master_keys = opts!.masterKeys;
+    }
+    return jsonFetch<{ jobId: string; status: 'running' }>(
+      `/api/activation/${category}/run-datacrazy-batch?async=1`,
+      { method: 'POST', body: JSON.stringify(body) }
+    );
+  },
+
+  getJobProgress(jobId: string): Promise<ActivationJobProgress> {
+    return jsonFetch<ActivationJobProgress>(`/api/activation/jobs/${jobId}/progress`);
   },
 
   async downloadNotFoundCsv(category: ActivationCategory, items: DatacrazyBatchNotFoundItem[]) {

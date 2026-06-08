@@ -971,7 +971,9 @@ export async function getActivationRoster(category, opts = {}) {
 /**
  * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
  */
-export async function runDatacrazyActivationBatch(category, opts = {}) {
+export async function runDatacrazyActivationBatch(category, opts = {}, callbacks = {}) {
+  const onProgress = typeof callbacks.onProgress === 'function' ? callbacks.onProgress : () => {};
+  const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
   if (!process.env.DATACRAZY_API_KEY) {
     const err = new Error('DATACRAZY_API_KEY não configurada no .env');
     err.status = 503;
@@ -1015,6 +1017,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
       ? Math.min(Number(opts.limit), filteredEligible.length)
       : filteredEligible.length;
   const toProcess = filteredEligible.slice(0, maxProcess);
+  onTotal({ total: toProcess.length });
 
   const neededEmails = new Set();
   const neededPhones = new Set();
@@ -1303,6 +1306,15 @@ export async function runDatacrazyActivationBatch(category, opts = {}) {
         origem_ativacao_error = o.blockedError || 'origem_ativacao';
       }
     }
+    onProgress({
+      processed: results.length,
+      sent,
+      failed,
+      not_found,
+      skipped,
+      scanned: built.leadsScanned ?? null,
+      pages: built.pages ?? null,
+    });
     if (sendDelay > 0 && i + batchConcurrency < toProcess.length) {
       await sleep(sendDelay);
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   activationApi,
@@ -42,6 +42,23 @@ export function ActivationListActions({
   const [running, setRunning] = useState(false);
   const [overlayMinimized, setOverlayMinimized] = useState(false);
   const eligible = total;
+  const [progress, setProgress] = useState<{
+    processed: number;
+    total: number;
+    percent: number;
+    stats?: string;
+  } | null>(null);
+  const pollingRef = useRef<number | null>(null);
+  const consecutiveErrorsRef = useRef(0);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current != null) {
+      window.clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
 
   useEffect(() => {
     if (!running) setOverlayMinimized(false);
@@ -75,36 +92,75 @@ export function ActivationListActions({
     setOrigemBlocked(null);
     setBatch(null);
     setNotFoundItems([]);
+    setProgress({ processed: 0, total: 0, percent: 0 });
+    consecutiveErrorsRef.current = 0;
 
     try {
-      const result = await activationApi.runDatacrazyBatch(
+      const { jobId } = await activationApi.runDatacrazyBatchAsync(
         category,
         hasSelection ? { masterKeys: selectedMasterKeys } : undefined
       );
-      if (result.origem_ativacao_blocked) {
-        setOrigemBlocked(
-          result.message ||
-            'Disparo interrompido: o campo origem_ativacao não foi gravado no DataCrazy. As respostas não serão mensuradas até corrigir a integração.'
-        );
-      }
-      setBatch({
-        sent: result.sent,
-        not_found: result.not_found,
-        failed: result.failed,
-        skipped: result.skipped,
-        processed: result.processed,
-        pages: result.datacrazy_pages,
-        scanned: result.datacrazy_leads_scanned,
-      });
-      setNotFoundItems(result.not_found_items ?? []);
-      onFilaChanged?.();
-      if (hasSelection) onClearSelection?.();
+
+      pollingRef.current = window.setInterval(async () => {
+        try {
+          const job = await activationApi.getJobProgress(jobId);
+          consecutiveErrorsRef.current = 0;
+          const percent =
+            job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
+          setProgress({
+            processed: job.processed,
+            total: job.total,
+            percent,
+            stats: `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas`,
+          });
+
+          if (job.status === 'completed' && job.result) {
+            stopPolling();
+            const result = job.result;
+            if (result.origem_ativacao_blocked) {
+              setOrigemBlocked(
+                result.message ||
+                  'Disparo interrompido: o campo origem_ativacao não foi gravado no DataCrazy. As respostas não serão mensuradas até corrigir a integração.'
+              );
+            }
+            setBatch({
+              sent: result.sent,
+              not_found: result.not_found,
+              failed: result.failed,
+              skipped: result.skipped,
+              processed: result.processed,
+              pages: result.datacrazy_pages,
+              scanned: result.datacrazy_leads_scanned,
+            });
+            setNotFoundItems(result.not_found_items ?? []);
+            onFilaChanged?.();
+            if (hasSelection) onClearSelection?.();
+            setRunning(false);
+            setProgress(null);
+          } else if (job.status === 'failed') {
+            stopPolling();
+            setError(job.error || 'Erro ao processar disparo');
+            setRunning(false);
+            setProgress(null);
+          }
+        } catch {
+          consecutiveErrorsRef.current += 1;
+          if (consecutiveErrorsRef.current >= 3) {
+            stopPolling();
+            setError(
+              'Conexão perdida durante o disparo. O envio pode ter continuado — verifique os relatórios.'
+            );
+            setRunning(false);
+            setProgress(null);
+          }
+        }
+      }, 2000) as unknown as number;
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erro ao buscar e ativar no DataCrazy');
-    } finally {
+      setError(e instanceof Error ? e.message : 'Erro ao iniciar disparo');
       setRunning(false);
+      setProgress(null);
     }
-  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection]);
+  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection, stopPolling]);
 
   const downloadNotFoundCsv = useCallback(async () => {
     if (!notFoundItems.length) return;
@@ -255,6 +311,7 @@ export function ActivationListActions({
         ]}
         currentStageIndex={0}
         onClose={() => setOverlayMinimized(true)}
+        progress={progress ?? undefined}
       />
       {batch && !running && (
         <p className="text-[10px] text-emerald-700">
