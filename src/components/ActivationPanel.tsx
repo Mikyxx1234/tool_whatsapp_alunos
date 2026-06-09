@@ -61,6 +61,16 @@ export function ActivationPanel() {
       return next;
     });
   }, []);
+  const addSelectionMany = useCallback((keys: string[]) => {
+    setSelectedMasterKeys((prev) => {
+      const next = new Set(prev);
+      for (const k of keys) next.add(k);
+      return next;
+    });
+  }, []);
+  const replaceSelection = useCallback((keys: string[]) => {
+    setSelectedMasterKeys(new Set(keys));
+  }, []);
 
   useEffect(() => {
     setSelectedMasterKeys(new Set());
@@ -187,6 +197,9 @@ export function ActivationPanel() {
         selectedMasterKeys={selectedMasterKeys}
         onToggleSelection={toggleSelection}
         onToggleAllOnPage={toggleAllOnPage}
+        onAddSelectionMany={addSelectionMany}
+        onReplaceSelection={replaceSelection}
+        onClearSelection={clearSelection}
       />
     </div>
   );

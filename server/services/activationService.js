@@ -991,6 +991,82 @@ export async function getActivationRoster(category, opts = {}) {
 }
 
 /**
+ * Retorna apenas os master_keys da fila de ativação após aplicar os mesmos filtros do
+ * getActivationRoster. Payload mínimo — ideal para seleção em massa no frontend.
+ */
+export async function getActivationRosterKeys(category, opts = {}) {
+  assertActivationCategory(category);
+  const stageFilter = parseActivationStageFilter(opts.activationStage);
+  const responseFilter = (() => {
+    const v = String(opts.responseFilter || 'all').toLowerCase();
+    return v === 'responded' || v === 'not_responded' ? v : 'all';
+  })();
+
+  const bbSubgrupoFilter = opts.bbSubgrupo || null;
+  const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
+
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) {
+    const err = new Error('Snapshots de matriculados não encontrados.');
+    err.status = 404;
+    throw err;
+  }
+  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
+    ? null
+    : await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
+    const err = new Error(`Snapshots de ${category} não encontrados.`);
+    err.status = 404;
+    throw err;
+  }
+  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
+  const { rows } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
+
+  let filtered =
+    stageFilter === 'all'
+      ? rows
+      : rows.filter((row) =>
+          matchesActivationStageFilter(row.prior_activation_count, stageFilter)
+        );
+
+  if (bbSubgrupoFilter && category === 'acessos-blackboard') {
+    filtered = filtered.filter((row) => row.bb_subgrupo === bbSubgrupoFilter);
+  }
+
+  if (cicloFilterRaw) {
+    filtered = filtered.filter((row) => normalizeCiclo(row.ciclo || '') === cicloFilterRaw);
+  }
+
+  if (responseFilter !== 'all' && filtered.length > 0) {
+    const allKeys = filtered.map((it) => it.master_key).filter(Boolean);
+    let stale = 72;
+    try {
+      const sett = await journeySettingsRepo.resolveForTerm(null);
+      stale = Math.max(1, Math.floor(Number(sett?.origem_ativacao_stale_hours) || 72));
+    } catch { /* default */ }
+    const respondedSet = await activationResponseRepo.findRespondedMasterKeys(
+      category, allKeys, stale
+    );
+    if (responseFilter === 'responded') {
+      filtered = filtered.filter((it) => it.master_key && respondedSet.has(it.master_key));
+    } else {
+      filtered = filtered.filter((it) => !it.master_key || !respondedSet.has(it.master_key));
+    }
+  }
+
+  const master_keys = filtered.map((it) => it.master_key).filter(Boolean);
+
+  return {
+    category,
+    total: master_keys.length,
+    master_keys,
+    activation_stage: stageFilter,
+    response_filter: responseFilter,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+/**
  * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
  */
 export async function runDatacrazyActivationBatch(category, opts = {}, callbacks = {}) {

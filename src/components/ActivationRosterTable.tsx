@@ -198,6 +198,12 @@ interface Props {
   onToggleSelection?: (masterKey: string, checked: boolean) => void;
   /** Callback ao marcar/desmarcar todos da página visível. */
   onToggleAllOnPage?: (masterKeys: string[], checked: boolean) => void;
+  /** Adiciona múltiplas master_keys à seleção (não substitui). */
+  onAddSelectionMany?: (masterKeys: string[]) => void;
+  /** Substitui a seleção inteira por essas master_keys. */
+  onReplaceSelection?: (masterKeys: string[]) => void;
+  /** Limpa toda a seleção. */
+  onClearSelection?: () => void;
 }
 
 export function ActivationRosterTable({
@@ -206,6 +212,9 @@ export function ActivationRosterTable({
   selectedMasterKeys,
   onToggleSelection,
   onToggleAllOnPage,
+  onAddSelectionMany,
+  onReplaceSelection,
+  onClearSelection,
 }: Props) {
   const [items, setItems] = useState<ActivationRosterItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -222,6 +231,8 @@ export function ActivationRosterTable({
   const [skippedLimbo, setSkippedLimbo] = useState(0);
   const [urgencyCounts, setUrgencyCounts] = useState<{ alta: number; media: number; normal: number; sem_turma: number } | null>(null);
   const [subgrupoCounts, setSubgrupoCounts] = useState<{ podia_e_nao_acessou: number; nao_acessa_faz_tempo: number; acessou_pouco: number } | null>(null);
+  const [bulkSelecting, setBulkSelecting] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -274,6 +285,82 @@ export function ActivationRosterTable({
     const clamped = Math.max(0, Math.min(next, totalPages - 1));
     setPage(clamped);
   };
+
+  const handleBulkSelect = useCallback(
+    async (mode: 'page' | 'next5' | 'next10' | 'all') => {
+      if (!onAddSelectionMany || !onReplaceSelection) return;
+      setBulkError(null);
+      if (mode === 'page') {
+        const pageKeys = items
+          .map((it) => it.master_key)
+          .filter((k): k is string => typeof k === 'string' && k.length > 0);
+        onAddSelectionMany(pageKeys);
+        return;
+      }
+      if (mode === 'all') {
+        setBulkSelecting(true);
+        try {
+          const r = await activationApi.rosterKeys(category, {
+            activationStage: stageFilter,
+            bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
+            ciclo: cicloFilter || undefined,
+            responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
+          });
+          onReplaceSelection(r.master_keys);
+        } catch (e) {
+          setBulkError(e instanceof Error ? e.message : 'Erro ao carregar todos');
+        } finally {
+          setBulkSelecting(false);
+        }
+        return;
+      }
+      // 'next5' | 'next10' — busca próximas N páginas a partir da atual (inclui a atual).
+      const pagesToFetch = mode === 'next5' ? 5 : 10;
+      setBulkSelecting(true);
+      try {
+        const accumulated: string[] = [];
+        for (let i = 0; i < pagesToFetch; i++) {
+          const targetPage = safePage + i;
+          if (targetPage >= totalPages) break;
+          // Se for a página atual, reusa `items` em memória (evita re-fetch).
+          if (targetPage === safePage) {
+            for (const it of items) {
+              if (it.master_key) accumulated.push(it.master_key);
+            }
+            continue;
+          }
+          const r = await activationApi.roster(category, {
+            limit: PAGE_SIZE,
+            offset: targetPage * PAGE_SIZE,
+            activationStage: stageFilter,
+            bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
+            ciclo: cicloFilter || undefined,
+            responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
+          });
+          for (const it of r.items) {
+            if (it.master_key) accumulated.push(it.master_key);
+          }
+        }
+        onAddSelectionMany(accumulated);
+      } catch (e) {
+        setBulkError(e instanceof Error ? e.message : 'Erro ao carregar páginas');
+      } finally {
+        setBulkSelecting(false);
+      }
+    },
+    [
+      category,
+      stageFilter,
+      responseFilter,
+      bbSubgrupo,
+      cicloFilter,
+      safePage,
+      totalPages,
+      items,
+      onAddSelectionMany,
+      onReplaceSelection,
+    ]
+  );
 
   return (
     <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -447,37 +534,87 @@ export function ActivationRosterTable({
         </div>
       )}
 
+      {selectedMasterKeys && (selectedMasterKeys.size > 0 || bulkSelecting || bulkError) && (
+        <div className="px-4 py-2 bg-whatsapp-50 border-b border-whatsapp-100 flex items-center justify-between text-xs">
+          <span className="text-whatsapp-800">
+            {bulkSelecting && '⏳ Carregando seleção em massa…'}
+            {!bulkSelecting && selectedMasterKeys.size > 0 && (
+              <>
+                <strong>{selectedMasterKeys.size.toLocaleString('pt-BR')}</strong> selecionado(s)
+              </>
+            )}
+            {bulkError && <span className="text-red-600 ml-2">Erro: {bulkError}</span>}
+          </span>
+          {!bulkSelecting && selectedMasterKeys.size > 0 && onClearSelection && (
+            <button
+              type="button"
+              onClick={() => {
+                onClearSelection();
+                setBulkError(null);
+              }}
+              className="text-whatsapp-700 hover:underline font-medium"
+            >
+              Desmarcar todos
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-gray-600">
             <tr>
               {selectedMasterKeys && (
-                <th className="px-3 py-2 text-center font-medium w-8">
-                  <input
-                    type="checkbox"
-                    className="cursor-pointer accent-whatsapp-600"
-                    aria-label="Selecionar todos da página"
-                    checked={
-                      items.length > 0 &&
-                      items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key))
-                    }
-                    ref={(el) => {
-                      if (!el) return;
-                      const someSelected = items.some(
-                        (it) => it.master_key && selectedMasterKeys.has(it.master_key)
-                      );
-                      const allSelected =
+                <th className="px-3 py-2 text-center font-medium w-32">
+                  <div className="flex items-center justify-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      className="cursor-pointer accent-whatsapp-600"
+                      aria-label="Selecionar todos da página"
+                      checked={
                         items.length > 0 &&
-                        items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key));
-                      el.indeterminate = someSelected && !allSelected;
-                    }}
-                    onChange={(e) => {
-                      const pageKeys = items
-                        .map((it) => it.master_key)
-                        .filter((k): k is string => typeof k === 'string' && k.length > 0);
-                      onToggleAllOnPage?.(pageKeys, e.target.checked);
-                    }}
-                  />
+                        items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key))
+                      }
+                      ref={(el) => {
+                        if (!el) return;
+                        const someSelected = items.some(
+                          (it) => it.master_key && selectedMasterKeys.has(it.master_key)
+                        );
+                        const allSelected =
+                          items.length > 0 &&
+                          items.every((it) => it.master_key && selectedMasterKeys.has(it.master_key));
+                        el.indeterminate = someSelected && !allSelected;
+                      }}
+                      onChange={(e) => {
+                        const pageKeys = items
+                          .map((it) => it.master_key)
+                          .filter((k): k is string => typeof k === 'string' && k.length > 0);
+                        onToggleAllOnPage?.(pageKeys, e.target.checked);
+                      }}
+                    />
+                    {onAddSelectionMany && onReplaceSelection && (
+                      <select
+                        className="text-[10px] border border-gray-200 rounded px-1 py-0.5 cursor-pointer disabled:opacity-50 bg-white"
+                        disabled={bulkSelecting}
+                        value=""
+                        onChange={(e) => {
+                          const mode = e.target.value as 'page' | 'next5' | 'next10' | 'all' | '';
+                          e.target.value = '';
+                          if (mode) void handleBulkSelect(mode);
+                        }}
+                        aria-label="Selecionar em massa"
+                        title="Selecionar várias páginas de uma vez"
+                      >
+                        <option value="">
+                          {bulkSelecting ? 'Carregando…' : 'Mais ▾'}
+                        </option>
+                        <option value="page">Página atual ({items.length})</option>
+                        <option value="next5">Próximas 5 páginas (~{Math.min(5, totalPages - safePage) * PAGE_SIZE})</option>
+                        <option value="next10">Próximas 10 páginas (~{Math.min(10, totalPages - safePage) * PAGE_SIZE})</option>
+                        <option value="all">Todos filtrados ({total.toLocaleString('pt-BR')})</option>
+                      </select>
+                    )}
+                  </div>
                 </th>
               )}
               <th className="px-3 py-2 text-left font-medium">Aluno</th>

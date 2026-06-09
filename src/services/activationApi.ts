@@ -152,6 +152,15 @@ export interface ActivationRosterResponse {
   counts_by_ciclo?: Record<string, number>;
 }
 
+export interface ActivationRosterKeysResponse {
+  category: ActivationCategory;
+  total: number;
+  master_keys: string[];
+  activation_stage: ActivationStageFilter;
+  response_filter: ActivationResponseFilter;
+  generated_at: string;
+}
+
 export interface DatacrazyBatchNotFoundItem extends ActivationListItem {
   message_tier?: ActivationMessageTier;
   template_name?: string | null;
@@ -290,6 +299,32 @@ export const activationApi = {
     }
     const q = params.toString() ? `?${params}` : '';
     return jsonFetch<ActivationRosterResponse>(`/api/activation/${category}/roster${q}`);
+  },
+
+  rosterKeys(
+    category: ActivationCategory,
+    opts?: {
+      activationStage?: ActivationStageFilter;
+      bbSubgrupo?: BbSubgrupo | 'all';
+      ciclo?: string;
+      responseFilter?: ActivationResponseFilter;
+    }
+  ) {
+    const params = new URLSearchParams();
+    if (opts?.activationStage && opts.activationStage !== 'all') {
+      params.set('activation_stage', opts.activationStage);
+    }
+    if (opts?.bbSubgrupo && opts.bbSubgrupo !== 'all') {
+      params.set('bb_subgrupo', opts.bbSubgrupo);
+    }
+    if (opts?.ciclo) {
+      params.set('ciclo', opts.ciclo);
+    }
+    if (opts?.responseFilter && opts.responseFilter !== 'all') {
+      params.set('responseFilter', opts.responseFilter);
+    }
+    const q = params.toString() ? `?${params}` : '';
+    return jsonFetch<ActivationRosterKeysResponse>(`/api/activation/${category}/roster/keys${q}`);
   },
 
   runDatacrazyBatch(

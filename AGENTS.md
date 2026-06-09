@@ -5,6 +5,21 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 09/06/2026 — Seleção multi-página no Disparador (combo dropdown)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu UX; Executor (Sonnet 4.6) implementou.
+- **Problema:** Disparos manuais grandes (ex: 2.392 leads sem resposta) exigiam avançar 24 páginas marcando 100 por vez. Inviável operacionalmente.
+- **Decisão:** Dropdown "Mais ▾" ao lado do checkbox do header em `ActivationRosterTable`, com 4 opções: "Página atual", "Próximas 5 páginas", "Próximas 10 páginas", "Todos filtrados (N)".
+  - **Página atual** e **próximas N páginas**: ADICIONA à seleção (acumula com o que já estava).
+  - **Todos filtrados**: SUBSTITUI a seleção (consistente com "selecione TUDO").
+- **Backend novo:** `GET /api/activation/:category/roster/keys` que aceita os mesmos query params do `roster` (stage, ciclo, bb_subgrupo, responseFilter) e retorna apenas `master_keys[]` — payload mínimo, 1 request resolve a base inteira.
+- **Linha de status acima da tabela:** mostra `<N> selecionado(s)` + botão "Desmarcar todos" sempre que há seleção. Mostra `⏳ Carregando seleção em massa…` durante operações.
+- **Alternativas descartadas:**
+  - **Opção A (só "Todos filtrados")**: simples mas tudo-ou-nada; usuário disse que às vezes quer "só 500".
+  - **Opção B (só "Próximas N páginas")**: cobre o caso parcial mas pra "tudo" exigiria 40 requests sequenciais (ineficiente).
+  - **Aumentar PAGE_SIZE temporariamente** (ex: "mostrar 500/página"): table fica gigante, UX ruim.
+- **Onde:** `server/services/activationService.js` (função `getActivationRosterKeys`), `server/routes/activation.js` (rota nova ANTES de `/roster`), `src/services/activationApi.ts` (método `rosterKeys` + tipo `ActivationRosterKeysResponse`), `src/components/ActivationPanel.tsx` (callbacks `addSelectionMany`/`replaceSelection`), `src/components/ActivationRosterTable.tsx` (dropdown + linha de status + handler `handleBulkSelect`).
+
 ### 08/06/2026 — Onda 2: cache persistente Postgres `cpf → datacrazy_lead_id` (resolve escala 4k–10k leads)
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu/escreveu a spec; Executor (Sonnet 4.6) implementou. Opus revisou diff antes do commit.

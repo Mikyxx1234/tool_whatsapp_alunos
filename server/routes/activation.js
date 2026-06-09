@@ -8,6 +8,7 @@ import {
   enrichDocsPendentesWithDatacrazy,
   getDocsPendentesActivationList,
   getActivationRoster,
+  getActivationRosterKeys,
   getIntersectionActivationList,
   invalidateActivationRosterCache,
   markActivationDispatched,
@@ -374,6 +375,26 @@ router.get('/:category/export.csv', async (req, res) => {
       `attachment; filename="ativacao-${category}.csv"`
     );
     res.send(csv);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+router.get('/:category/roster/keys', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const category = categorySlug(req);
+    assertActivationCategory(category);
+    const activationStage = req.query.activation_stage;
+    const bbSubgrupo = req.query.bb_subgrupo || null;
+    const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : undefined;
+    const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
+    const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
+    const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
+    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, ciclo, responseFilter });
+    res.json(data);
   } catch (err) {
     handleError(res, err);
   }
