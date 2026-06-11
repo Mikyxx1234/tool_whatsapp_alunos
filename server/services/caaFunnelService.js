@@ -2,6 +2,7 @@ import { query } from '../db/client.js';
 import { calcJanela } from '../utils/caaWindow.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 import { getRgmToCicloMap, getAvailableCiclos } from './cicloResolverService.js';
+import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 
 const CAP_DIARIO = 2;
 const CAP_TOTAL = 4;
@@ -81,9 +82,10 @@ export async function getCaaFunnel(opts = {}) {
   const now = new Date();
 
   // Ciclo resolution (in parallel with the main query)
-  const [available_ciclos, cicloMap, { rows }] = await Promise.all([
+  const [availableCiclosRaw, cicloMap, frozenSetFunnel, { rows }] = await Promise.all([
     getAvailableCiclos(),
     getRgmToCicloMap(),
+    frozenCyclesRepo.getFrozenSet(),
     query(`
       WITH m_proto AS (
         SELECT DISTINCT ON (protocolo)
@@ -167,6 +169,9 @@ export async function getCaaFunnel(opts = {}) {
       ORDER BY p.status, p.first_seen_at ASC
     `),
   ]);
+
+  // Ciclos ativos: excluir frozen do dropdown e dos counts_by_ciclo.
+  const available_ciclos = availableCiclosRaw.filter((c) => !frozenSetFunnel.has(c));
 
   // Enriquece cada protocolo com janela e estado
   const processed = rows.map((p) => {

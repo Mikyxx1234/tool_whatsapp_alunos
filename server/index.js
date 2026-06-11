@@ -19,6 +19,7 @@ import reportsRoute from './routes/reports.js';
 import baseUploadsRoute from './routes/baseUploads.js';
 import activationRoute from './routes/activation.js';
 import maintenanceRoute from './routes/maintenance.js';
+import cyclesRoute from './routes/cycles.js';
 
 import { isDbConfigured } from './db/client.js';
 import { startScheduler } from './services/schedulerService.js';
@@ -62,6 +63,7 @@ app.use('/api/reports', reportsRoute);
 app.use('/api/base-uploads', baseUploadsRoute);
 app.use('/api/activation', activationRoute);
 app.use('/api/maintenance', maintenanceRoute);
+app.use('/api/cycles', cyclesRoute);
 
 // Em produção (container Docker), o mesmo processo serve o build estático
 // do frontend (Vite -> dist/). Em dev, o Vite roda na porta 5173 e proxy-a

@@ -1,6 +1,7 @@
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import { cicloFromRow } from '../utils/cicloFromRow.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
+import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 
 const RGM_KEYS = [
   'RGM', 'Rgm', 'rgm',
@@ -61,6 +62,18 @@ export async function getAvailableCiclos() {
   const { map, ciclos } = await buildCache();
   cicloCache = { expires: Date.now() + CACHE_TTL_MS, map, ciclos };
   return ciclos;
+}
+
+/**
+ * Retorna ciclos disponíveis no snapshot atual de matriculados, EXCLUINDO os frozen.
+ * @returns {Promise<string[]>}
+ */
+export async function getActiveCiclos() {
+  const [available, frozen] = await Promise.all([
+    getAvailableCiclos(),
+    frozenCyclesRepo.getFrozenSet(),
+  ]);
+  return available.filter((c) => !frozen.has(c));
 }
 
 /**

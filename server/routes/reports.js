@@ -14,6 +14,7 @@ import { getCaaFunnel } from '../services/caaFunnelService.js';
 import { getActivationConversion } from '../services/activationConversionService.js';
 import { getConsultorReport } from '../services/consultorReportService.js';
 import { getRgmToCicloMap, getAvailableCiclos } from '../services/cicloResolverService.js';
+import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -125,10 +126,12 @@ router.get('/caa/summary', async (req, res) => {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
     const scope = await resolveCaaSnapshotScope(req);
-    const [available_ciclos, cicloMap] = await Promise.all([
+    const [availableCiclosRaw, cicloMap, frozenSetReports] = await Promise.all([
       getAvailableCiclos(),
       getRgmToCicloMap(),
+      frozenCyclesRepo.getFrozenSet(),
     ]);
+    const available_ciclos = availableCiclosRaw.filter((c) => !frozenSetReports.has(c));
     let stats;
     let needs_previous = false;
     let previous_snapshot = scope.kind === 'last_snapshot' ? scope.previous_snapshot : null;
