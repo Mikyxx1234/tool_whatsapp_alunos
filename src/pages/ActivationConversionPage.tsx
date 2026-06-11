@@ -304,42 +304,50 @@ export default function ActivationConversionPage() {
           </div>
         )}
 
-        {/* KPI cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-3 gap-3">
-          <KpiCard
-            icon={<Send className="w-4 h-4" />}
-            tone="sky"
-            label="Disparos enviados"
-            value={(data?.kpis.total_dispatches ?? 0).toLocaleString('pt-BR')}
-            hint={`para ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} pessoas únicas`}
-            loading={loading}
-            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
-              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.total_dispatches ?? 0 }))
-              : undefined}
-          />
-          <KpiCard
-            icon={<Users className="w-4 h-4" />}
-            tone="emerald"
-            label="Responderam"
-            value={(data?.kpis.unique_responders ?? 0).toLocaleString('pt-BR')}
-            hint={`de ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} únicos (${fmtPct(data?.kpis.response_rate ?? 0)})`}
-            loading={loading}
-            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
-              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_responders ?? 0 }))
-              : undefined}
-          />
-          <KpiCard
-            icon={<RotateCcw className="w-4 h-4" />}
-            tone="emerald"
-            label="Revertidos"
-            value={(data?.kpis.unique_reverted ?? 0).toLocaleString('pt-BR')}
-            hint="marcados como revertidos pelos consultores"
-            loading={loading}
-            cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
-              ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_reverted ?? 0 }))
-              : undefined}
-          />
-        </div>
+        {/* KPI cards. "Revertidos" só faz sentido em CAA: aparece quando o
+            filtro é Todas (CAA está incluído no agregado) ou Processos CAA. */}
+        {(() => {
+          const showReverted = category === 'all' || category === 'processos-caa';
+          return (
+            <div className={`grid grid-cols-1 gap-3 ${showReverted ? 'sm:grid-cols-3 lg:grid-cols-3' : 'sm:grid-cols-2 lg:grid-cols-2'}`}>
+              <KpiCard
+                icon={<Send className="w-4 h-4" />}
+                tone="sky"
+                label="Disparos enviados"
+                value={(data?.kpis.total_dispatches ?? 0).toLocaleString('pt-BR')}
+                hint={`para ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} pessoas únicas`}
+                loading={loading}
+                cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+                  ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.total_dispatches ?? 0 }))
+                  : undefined}
+              />
+              <KpiCard
+                icon={<Users className="w-4 h-4" />}
+                tone="emerald"
+                label="Responderam"
+                value={(data?.kpis.unique_responders ?? 0).toLocaleString('pt-BR')}
+                hint={`de ${(data?.kpis.unique_dispatched ?? 0).toLocaleString('pt-BR')} únicos (${fmtPct(data?.kpis.response_rate ?? 0)})`}
+                loading={loading}
+                cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+                  ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_responders ?? 0 }))
+                  : undefined}
+              />
+              {showReverted && (
+                <KpiCard
+                  icon={<RotateCcw className="w-4 h-4" />}
+                  tone="emerald"
+                  label="Revertidos"
+                  value={(data?.kpis.unique_reverted ?? 0).toLocaleString('pt-BR')}
+                  hint="marcados como revertidos pelos consultores (só CAA)"
+                  loading={loading}
+                  cicloBreakdown={cicloFilter === 'all' && availableCiclos.length > 1
+                    ? availableCiclos.map((c) => ({ ciclo: c, value: kpisByCiclo[c]?.unique_reverted ?? 0 }))
+                    : undefined}
+                />
+              )}
+            </div>
+          );
+        })()}
 
         {/* Category breakdown — only when "all" */}
         {category === 'all' && data && (
@@ -393,7 +401,9 @@ export default function ActivationConversionPage() {
                         </span>
                       </td>
                       <td className="px-4 py-2 text-right text-gray-700 tabular-nums">
-                        {row.unique_reverted.toLocaleString('pt-BR')}
+                        {row.category === 'processos-caa'
+                          ? row.unique_reverted.toLocaleString('pt-BR')
+                          : <span className="text-gray-300">—</span>}
                       </td>
                     </tr>
                   ))}

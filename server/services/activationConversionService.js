@@ -6,6 +6,7 @@ import {
   rgmFromMasterKey,
   masterKeysForCiclo,
 } from './cicloResolverService.js';
+import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 
 const CATEGORY_LABELS = {
   'docs-pendentes': 'Docs pendentes',
@@ -20,25 +21,37 @@ const ALL_CATEGORIES = Object.keys(CATEGORY_LABELS);
 const RECENT_LIMIT = 50;
 
 /**
- * Filtro defensivo: só conta respostas em `activation_responses` que tenham um
- * dispatch `sent` correspondente na mesma master_key/category nas últimas
- * `staleHours` antes do `received_at`. Sem isso, respostas tardias (3 meses
- * depois de uma ativação) virariam falso-positivo quando o campo
- * `origem_ativacao` no CRM não foi limpo (handshake n8n só limpa após a 1ª
- * resposta — decisão Opus 02/06/2026).
+ * Filtro defensivo + atribuição temporal: conta respostas em
+ * `activation_responses` que tenham um dispatch `sent` correspondente na mesma
+ * master_key/category nas últimas `staleHours` antes do `received_at`, E cujo
+ * dispatch caia DENTRO do período pedido (`dispSinceParamIdx`/`dispUntilParamIdx`).
  *
- * O alias `r` deve apontar para `activation_responses`. O placeholder
- * `${staleHoursParamIdx}` é o índice (1-based) do parâmetro com a janela
- * em horas dentro do array de params da query.
+ * Decisão 10/06/2026: respostas agregam pelo dia do disparo correspondente,
+ * não pelo dia da resposta. Sem isso, respostas tardias entrariam no dia errado.
+ *
+ * Decisão original 02/06/2026 (filtro `staleHours`): sem essa janela, respostas
+ * 3 meses depois de uma ativação virariam falso-positivo quando o campo
+ * `origem_ativacao` no CRM não foi limpo (handshake n8n só limpa após a 1ª resposta).
+ *
+ * @param {string} rAlias                 alias de `activation_responses` (ex: 'r', 'ar')
+ * @param {number} staleHoursParamIdx     índice 1-based do param da janela em horas
+ * @param {number|null} dispSinceParamIdx índice 1-based do param de sinceIso (filtro lower do dispatch)
+ * @param {number|null} dispUntilParamIdx índice 1-based do param de untilIso (filtro upper do dispatch)
  */
-function buildValidResponseExists(rAlias, staleHoursParamIdx) {
+function buildValidResponseExists(rAlias, staleHoursParamIdx, dispSinceParamIdx = null, dispUntilParamIdx = null) {
+  const dispSinceCond = dispSinceParamIdx
+    ? `\n      and d.created_at >= $${dispSinceParamIdx}`
+    : '';
+  const dispUntilCond = dispUntilParamIdx
+    ? `\n      and d.created_at < $${dispUntilParamIdx}`
+    : '';
   return `exists (
     select 1 from activation_dispatch_events d
     where d.master_key = ${rAlias}.master_key
       and d.category = ${rAlias}.category
       and d.status = 'sent'
       and d.created_at <= coalesce(${rAlias}.received_at, ${rAlias}.created_at)
-      and d.created_at >= coalesce(${rAlias}.received_at, ${rAlias}.created_at) - ($${staleHoursParamIdx}::int * interval '1 hour')
+      and d.created_at >= coalesce(${rAlias}.received_at, ${rAlias}.created_at) - ($${staleHoursParamIdx}::int * interval '1 hour')${dispSinceCond}${dispUntilCond}
   )`;
 }
 
@@ -69,8 +82,12 @@ export async function getActivationConversion({ category = 'all', period_days = 
     Math.floor(Number(settings?.origem_ativacao_stale_hours) || 72)
   );
 
-  // Ciclo resolution
-  const available_ciclos = await getAvailableCiclos();
+  // Ciclo resolution — excluir ciclos frozen do dropdown e dos kpis_by_ciclo.
+  const [availableCiclosRaw, frozenSetConv] = await Promise.all([
+    getAvailableCiclos(),
+    frozenCyclesRepo.getFrozenSet(),
+  ]);
+  const available_ciclos = availableCiclosRaw.filter((c) => !frozenSetConv.has(c));
   const hasCiclos = available_ciclos.length > 1;
   const cicloMap = hasCiclos ? await getRgmToCicloMap() : new Map();
 
@@ -94,6 +111,29 @@ export async function getActivationConversion({ category = 'all', period_days = 
     return { params: [...params, untilIso], cond: `AND ${colExpr} < $${params.length + 1}` };
   }
 
+  /**
+   * Versão de withUntil pra colunas de RESPOSTAS (`r.received_at`): relaxa o
+   * upper bound em `staleHours` pra cobrir respostas tardias dentro da janela
+   * E adiciona o `untilIso` ORIGINAL pra ser usado no EXISTS (filtro no
+   * `d.created_at` original do dispatch).
+   * Decisão 10/06/2026 — respostas atribuídas ao dia do dispatch correspondente.
+   *
+   * @returns {{ params: any[], cond: string, dispUntilIdx: number|null }}
+   *   - cond: filtro em r.received_at (com upper bound estendido)
+   *   - dispUntilIdx: índice (1-based) do untilIso ORIGINAL nos params (pra passar pro EXISTS)
+   */
+  function withUntilForResponses(params, colExpr) {
+    if (!untilIso) return { params, cond: '', dispUntilIdx: null };
+    const untilExtended = new Date(new Date(untilIso).getTime() + staleHours * 3600 * 1000).toISOString();
+    // Adiciona DOIS params: untilExtended (filtro r.received_at) e untilIso ORIGINAL (filtro EXISTS).
+    const newParams = [...params, untilExtended, untilIso];
+    return {
+      params: newParams,
+      cond: `AND ${colExpr} < $${params.length + 1}`,
+      dispUntilIdx: params.length + 2,
+    };
+  }
+
   const dispBaseParams = catFilter ? [sinceIso, catFilter] : [sinceIso];
   const dispBaseCond = catFilter ? 'AND category = $2' : '';
   const dispParamsPreUntil = buildDispParams(dispBaseParams);
@@ -113,18 +153,19 @@ export async function getActivationConversion({ category = 'all', period_days = 
     dispParams
   );
 
-  // --- KPIs from responses (com filtro defensivo) ---
+  // --- KPIs from responses (com filtro defensivo + atribuição ao dia do disparo) ---
   const respKpiBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
   const respKpiCatCond = catFilter ? 'AND r.category = $2' : '';
   const respKpiStaleIdx = catFilter ? 3 : 2;
-  const validResponseExistsR = buildValidResponseExists('r', respKpiStaleIdx);
   const respKpiParamsPreUntil = cicloMasterKeys
     ? [...respKpiBaseParams, cicloMasterKeys]
     : respKpiBaseParams;
   const respKpiCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${respKpiBaseParams.length + 1})`
     : '';
-  const { params: respKpiParams, cond: respKpiUntilCond } = withUntil(respKpiParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const { params: respKpiParams, cond: respKpiUntilCond, dispUntilIdx: respKpiDispUntilIdx } =
+    withUntilForResponses(respKpiParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const validResponseExistsR = buildValidResponseExists('r', respKpiStaleIdx, 1, respKpiDispUntilIdx);
 
   const { rows: [rk] } = await query(
     `SELECT
@@ -199,16 +240,16 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const revByCatMap = new Map(revByCatRows.map((r) => [r.category, Number(r.unique_reverted) || 0]));
 
   // --- by_category: always computed for all categories ---
-  const byCatValidExists = buildValidResponseExists('r', 3);
   const byCatRows = await Promise.all(
     ALL_CATEGORIES.map(async (cat) => {
       const byCatDispBase = cicloMasterKeys ? [sinceIso, cat, cicloMasterKeys] : [sinceIso, cat];
       const byCatRespBase = cicloMasterKeys ? [sinceIso, cat, staleHours, cicloMasterKeys] : [sinceIso, cat, staleHours];
       const byCatDispCicloCond = cicloMasterKeys ? `AND master_key = ANY($3)` : '';
       const byCatRespCicloCond = cicloMasterKeys ? `AND r.master_key = ANY($4)` : '';
-      const byCatRespValidExists = buildValidResponseExists('r', 3);
       const { params: byCatDispParams, cond: byCatDispUntilCond } = withUntil(byCatDispBase, 'created_at');
-      const { params: byCatRespParams, cond: byCatRespUntilCond } = withUntil(byCatRespBase, 'COALESCE(r.received_at, r.created_at)');
+      const { params: byCatRespParams, cond: byCatRespUntilCond, dispUntilIdx: byCatDispUntilIdx } =
+        withUntilForResponses(byCatRespBase, 'COALESCE(r.received_at, r.created_at)');
+      const byCatRespValidExists = buildValidResponseExists('r', 3, 1, byCatDispUntilIdx);
 
       const [{ rows: [dr] }, { rows: [rr] }] = await Promise.all([
         query(
@@ -250,18 +291,19 @@ export async function getActivationConversion({ category = 'all', period_days = 
   );
   byCatRows.sort((a, b) => b.response_rate - a.response_rate);
 
-  // --- Top buttons (com filtro defensivo) ---
+  // --- Top buttons (com filtro defensivo + atribuição ao dia do disparo) ---
   const topBtnBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
   const topBtnCatCond = catFilter ? 'AND r.category = $2' : '';
   const topBtnStaleIdx = catFilter ? 3 : 2;
-  const topBtnValidExists = buildValidResponseExists('r', topBtnStaleIdx);
   const topBtnParamsPreUntil = cicloMasterKeys
     ? [...topBtnBaseParams, cicloMasterKeys]
     : topBtnBaseParams;
   const topBtnCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${topBtnBaseParams.length + 1})`
     : '';
-  const { params: topBtnParams, cond: topBtnUntilCond } = withUntil(topBtnParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const { params: topBtnParams, cond: topBtnUntilCond, dispUntilIdx: topBtnDispUntilIdx } =
+    withUntilForResponses(topBtnParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const topBtnValidExists = buildValidResponseExists('r', topBtnStaleIdx, 1, topBtnDispUntilIdx);
 
   const { rows: topButtons } = await query(
     `SELECT r.button_payload, COUNT(*)::int AS count
@@ -278,18 +320,19 @@ export async function getActivationConversion({ category = 'all', period_days = 
     topBtnParams
   );
 
-  // --- Recent responses with pagination (com filtro defensivo) ---
+  // --- Recent responses with pagination (com filtro defensivo + atribuição ao dia do disparo) ---
   const recentBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
   const recentCatCond = catFilter ? 'AND ar.category = $2' : '';
   const recentStaleIdx = catFilter ? 3 : 2;
-  const recentValidExists = buildValidResponseExists('ar', recentStaleIdx);
   const recentParamsPreUntil = cicloMasterKeys
     ? [...recentBaseParams, cicloMasterKeys]
     : recentBaseParams;
   const recentCicloCond = cicloMasterKeys
     ? `AND ar.master_key = ANY($${recentBaseParams.length + 1})`
     : '';
-  const { params: recentParams, cond: recentUntilCond } = withUntil(recentParamsPreUntil, 'COALESCE(ar.received_at, ar.created_at)');
+  const { params: recentParams, cond: recentUntilCond, dispUntilIdx: recentDispUntilIdx } =
+    withUntilForResponses(recentParamsPreUntil, 'COALESCE(ar.received_at, ar.created_at)');
+  const recentValidExists = buildValidResponseExists('ar', recentStaleIdx, 1, recentDispUntilIdx);
   const recentLimitIdx = recentParams.length + 1;
   const recentOffsetIdx = recentParams.length + 2;
 
@@ -327,8 +370,9 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const totalRecentCicloCond = cicloMasterKeys
     ? `AND r.master_key = ANY($${recentBaseParams.length + 1})`
     : '';
-  const { params: totalRecentParams, cond: totalRecentUntilCond } = withUntil(recentParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
-  const totalRecentValidExists = buildValidResponseExists('r', recentStaleIdx);
+  const { params: totalRecentParams, cond: totalRecentUntilCond, dispUntilIdx: totalRecentDispUntilIdx } =
+    withUntilForResponses(recentParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
+  const totalRecentValidExists = buildValidResponseExists('r', recentStaleIdx, 1, totalRecentDispUntilIdx);
   const totalRecentCatCond = catFilter ? 'AND r.category = $2' : '';
   const { rows: [{ total_recent }] } = await query(
     `SELECT COUNT(*)::int AS total_recent
@@ -366,12 +410,13 @@ export async function getActivationConversion({ category = 'all', period_days = 
       rawRevAllParams
     );
 
-    // Pull raw response master_keys with response_kind
+    // Pull raw response master_keys with response_kind (atribuição ao dia do disparo)
     const rawRespAllBaseParams = catFilter ? [sinceIso, catFilter, staleHours] : [sinceIso, staleHours];
     const rawRespAllCatCond = catFilter ? 'AND r.category = $2' : '';
     const rawRespAllStaleIdx = catFilter ? 3 : 2;
-    const rawRespAllValidExists = buildValidResponseExists('r', rawRespAllStaleIdx);
-    const { params: rawRespAllParams, cond: rawRespAllUntilCond } = withUntil(rawRespAllBaseParams, 'COALESCE(r.received_at, r.created_at)');
+    const { params: rawRespAllParams, cond: rawRespAllUntilCond, dispUntilIdx: rawRespAllDispUntilIdx } =
+      withUntilForResponses(rawRespAllBaseParams, 'COALESCE(r.received_at, r.created_at)');
+    const rawRespAllValidExists = buildValidResponseExists('r', rawRespAllStaleIdx, 1, rawRespAllDispUntilIdx);
     const { rows: rawRespAllRows } = await query(
       `SELECT r.master_key, r.response_kind FROM activation_responses r
        WHERE COALESCE(r.received_at, r.created_at) >= $1
