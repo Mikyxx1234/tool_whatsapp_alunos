@@ -22,6 +22,7 @@ import {
   OUTCOME_TONE,
   fetchMeuPainelList,
   fetchMeuPainelStats,
+  hasFullAccess,
   readConsultorIdentity,
   type MeuPainelCategory,
   type MeuPainelItem,
@@ -29,9 +30,10 @@ import {
   type OutcomeKind,
 } from '../services/meuPainelApi';
 
-type RangeKey = '7d' | '30d' | '90d' | 'all';
+type RangeKey = 'today' | '7d' | '30d' | '90d' | 'all';
 
 const RANGE_OPTIONS: Array<{ key: RangeKey; label: string; days?: number }> = [
+  { key: 'today', label: 'Hoje' },
   { key: '7d', label: '7d', days: 7 },
   { key: '30d', label: '30d', days: 30 },
   { key: '90d', label: '90d', days: 90 },
@@ -71,6 +73,11 @@ function fmtDateTime(iso: string | null): string {
 }
 
 function rangeToFrom(range: RangeKey): string | null {
+  if (range === 'today') {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
   const opt = RANGE_OPTIONS.find((o) => o.key === range);
   if (!opt?.days) return null;
   const d = new Date();
@@ -80,15 +87,17 @@ function rangeToFrom(range: RangeKey): string | null {
 
 export default function MeuPainelPage() {
   const identity = useMemo(() => readConsultorIdentity(), []);
-  const isAdmin = identity.role === 'admin';
-  // Quando admin, permite alternar entre "Meus leads" e "Todos"
+  // "isAdmin" aqui = poder pleno (admin OU Supervisor Acadêmico). Mantém o nome
+  // legado pra não trocar 20 lugares; semântica ampliada na decisão de 10/06/2026.
+  const isAdmin = hasFullAccess(identity);
+  // Quando tem poder pleno, permite alternar entre "Meus leads" e "Todos"
   const [adminViewAll, setAdminViewAll] = useState(isAdmin);
 
   const consultorParaApi = isAdmin && adminViewAll ? '*' : identity.nome || identity.username || '';
   const consultorNomeParaInsert = identity.nome || identity.username || '';
 
-  const [range, setRange] = useState<RangeKey>('30d');
-  const [category, setCategory] = useState<MeuPainelCategory | ''>('');
+  const [range, setRange] = useState<RangeKey>('today');
+  const [category, setCategory] = useState<MeuPainelCategory | ''>('processos-caa');
   const [search, setSearch] = useState('');
   const [stats, setStats] = useState<MeuPainelStats>(EMPTY_STATS);
   const [items, setItems] = useState<MeuPainelItem[]>([]);
@@ -133,7 +142,8 @@ export default function MeuPainelPage() {
       const to = usingCustomRange ? appliedTo : null;
       const filters = {
         consultor: consultorParaApi,
-        role: isAdmin && adminViewAll ? 'admin' : null,
+        role: isAdmin && adminViewAll ? (identity.role || 'admin') : null,
+        categoria: isAdmin && adminViewAll ? (identity.categoria || null) : null,
         category: (category || null) as MeuPainelCategory | null,
         from,
         to,
@@ -421,6 +431,7 @@ export default function MeuPainelPage() {
         open={Boolean(assignItem)}
         item={assignItem}
         role={identity.role || ''}
+        categoria={identity.categoria}
         onClose={() => setAssignItem(null)}
         onSaved={reload}
       />

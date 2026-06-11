@@ -12,11 +12,14 @@ interface Props {
   open: boolean;
   item: MeuPainelItem | null;
   role: string;
+  /** Categoria do dcz (ex: "Supervisor Acadêmico"). Backend usa pra autorizar
+   *  reatribuição quando role != admin (decisão 10/06/2026). */
+  categoria?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function AssignConsultorModal({ open, item, role, onClose, onSaved }: Props) {
+export function AssignConsultorModal({ open, item, role, categoria, onClose, onSaved }: Props) {
   const [nome, setNome] = useState('');
   const [sugestoes, setSugestoes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -60,7 +63,7 @@ export function AssignConsultorModal({ open, item, role, onClose, onSaved }: Pro
     setSaving(true);
     setError(null);
     try {
-      await assignConsultorToResponse(item.response_id, novoNome, role);
+      await assignConsultorToResponse(item.response_id, novoNome, role, categoria);
       onSaved();
       onClose();
     } catch (err) {

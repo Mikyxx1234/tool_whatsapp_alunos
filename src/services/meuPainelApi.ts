@@ -69,6 +69,9 @@ export interface MeuPainelStatsResponse {
 export interface MeuPainelFilters {
   consultor?: string | null;
   role?: string | null;
+  /** Categoria do dcz (ex: "Supervisor Acadêmico"). Backend libera "ver tudo"
+   *  pra essa categoria igual ao role=admin. */
+  categoria?: string | null;
   category?: MeuPainelCategory | null;
   from?: string | null;
   to?: string | null;
@@ -104,6 +107,7 @@ function buildQuery(filters: MeuPainelFilters): string {
   const params = new URLSearchParams();
   if (filters.consultor) params.set('consultor', filters.consultor);
   if (filters.role) params.set('role', filters.role);
+  if (filters.categoria) params.set('categoria', filters.categoria);
   if (filters.category) params.set('category', filters.category);
   if (filters.from) params.set('from', filters.from);
   if (filters.to) params.set('to', filters.to);
@@ -142,17 +146,18 @@ export async function createOutcome(payload: CreateOutcomePayload) {
   });
 }
 
-/** Apenas para admin: atribui consultor_responsavel_nome a uma resposta. */
+/** Admin ou Supervisor Acadêmico: atribui consultor_responsavel_nome a uma resposta. */
 export async function assignConsultorToResponse(
   responseId: string,
   consultorNome: string | null,
-  role: string
+  role: string,
+  categoria?: string | null
 ) {
   return jsonFetch<{ ok: true; row: MeuPainelItem }>(
     `/api/activation/responses/${encodeURIComponent(responseId)}/assign-consultor`,
     {
       method: 'PATCH',
-      body: JSON.stringify({ consultor_nome: consultorNome, role }),
+      body: JSON.stringify({ consultor_nome: consultorNome, role, categoria: categoria || null }),
     }
   );
 }
@@ -300,17 +305,32 @@ interface ConsultorIdentity {
   username: string | null;
   nome: string | null;
   role: string | null;
+  categoria: string | null;
+}
+
+/** True se a categoria (case/accent-insensitive) é "Supervisor Acadêmico". */
+export function isSupervisorAcademico(categoria: string | null | undefined): boolean {
+  if (!categoria) return false;
+  const norm = categoria.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  return norm === 'supervisor academico';
+}
+
+/** True se o usuário tem poder pleno no Meu Painel (admin OU Supervisor Acadêmico). */
+export function hasFullAccess(identity: ConsultorIdentity): boolean {
+  return identity.role === 'admin' || isSupervisorAcademico(identity.categoria);
 }
 
 export function readConsultorIdentity(): ConsultorIdentity {
-  if (typeof window === 'undefined') return { username: null, nome: null, role: null };
+  const empty: ConsultorIdentity = { username: null, nome: null, role: null, categoria: null };
+  if (typeof window === 'undefined') return empty;
   const qs = new URLSearchParams(window.location.search);
   const fromQs: ConsultorIdentity = {
     username: qs.get('consultor') || null,
     nome: qs.get('consultor_nome') || null,
     role: qs.get('role') || null,
+    categoria: qs.get('categoria') || null,
   };
-  const hasFromQs = Boolean(fromQs.username || fromQs.nome || fromQs.role);
+  const hasFromQs = Boolean(fromQs.username || fromQs.nome || fromQs.role || fromQs.categoria);
   if (hasFromQs) {
     try { localStorage.setItem(LS_KEY, JSON.stringify(fromQs)); } catch { /* noop */ }
     return fromQs;
@@ -323,10 +343,11 @@ export function readConsultorIdentity(): ConsultorIdentity {
         username: stored?.username ?? null,
         nome: stored?.nome ?? null,
         role: stored?.role ?? null,
+        categoria: stored?.categoria ?? null,
       };
     }
   } catch { /* noop */ }
-  return { username: null, nome: null, role: null };
+  return empty;
 }
 
 /** Rótulos humanos. */
