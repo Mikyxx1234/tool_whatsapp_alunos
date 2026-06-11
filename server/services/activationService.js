@@ -1,4 +1,5 @@
 import { query } from '../db/client.js';
+import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import * as activationDispatchRepo from '../repositories/activationDispatchRepository.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
@@ -110,6 +111,9 @@ const activationRosterCaches = new Map();
 /** @type {Map<string, { expires: number, map: Map<string, number> }>} */
 const priorCountCaches = new Map();
 
+/** @type {Map<string, { expires: number, map: Map<string, string> }>} */
+const lastSentCaches = new Map();
+
 /** @type {Map<string, { expires: number, data: Awaited<ReturnType<typeof buildPersonIndexWithSampleRow>> }>} */
 const personIndexCaches = new Map();
 
@@ -127,10 +131,12 @@ export function invalidateActivationRosterCache(category) {
       }
     }
     priorCountCaches.delete(category);
+    lastSentCaches.delete(category);
     return;
   }
   activationRosterCaches.clear();
   priorCountCaches.clear();
+  lastSentCaches.clear();
   personIndexCaches.clear();
 }
 
@@ -144,6 +150,26 @@ async function getPriorCountMap(category) {
   }
   const map = await activationDispatchRepo.countAllSentByCategory(category);
   priorCountCaches.set(category, {
+    expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
+    map,
+  });
+  return map;
+}
+
+/**
+ * Map<master_key, lastSentAtISO> com cache. Usado pra expor "tempo desde
+ * última ativação" no roster + permitir sort por mais antigo. Mesma TTL
+ * dos outros caches do roster.
+ * @param {string} category
+ * @returns {Promise<Map<string, string>>}
+ */
+async function getLastSentMap(category) {
+  const cached = lastSentCaches.get(category);
+  if (cached && cached.expires > Date.now()) {
+    return cached.map;
+  }
+  const map = await activationDispatchRepo.getLastSentAtByMasterKey(category);
+  lastSentCaches.set(category, {
     expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
     map,
   });
@@ -186,15 +212,23 @@ async function buildRosterRowsCached(category, matSnapId, otherSnapId) {
     inflight = (async () => {
       const storedTemplates = await getActivationTemplateConfig();
       const list = await getIntersectionActivationList(category, { excludeDispatched: false });
-      const countMap = await getPriorCountMap(category);
+      const [countMap, lastSentMap] = await Promise.all([
+        getPriorCountMap(category),
+        getLastSentMap(category),
+      ]);
 
       const rows = list.items.map((item) => {
         const prior = item.master_key ? countMap.get(item.master_key) || 0 : 0;
+        const lastSentRaw = item.master_key ? lastSentMap.get(item.master_key) : null;
+        const last_dispatch_at = lastSentRaw
+          ? (lastSentRaw instanceof Date ? lastSentRaw.toISOString() : String(lastSentRaw))
+          : null;
         const message_tier = resolveMessageTier(prior);
         const template_name = resolveTemplateForActivation(category, prior, storedTemplates);
         return {
           ...item,
           prior_activation_count: prior,
+          last_dispatch_at,
           message_tier,
           message_tier_label: tierLabel(message_tier),
           template_name,
@@ -834,11 +868,49 @@ export function parseActivationStageFilter(raw) {
 }
 
 /**
+ * Normaliza o param `sort` recebido da rota.
+ * 'last_dispatch_oldest' → mais antigos primeiro (e esconde nunca-ativados)
+ * 'last_dispatch_newest' → mais recentes primeiro (e esconde nunca-ativados)
+ * default → null (ordem natural do snapshot)
+ * @param {unknown} raw
+ * @returns {'last_dispatch_oldest'|'last_dispatch_newest'|null}
+ */
+function parseRosterSort(raw) {
+  const v = String(raw || '').toLowerCase();
+  if (v === 'last_dispatch_oldest' || v === 'last_dispatch_newest') return v;
+  return null;
+}
+
+/**
+ * Aplica sort por última ativação e esconde leads nunca-ativados.
+ * Decisão (UX): quando o usuário ordena por "última ativação", leads
+ * sem prior_activation_count somem (não faz sentido ordenar por data
+ * que não existe; e o user pediu pra focar em reativação).
+ * @param {object[]} rows
+ * @param {'last_dispatch_oldest'|'last_dispatch_newest'|null} sort
+ * @returns {{ rows: object[], hidden_count: number }}
+ */
+function applyRosterSort(rows, sort) {
+  if (!sort) return { rows, hidden_count: 0 };
+  const before = rows.length;
+  const filtered = rows.filter((r) => (r.prior_activation_count || 0) > 0);
+  const hidden_count = before - filtered.length;
+  const asc = sort === 'last_dispatch_oldest';
+  filtered.sort((a, b) => {
+    const at = a.last_dispatch_at ? Date.parse(a.last_dispatch_at) : (asc ? Infinity : -Infinity);
+    const bt = b.last_dispatch_at ? Date.parse(b.last_dispatch_at) : (asc ? Infinity : -Infinity);
+    return asc ? at - bt : bt - at;
+  });
+  return { rows: filtered, hidden_count };
+}
+
+/**
  * Lista de matriculados na fila de ativação com contagem e template sugerido.
  */
 export async function getActivationRoster(category, opts = {}) {
   assertActivationCategory(category);
   const stageFilter = parseActivationStageFilter(opts.activationStage);
+  const sortMode = parseRosterSort(opts.sort);
   const responseFilter = (() => {
     const v = String(opts.responseFilter || 'all').toLowerCase();
     return v === 'responded' || v === 'not_responded' ? v : 'all';
@@ -882,21 +954,25 @@ export async function getActivationRoster(category, opts = {}) {
   const { rows, meta } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
   const rosterCached = activationRosterCaches.get(`${category}:${matSnap.id}:${otherSnapId}`);
 
-  // Ciclos distintos presentes na fila (antes de qualquer filtro).
+  // Ciclos frozen devem ser excluídos do dropdown e da fila.
+  const frozenSetForRoster = await frozenCyclesRepo.getFrozenSet();
+
+  // Ciclos distintos presentes na fila (antes de qualquer filtro), excluindo frozen.
   const cicloSet = new Set();
   for (const r of rows) {
     const c = normalizeCiclo(r.ciclo || '');
-    if (c) cicloSet.add(c);
+    if (c && !frozenSetForRoster.has(c)) cicloSet.add(c);
   }
   const available_ciclos = [...cicloSet].sort((a, b) => b.localeCompare(a));
 
   // counts_by_ciclo: total por ciclo antes de qualquer filtro de stage/subgrupo/ciclo.
+  // Ciclos frozen não entram.
   /** @type {Record<string, number>} */
   const counts_by_ciclo = {};
   if (available_ciclos.length > 1) {
     for (const r of rows) {
       const c = normalizeCiclo(r.ciclo || '');
-      if (c) counts_by_ciclo[c] = (counts_by_ciclo[c] || 0) + 1;
+      if (c && !frozenSetForRoster.has(c)) counts_by_ciclo[c] = (counts_by_ciclo[c] || 0) + 1;
     }
   }
 
@@ -918,6 +994,14 @@ export async function getActivationRoster(category, opts = {}) {
     filtered = filtered.filter((row) => normalizeCiclo(row.ciclo || '') === cicloFilterRaw);
   }
 
+  // Excluir leads de ciclos frozen (ciclo arquivado some de 100% das views operacionais).
+  if (frozenSetForRoster.size > 0) {
+    filtered = filtered.filter((row) => {
+      const c = normalizeCiclo(row.ciclo || '');
+      return !c || !frozenSetForRoster.has(c);
+    });
+  }
+
   if (responseFilter !== 'all' && filtered.length > 0) {
     const allKeys = filtered.map((it) => it.master_key).filter(Boolean);
     let stale = 72;
@@ -934,6 +1018,10 @@ export async function getActivationRoster(category, opts = {}) {
       filtered = filtered.filter((it) => !it.master_key || !respondedSet.has(it.master_key));
     }
   }
+
+  // Sort por última ativação (esconde nunca-ativados se sort ativo).
+  const { rows: sortedFiltered, hidden_count: sort_hidden_unactivated } = applyRosterSort(filtered, sortMode);
+  filtered = sortedFiltered;
 
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const limitRaw = Number(opts.limit);
@@ -976,6 +1064,8 @@ export async function getActivationRoster(category, opts = {}) {
     total_unfiltered: rows.length,
     activation_stage: stageFilter,
     response_filter: responseFilter,
+    sort: sortMode,
+    sort_hidden_unactivated,
     items,
     offset,
     limit: limitRaw > 0 ? Math.min(limitRaw, 500) : items.length,
@@ -997,6 +1087,7 @@ export async function getActivationRoster(category, opts = {}) {
 export async function getActivationRosterKeys(category, opts = {}) {
   assertActivationCategory(category);
   const stageFilter = parseActivationStageFilter(opts.activationStage);
+  const sortMode = parseRosterSort(opts.sort);
   const responseFilter = (() => {
     const v = String(opts.responseFilter || 'all').toLowerCase();
     return v === 'responded' || v === 'not_responded' ? v : 'all';
@@ -1037,6 +1128,15 @@ export async function getActivationRosterKeys(category, opts = {}) {
     filtered = filtered.filter((row) => normalizeCiclo(row.ciclo || '') === cicloFilterRaw);
   }
 
+  // Excluir leads de ciclos frozen (ciclo arquivado some de 100% das views operacionais).
+  const frozenSetForKeys = await frozenCyclesRepo.getFrozenSet();
+  if (frozenSetForKeys.size > 0) {
+    filtered = filtered.filter((row) => {
+      const c = normalizeCiclo(row.ciclo || '');
+      return !c || !frozenSetForKeys.has(c);
+    });
+  }
+
   if (responseFilter !== 'all' && filtered.length > 0) {
     const allKeys = filtered.map((it) => it.master_key).filter(Boolean);
     let stale = 72;
@@ -1054,7 +1154,9 @@ export async function getActivationRosterKeys(category, opts = {}) {
     }
   }
 
-  const master_keys = filtered.map((it) => it.master_key).filter(Boolean);
+  // Aplica mesmo sort do getActivationRoster pra bulk select bater com a tela.
+  const { rows: sortedFiltered } = applyRosterSort(filtered, sortMode);
+  const master_keys = sortedFiltered.map((it) => it.master_key).filter(Boolean);
 
   return {
     category,
@@ -1062,6 +1164,7 @@ export async function getActivationRosterKeys(category, opts = {}) {
     master_keys,
     activation_stage: stageFilter,
     response_filter: responseFilter,
+    sort: sortMode,
     generated_at: new Date().toISOString(),
   };
 }

@@ -111,8 +111,12 @@ export interface CaaJanelaInfo {
   dias_tipo: 'corridos' | 'uteis';
 }
 
+export type ActivationRosterSort = 'last_dispatch_oldest' | 'last_dispatch_newest';
+
 export interface ActivationRosterItem extends ActivationListItem {
   prior_activation_count: number;
+  /** ISO timestamp do último disparo desta master_key (qualquer status='sent'). Null = nunca ativado. */
+  last_dispatch_at?: string | null;
   message_tier: ActivationMessageTier;
   message_tier_label: string;
   template_name: string | null;
@@ -133,6 +137,9 @@ export interface ActivationRosterResponse {
   total: number;
   total_unfiltered?: number;
   activation_stage?: ActivationStageFilter;
+  sort?: ActivationRosterSort | null;
+  /** Quantos leads "nunca ativados" foram escondidos por causa do sort. */
+  sort_hidden_unactivated?: number;
   items: ActivationRosterItem[];
   offset: number;
   limit: number;
@@ -158,6 +165,7 @@ export interface ActivationRosterKeysResponse {
   master_keys: string[];
   activation_stage: ActivationStageFilter;
   response_filter: ActivationResponseFilter;
+  sort?: ActivationRosterSort | null;
   generated_at: string;
 }
 
@@ -280,6 +288,7 @@ export const activationApi = {
       bbSubgrupo?: BbSubgrupo | 'all';
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
+      sort?: ActivationRosterSort | null;
     }
   ) {
     const params = new URLSearchParams();
@@ -297,6 +306,9 @@ export const activationApi = {
     if (opts?.responseFilter && opts.responseFilter !== 'all') {
       params.set('responseFilter', opts.responseFilter);
     }
+    if (opts?.sort) {
+      params.set('sort', opts.sort);
+    }
     const q = params.toString() ? `?${params}` : '';
     return jsonFetch<ActivationRosterResponse>(`/api/activation/${category}/roster${q}`);
   },
@@ -308,6 +320,7 @@ export const activationApi = {
       bbSubgrupo?: BbSubgrupo | 'all';
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
+      sort?: ActivationRosterSort | null;
     }
   ) {
     const params = new URLSearchParams();
@@ -322,6 +335,9 @@ export const activationApi = {
     }
     if (opts?.responseFilter && opts.responseFilter !== 'all') {
       params.set('responseFilter', opts.responseFilter);
+    }
+    if (opts?.sort) {
+      params.set('sort', opts.sort);
     }
     const q = params.toString() ? `?${params}` : '';
     return jsonFetch<ActivationRosterKeysResponse>(`/api/activation/${category}/roster/keys${q}`);

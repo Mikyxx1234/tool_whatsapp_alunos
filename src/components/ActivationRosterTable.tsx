@@ -7,6 +7,7 @@ import {
   type ActivationCategory,
   type ActivationRosterItem,
   type ActivationResponseFilter,
+  type ActivationRosterSort,
   type ActivationStageFilter,
   type BbSubgrupo,
 } from '../services/activationApi';
@@ -233,6 +234,10 @@ export function ActivationRosterTable({
   const [subgrupoCounts, setSubgrupoCounts] = useState<{ podia_e_nao_acessou: number; nao_acessa_faz_tempo: number; acessou_pouco: number } | null>(null);
   const [bulkSelecting, setBulkSelecting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  // Sort por última ativação. null = ordem natural (default).
+  // Quando setado, backend esconde leads nunca-ativados.
+  const [sort, setSort] = useState<ActivationRosterSort | null>(null);
+  const [sortHiddenUnactivated, setSortHiddenUnactivated] = useState(0);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -252,6 +257,7 @@ export function ActivationRosterTable({
           bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
           ciclo: cicloFilter || undefined,
           responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
+          sort,
         });
         setItems(r.items);
         setTotal(r.total);
@@ -260,6 +266,7 @@ export function ActivationRosterTable({
         setUrgencyCounts(r.bb_urgency_counts ?? null);
         setSubgrupoCounts(r.bb_subgrupo_counts ?? null);
         setAvailableCiclos(r.available_ciclos ?? []);
+        setSortHiddenUnactivated(r.sort_hidden_unactivated ?? 0);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erro ao carregar fila');
         setItems([]);
@@ -270,12 +277,21 @@ export function ActivationRosterTable({
         setLoading(false);
       }
     },
-    [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter]
+    [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter, sort]
   );
 
   useEffect(() => {
     setPage(0);
-  }, [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter]);
+  }, [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter, sort]);
+
+  /** Ciclo do click no header da coluna "Última ativação": null → oldest → newest → null. */
+  const cycleSort = useCallback(() => {
+    setSort((prev) =>
+      prev === null ? 'last_dispatch_oldest'
+      : prev === 'last_dispatch_oldest' ? 'last_dispatch_newest'
+      : null
+    );
+  }, []);
 
   useEffect(() => {
     void load(page);
@@ -305,6 +321,7 @@ export function ActivationRosterTable({
             bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
+            sort,
           });
           onReplaceSelection(r.master_keys);
         } catch (e) {
@@ -336,6 +353,7 @@ export function ActivationRosterTable({
             bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
+            sort,
           });
           for (const it of r.items) {
             if (it.master_key) accumulated.push(it.master_key);
@@ -354,6 +372,7 @@ export function ActivationRosterTable({
       responseFilter,
       bbSubgrupo,
       cicloFilter,
+      sort,
       safePage,
       totalPages,
       items,
@@ -504,6 +523,29 @@ export function ActivationRosterTable({
           </div>
         </div>
       )}
+      {sort && (
+        <div className="mx-4 mt-3 text-xs text-whatsapp-800 bg-whatsapp-50 border border-whatsapp-200 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+          <span>
+            Ordenado por{' '}
+            <strong>
+              {sort === 'last_dispatch_oldest' ? 'última ativação mais antiga' : 'última ativação mais recente'}
+            </strong>
+            {sortHiddenUnactivated > 0 && (
+              <>
+                {' · '}
+                <strong>{sortHiddenUnactivated.toLocaleString('pt-BR')}</strong> nunca-ativado(s) escondido(s)
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSort(null)}
+            className="text-whatsapp-700 hover:underline font-medium shrink-0"
+          >
+            Limpar ordenação
+          </button>
+        </div>
+      )}
       {category === 'acessos-blackboard' && skippedLimbo > 0 && (
         <div className="mx-4 mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           <strong>{skippedLimbo.toLocaleString('pt-BR')}</strong> aluno(s) cuja turma ainda não
@@ -629,6 +671,25 @@ export function ActivationRosterTable({
                 </th>
               )}
               <th className="px-3 py-2 text-left font-medium">Vezes ativado</th>
+              <th className="px-3 py-2 text-left font-medium">
+                <button
+                  type="button"
+                  onClick={cycleSort}
+                  className={`inline-flex items-center gap-1 hover:text-gray-900 transition-colors ${sort ? 'text-whatsapp-700' : ''}`}
+                  title={
+                    sort === 'last_dispatch_oldest'
+                      ? 'Ordenado por mais antigo. Click → mais recente.'
+                      : sort === 'last_dispatch_newest'
+                        ? 'Ordenado por mais recente. Click → desativar sort.'
+                        : 'Click para ordenar por mais antigo (esconde nunca-ativados).'
+                  }
+                >
+                  Última ativação
+                  <span className="text-[10px] leading-none">
+                    {sort === 'last_dispatch_oldest' ? '↑' : sort === 'last_dispatch_newest' ? '↓' : '↕'}
+                  </span>
+                </button>
+              </th>
               <th className="px-3 py-2 text-left font-medium">Próxima msg</th>
               <th className="px-3 py-2 text-left font-medium">Template</th>
               {category === 'processos-caa' && <th className="px-3 py-2 text-left font-medium">Ações</th>}
@@ -638,9 +699,9 @@ export function ActivationRosterTable({
             {loading ? (
               <TableLoadingState
                 colSpan={
-                  (category === 'processos-caa' ? 9
-                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
-                    : 7) + (selectedMasterKeys ? 1 : 0)
+                  (category === 'processos-caa' ? 10
+                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 9
+                    : 8) + (selectedMasterKeys ? 1 : 0)
                 }
                 slow={slowLoad}
                 variant={slowLoad ? 'big' : 'normal'}
@@ -649,9 +710,9 @@ export function ActivationRosterTable({
               <tr>
                 <td
                   colSpan={
-                    (category === 'processos-caa' ? 9
-                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 8
-                      : 7) + (selectedMasterKeys ? 1 : 0)
+                    (category === 'processos-caa' ? 10
+                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 9
+                      : 8) + (selectedMasterKeys ? 1 : 0)
                   }
                   className="px-3 py-6 text-center text-gray-500 text-xs"
                 >
@@ -711,6 +772,18 @@ export function ActivationRosterTable({
                   )}
                   <td className="px-3 py-2 tabular-nums font-semibold text-gray-900">
                     {row.prior_activation_count}
+                  </td>
+                  <td className="px-3 py-2 text-xs tabular-nums">
+                    {row.last_dispatch_at ? (
+                      <span
+                        className="text-gray-700"
+                        title={new Date(row.last_dispatch_at).toLocaleString('pt-BR')}
+                      >
+                        {fmtRelative(row.last_dispatch_at)}
+                      </span>
+                    ) : (
+                      <span className="text-gray-300">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs">
                     <span

@@ -116,12 +116,35 @@ router.post('/responses', requireApiKey, async (req, res) => {
    ----------------------------------------------------------------------------
    Identidade do consultor vem via query param (passado pelo dcz-crm-sync no
    src do iframe). Admin envia role=admin ou consultor=* para ver tudo.
+   Supervisor Acadêmico (categoria do dcz) também tem poder pleno (decisão
+   10/06/2026 — mesma capacidade de admin: ver tudo + reatribuir).
    ========================================================================== */
 
-function resolveConsultor(req) {
+/** Normaliza string pra comparação case/accent-insensitive. */
+function _normCat(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+/** True se a categoria do dcz é "Supervisor Acadêmico" (com ou sem acento). */
+function _isSupervisorAcademicoCat(categoriaRaw) {
+  return _normCat(categoriaRaw) === 'supervisor academico';
+}
+
+/** True se o requester tem poder pleno (role=admin OU categoria=Supervisor Acadêmico). */
+function _hasFullAccess(req) {
   const role = String(req.query.role || '').trim().toLowerCase();
+  if (role === 'admin') return true;
+  const categoria = req.query.categoria || req.body?.categoria;
+  return _isSupervisorAcademicoCat(categoria);
+}
+
+function resolveConsultor(req) {
   const consultorRaw = String(req.query.consultor || '').trim();
-  if (role === 'admin' || consultorRaw === '*') {
+  if (_hasFullAccess(req) || consultorRaw === '*') {
     return { consultor: null, isAdmin: true };
   }
   if (!consultorRaw) {
@@ -201,8 +224,8 @@ router.get('/meu-painel/stats', async (req, res) => {
 });
 
 /** PATCH /api/activation/responses/:id/assign-consultor
- *  Apenas admin (role=admin). Atualiza consultor_responsavel_nome.
- *  Body: { consultor_nome: string|null, role: string }
+ *  Admin (role=admin) ou Supervisor Acadêmico (categoria). Atualiza consultor_responsavel_nome.
+ *  Body: { consultor_nome: string|null, role: string, categoria?: string }
  */
 router.patch('/responses/:id/assign-consultor', async (req, res) => {
   try {
@@ -211,8 +234,10 @@ router.patch('/responses/:id/assign-consultor', async (req, res) => {
     }
     const body = req.body ?? {};
     const role = String(body.role || req.query.role || '').trim().toLowerCase();
-    if (role !== 'admin') {
-      return res.status(403).json({ error: 'Apenas admin pode atribuir consultor manualmente.', code: 'forbidden' });
+    const categoria = body.categoria || req.query.categoria;
+    const hasAccess = role === 'admin' || _isSupervisorAcademicoCat(categoria);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Apenas admin ou Supervisor Acadêmico pode atribuir consultor manualmente.', code: 'forbidden' });
     }
     const id = String(req.params.id || '').trim();
     if (!id) {
@@ -393,7 +418,8 @@ router.get('/:category/roster/keys', async (req, res) => {
     const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
-    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, ciclo, responseFilter });
+    const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
+    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, ciclo, responseFilter, sort });
     res.json(data);
   } catch (err) {
     handleError(res, err);
@@ -415,7 +441,8 @@ router.get('/:category/roster', async (req, res) => {
     const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
-    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, ciclo, responseFilter });
+    const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
+    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, ciclo, responseFilter, sort });
     res.json(data);
   } catch (err) {
     handleError(res, err);
