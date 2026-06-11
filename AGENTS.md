@@ -5,6 +5,70 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 11/06/2026 — Disparador: coluna "Última ativação" + sort por mais antigo/recente
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu UX; Executor (Sonnet 4.6) implementou.
+- **Problema:** operador não tinha como priorizar reativação por "leads que não recebem mensagem há mais tempo". Tinha que olhar manualmente os contadores.
+- **Decisão:** nova coluna "Última ativação" entre "Vezes ativado" e "Próxima msg", clicável no header para cyclar `null → mais antigo → mais recente → null`. Quando o sort está ativo, leads nunca-ativados (prior_activation_count = 0) somem da fila — ordenar por data que não existe não faz sentido, e o intent do sort é foco em reativação.
+- **Banner de feedback:** quando sort ativo, banner verde acima da tabela mostra ordenação atual + número de leads escondidos + botão "Limpar ordenação".
+- **Bulk select consistente:** `handleBulkSelect` passa o `sort` para `/roster/keys` para que "selecionar todos" bata com o que está na tela.
+- **Backend:**
+  - `activationDispatchRepo.getLastSentAtByMasterKey(category)` (já existia) → cacheado em `lastSentCaches` (mesma TTL do roster).
+  - `buildRosterRowsCached` injeta `last_dispatch_at` em cada item.
+  - `parseRosterSort` + `applyRosterSort` no service; rota aceita `?sort=last_dispatch_oldest|last_dispatch_newest`.
+- **Alternativas descartadas:**
+  - **Sort em coluna separada "Tempo desde última"** (mostrar sempre, sort opcional sem esconder zerados): mais coluna sem ganho — leads nunca-ativados não tem o que ordenar e ficariam no topo/fundo de qualquer jeito poluindo a lista.
+  - **Sort padrão por mais antigo no load inicial:** mudaria o comportamento padrão atual; usuário pediu opt-in via clique no header.
+
+### 10/06/2026 — Activation Conversion: respostas pelo dia do disparo + esconder "Revertidos" para bases != CAA
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.
+- **Problema 1 (atribuição temporal):** o gráfico/tabela diário da Conversão atribuía respostas ao dia em que o webhook chegou. Isso distorcia leitura — "10 disparos no dia 09 + 7 respostas no dia 11" não dizia qual taxa de conversão tinha o disparo do dia 09. Time queria ler "X% das ativações do dia Y geraram resposta".
+- **Decisão 1:** refactor de `buildValidResponseExists` em `activationConversionService.js` para correlacionar resposta ao `dispatch_event` mais recente dentro da janela `staleHours`, e usar o `dispatch_event.created_at` como data de atribuição. Mantém staleHours como single source of truth da janela de validade. Respostas revertidas (`manual_outcomes.outcome = 'revertido'`) continuam atribuídas ao dia da marcação manual — esse é o evento operacional do CAA, não a resposta crua.
+- **Problema 2 (KPI Revertidos confunde fora do CAA):** "Revertidos" é fluxo manual exclusivo da base Processos CAA. Em bases sem esse fluxo, KPI e coluna mostravam sempre 0, atrapalhando leitura.
+- **Decisão 2:** card "Revertidos" e coluna da tabela só aparecem quando `category === 'processos-caa'` OU `category === 'all'` (já que "Todas as bases" agrega CAA). Para outras bases, KPI some e coluna mostra "—" em cinza claro.
+- **Alternativas descartadas:**
+  - **Atribuir resposta ao dia do recebimento + adicionar 2ª linha "respostas por dia do disparo":** dobra carga visual, time não entendia qual linha era a métrica real.
+  - **Filtrar Revertidos por flag opcional toggle:** o KPI nem deveria existir fora do CAA; toggle só adiciona ruído.
+
+### 10/06/2026 — Meu Painel: Supervisor Acadêmico tem acesso pleno (ver tudo + reatribuir)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.
+- **Problema:** Supervisor Acadêmico precisava ver todos os leads no Meu Painel (não só os atribuídos ao próprio nome) e reatribuir consultor — mesma capacidade do admin. Antes só `role=admin` ou `consultor=*` davam essa visão; categoria Supervisor não dava nada.
+- **Decisão:** introduzir `categoria` (passada pelo iframe do dcz-crm-sync via query) como segundo eixo de permissão no Meu Painel. Quando `categoria == 'Supervisor Acadêmico'` (case/accent-insensitive), trata como admin para fins de:
+  - listar leads (Meu Painel/list e Meu Painel/stats sem filtro de consultor)
+  - reatribuir consultor (`PATCH /responses/:id/assign-consultor`)
+- **Implementação:**
+  - Backend (`server/routes/activation.js`): helpers `_normCat`, `_isSupervisorAcademicoCat`, `_hasFullAccess` (true se role=admin OU categoria=Supervisor Acadêmico). `resolveConsultor` e `assign-consultor` usam o helper.
+  - Frontend: `meuPainelApi.ts` lê `categoria` da URL e envia em toda request. `MeuPainelPage.tsx` propaga em todos os fetches. `AssignConsultorModal.tsx` envia `categoria` no body do PATCH.
+  - dcz-crm-sync `_disparador_whatsapp.html` adicionou `&categoria=...` no `_iframe_url` (commit no outro repo).
+- **Default ao abrir Meu Painel:** período = "Hoje" e categoria = "Processos CAA". Ajuste de UX puxado pelo uso predominante do time.
+- **Alternativas descartadas:**
+  - **Criar role intermediário "supervisor" no dcz-crm-sync:** mexer no sistema de roles do dcz é escopo maior; categoria já existia e bate 1:1 com o caso.
+  - **Adicionar `consultor=*` para todo supervisor:** funcionaria pra ver tudo mas não dá poder de reatribuir, e mascara a identidade do supervisor.
+
+### 09/06/2026 — Congelar ciclos: arquivar 2026/1 das operações
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementou.
+- **Decisão:** Adicionar capacidade de arquivar um ciclo inteiro ("2026/1") em vez de congelar snapshot por snapshot. Tabela nova `frozen_cycles(ciclo PK, frozen_at, frozen_by, reason)`. Quando frozen, ciclo some do disparador (roster filtra), relatórios (Conversão, CAA Daily, CAA Funil — `kpis_by_ciclo` e `counts_by_ciclo`), dropdowns de ciclo no UI. Histórico em `activation_dispatch_events`/`activation_responses` NÃO é tocado.
+- **Sem escape hatch:** decisão explícita do usuário — ciclo frozen some 100%, sem `?include_frozen=1`. Histórico só via SQL direto.
+- **Reativação:** `DELETE /api/cycles/:ciclo/freeze` deleta linha de `frozen_cycles` e tudo volta. Sem soft-delete (overkill pro caso).
+- **Granularidade por ciclo, não por base+ciclo:** ciclo é unidade real ("2026/1 acabou pra todas as bases ao mesmo tempo"). Se algum dia precisar congelar 1 base específica de um ciclo, reabrir.
+- **Componentes:**
+  - Migration `030_frozen_cycles.sql`.
+  - `server/repositories/frozenCyclesRepository.js` (novo) com cache 5min em `getFrozenSet()`.
+  - `server/services/cicloResolverService.js` ganha `getActiveCiclos()`.
+  - `server/services/activationService.js` (roster + rosterKeys), `activationConversionService.js`, `caaFunnelService.js`: filtragem out de ciclos frozen.
+  - `server/routes/reports.js` (`/caa/summary`): `available_ciclos` filtrado de frozen.
+  - `server/routes/cycles.js` (novo): `GET /api/cycles`, `POST/DELETE /api/cycles/:ciclo/freeze`.
+  - `src/services/cyclesApi.ts` (novo).
+  - `src/pages/BasesPage.tsx`: card "Ciclos" no topo.
+- **Cache invalidation:** `freezeCycle`/`unfreezeCycle` chamam `bustFrozenSetCache()`. Painéis no frontend refazem load após operação.
+- **Alternativas descartadas:**
+  - **Flag por snapshot (nível A):** só protege contra apagar, não cobre o caso real (arquivar ciclo das operações).
+  - **Refactor ciclo-aware no nível snapshot (nível C, ~2 dias):** matar mosca com canhão; infra existente do `cicloResolverService` resolve com flag simples.
+  - **Flag por base+ciclo:** complexidade extra sem caso de uso. Reabrir quando surgir.
+
 ### 09/06/2026 — Seleção multi-página no Disparador (combo dropdown)
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu UX; Executor (Sonnet 4.6) implementou.
