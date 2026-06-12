@@ -30,7 +30,8 @@ import {
   ORIGEM_ATIVACAO_BLOCK_MESSAGE,
 } from './datacrazyClient.js';
 import { messagingProvider } from './messagingProvider.js';
-import { whatsappClient } from './whatsappClient.js';
+import { whatsappClient, renderTemplateText } from './whatsappClient.js';
+import { datacrazyDispatchNoteEnabled, buildDispatchNote } from './datacrazyDispatchNote.js';
 import {
   caaCancelamentoSqlWhere,
   isCaaCancelamentoSolicitacao,
@@ -1439,6 +1440,33 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
         variables,
         templateComponents: templateComponentsByName.get(template_name) || [],
       });
+      let datacrazyNoteFailed = false;
+      let datacrazyNoteId = null;
+      if (datacrazyDispatchNoteEnabled() && lead?.id) {
+        try {
+          const renderedText = renderTemplateText(
+            templateComponentsByName.get(template_name) || [],
+            variables
+          );
+          const noteText = buildDispatchNote({
+            category,
+            templateName: template_name,
+            renderedText,
+            operatorNome: opts.operatorNome,
+            timestamp: new Date(),
+          });
+          const noteRes = await datacrazyClient.addLeadNote(lead.id, noteText);
+          datacrazyNoteId = noteRes?.id || null;
+        } catch (noteErr) {
+          datacrazyNoteFailed = true;
+          console.warn('[datacrazy-note] falhou ao criar anotação', {
+            leadId: lead.id,
+            category,
+            template: template_name,
+            error: noteErr?.message,
+          });
+        }
+      }
       await activationDispatchRepo.recordDispatchEvent({
         category,
         masterKey: master_key,
@@ -1451,6 +1479,8 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
         telefone: item.telefone,
         email: item.email,
         rgm: item.rgm,
+        datacrazyNoteFailed,
+        datacrazyNoteId,
       });
       return {
         status: 'sent',

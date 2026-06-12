@@ -460,6 +460,7 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
     const masterKeys = Array.isArray(req.body?.master_keys)
       ? req.body.master_keys.map(String).filter((k) => k.length > 0)
       : undefined;
+    const operatorNome = (req.body?.operator_nome ?? '').toString().trim() || null;
 
     if (req.query.async === '1') {
       const { jobId } = createJob({ category, total: 0 });
@@ -468,7 +469,7 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
         try {
           const data = await runDatacrazyActivationBatch(
             category,
-            { limit, masterKeys },
+            { limit, masterKeys, operatorNome },
             {
               onTotal: ({ total }) => updateProgress(jobId, { total: total ?? 0 }),
               onProgress: (patch) => updateProgress(jobId, patch),
@@ -482,7 +483,7 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
       return;
     }
 
-    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys });
+    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys, operatorNome });
     res.json(data);
   } catch (err) {
     handleError(res, err);

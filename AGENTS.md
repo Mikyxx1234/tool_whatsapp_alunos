@@ -5,6 +5,40 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 12/06/2026 — Disparador: criar anotação no card do DataCrazy a cada envio (rastreabilidade no CRM)
+
+- **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementará.
+- **Problema:** quando o disparador manda uma mensagem WhatsApp pra um aluno, o consultor que depois abrir o card no DataCrazy não tem como saber o que foi enviado, quando, por quem e com qual template. A única evidência fica no `activation_dispatch_events` do tool — invisível a quem usa o CRM.
+- **Decisão:** após cada envio bem-sucedido em `runDatacrazyActivationBatch`, postar uma anotação no card do lead via `POST /api/v1/leads/{leadId}/notes` (já existe na API DataCrazy — Bearer Auth com a mesma `DATACRAZY_API_KEY`). Conteúdo da nota inclui timestamp BRT + categoria + template + **identidade do operador que disparou** + texto da mensagem renderizado (com variáveis já substituídas).
+- **Formato da anotação:**
+  ```
+  [Disparador WhatsApp] 12/06/2026 14:32 (BRT)
+  Categoria: Processos CAA
+  Template: caa_msg1
+  Disparado por: raphael.castro
+  ---
+  Olá João, identificamos um processo CAA aberto no seu nome...
+  ```
+- **Falha na criação da nota = NÃO bloqueia o disparo.** A mensagem WhatsApp já foi enviada (o lead recebeu). Logamos `logger.warn` e marcamos `datacrazy_note_failed=true` no `recordDispatchEvent` (coluna nova) pra permitir auditoria/retry futuro.
+- **Toggle:** env var `DATACRAZY_DISPATCH_NOTE_ENABLED` (default `true`). Permite desligar sem deploy se a API do DataCrazy ficar instável.
+- **Propagação do operador:** o `dcz-crm-sync` já injeta `consultor_nome` no iframe URL (`readConsultorIdentity().nome` no frontend). Propagar via novo campo `operator_nome` no body de `POST /:category/run-datacrazy-batch` → `runDatacrazyActivationBatch(category, { operatorNome }, ...)`. Quando ausente (chamadas internas, scheduler), fallback `'Disparador automático'`.
+- **Texto renderizado da mensagem:** templateComponents do WhatsApp Business têm o `body.text` original com placeholders `{{1}}`, `{{2}}`; o tool já carrega isso em `templateComponentsByName`. Expor helper `renderTemplateText(components, variables)` em `whatsappClient.js` (mesmo regex que `extractTemplateVariableOrder` usa).
+- **Schema delta** (migration `031_dispatch_datacrazy_note.sql`):
+  ```sql
+  ALTER TABLE activation_dispatch_events
+    ADD COLUMN IF NOT EXISTS datacrazy_note_failed BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS datacrazy_note_id TEXT;
+  ```
+- **API client novo** (`server/services/datacrazyClient.js`):
+  - `async function addLeadNote(leadId, note)` → POST `/api/v1/leads/{leadId}/notes` body `{ note }`. Bearer Auth via `getConfig().apiKey`. Retorna `{ id?: string|null }` derivado do response. Throw em status != 2xx.
+  - Exportada no `datacrazyClient` ao final do arquivo.
+- **Alternativas descartadas:**
+  - **Webhook reverso DataCrazy chama o tool** — burocrático e exige config do CRM; ativo simples (POST direto) é mais robusto.
+  - **Anotação compacta (sem texto da mensagem)** — descartada pelo usuário; queria ver o que foi enviado direto no card sem precisar ir ao tool.
+  - **Anotação como atividade/tarefa** — DataCrazy tem `/api/v1/leads/{leadId}/activities`, mas "atividades" carregam semântica de pendência (criar pendência fantasma pra cada disparo poluiria a agenda do consultor). Notes são puramente informativos.
+  - **Bloquear o disparo quando a nota falha** — a mensagem JÁ foi entregue ao aluno; bloquear força reenvio que dispararia mensagem duplicada. Falha de nota é problema de auditoria, não de entrega.
+  - **Sempre ligado sem toggle** — risco operacional: se a API do DataCrazy ficar fora no meio de uma campanha grande, queremos poder desligar via env var sem deploy.
+
 ### 11/06/2026 — Disparador: coluna "Última ativação" + sort por mais antigo/recente
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu UX; Executor (Sonnet 4.6) implementou.

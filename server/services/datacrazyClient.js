@@ -819,6 +819,71 @@ async function clearOrigemAtivacaoForLead(leadId) {
 }
 
 /**
+ * Cria uma anotação no card do lead no DataCrazy.
+ * POST /api/v1/leads/{leadId}/notes body { note }
+ * Faz exatamente 1 retentativa em erros de rede (timeout, ECONNRESET, etc.).
+ * Erros HTTP (4xx/5xx) NÃO retentam.
+ * @param {string} leadId
+ * @param {string} note
+ * @returns {Promise<{ id: string|null }>}
+ */
+async function addLeadNote(leadId, note) {
+  const { apiKey, baseUrl } = getConfig();
+  const url = `${baseUrl}/api/v1/leads/${encodeURIComponent(String(leadId))}/notes`;
+  const body = JSON.stringify({ note: String(note ?? '') });
+
+  async function attempt() {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: buildHeaders(apiKey),
+        body,
+      });
+    } catch (err) {
+      const e = new Error(`Falha de rede ao criar anotação no DataCrazy: ${err.message}`);
+      e.cause = err;
+      e.isNetworkError = true;
+      throw e;
+    }
+
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+
+    if (!response.ok) {
+      const message =
+        data?.message ||
+        data?.error?.message ||
+        data?.raw ||
+        `DataCrazy respondeu com status ${response.status} ao criar anotação`;
+      const err = new Error(message);
+      err.status = response.status;
+      throw err;
+    }
+
+    const id =
+      (data && typeof data === 'object' && 'id' in data && data.id != null)
+        ? String(data.id)
+        : null;
+    return { id };
+  }
+
+  try {
+    return await attempt();
+  } catch (err) {
+    if (err.isNetworkError) {
+      return await attempt();
+    }
+    throw err;
+  }
+}
+
+/**
  * Lê valor de um campo adicional do lead no CRM web.
  * GET {crm}/api/crm/additional-fields/lead/{leadId}/{fieldId}
  * Retorna a string do campo ou null se 404 / campo ausente.
@@ -881,6 +946,7 @@ export const datacrazyClient = {
   buildSendTemplatePayload,
   updateLeadAdditionalField,
   getLeadAdditionalFieldValue,
+  addLeadNote,
   verifyOrigemAtivacaoForCategory,
   setOrigemAtivacaoForCategory,
   clearOrigemAtivacaoForLead,

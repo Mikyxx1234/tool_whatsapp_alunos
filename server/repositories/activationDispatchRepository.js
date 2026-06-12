@@ -79,13 +79,16 @@ export async function recordDispatchEvent(event) {
     email = null,
     rgm = null,
     errorMessage = null,
+    datacrazyNoteFailed = false,
+    datacrazyNoteId = null,
   } = event;
 
   await query(
     `insert into activation_dispatch_events (
       category, master_key, status, channel, template_name, message_tier,
-      datacrazy_lead_id, nome, telefone, email, rgm, error_message
-    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      datacrazy_lead_id, nome, telefone, email, rgm, error_message,
+      datacrazy_note_failed, datacrazy_note_id
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [
       category,
       masterKey,
@@ -99,6 +102,8 @@ export async function recordDispatchEvent(event) {
       email,
       rgm,
       errorMessage,
+      datacrazyNoteFailed,
+      datacrazyNoteId,
     ]
   );
 }

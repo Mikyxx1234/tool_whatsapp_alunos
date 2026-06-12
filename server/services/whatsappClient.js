@@ -354,6 +354,42 @@ function parseRetryAfter(header) {
   return null;
 }
 
+/**
+ * Renderiza o texto final de um template substituindo as variáveis {{N}}.
+ * Processa apenas componentes HEADER e BODY, concatena com '\n'.
+ *
+ * @param {Array} templateComponents - lista de componentes do template (de listTemplates)
+ * @param {Object} variables - mapa de variáveis (chaves '1','2'... ou nomes amigáveis)
+ * @returns {string}
+ */
+export function renderTemplateText(templateComponents = [], variables = {}) {
+  const re = /\{\{(\d+)\}\}/g;
+
+  function resolveVar(key) {
+    return (
+      variables[key] ??
+      variables[String(key)] ??
+      variables[`{{${key}}}`] ??
+      ''
+    );
+  }
+
+  const parts = [];
+  for (const comp of templateComponents || []) {
+    const type = String(comp.type || '').toUpperCase();
+    if (type !== 'HEADER' && type !== 'BODY') continue;
+    const text = String(comp.text || '');
+    const rendered = text.replace(re, (_, k) => String(resolveVar(k)));
+    if (rendered) parts.push(rendered);
+  }
+
+  let result = parts.join('\n');
+  if (result.length > 3500) {
+    result = result.slice(0, 3500) + '…';
+  }
+  return result;
+}
+
 export const whatsappClient = {
   listTemplates,
   createTemplate,

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Zap, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   activationApi,
   type ActivationCategory,
   type DatacrazyBatchNotFoundItem,
 } from '../services/activationApi';
+import { readConsultorIdentity } from '../services/meuPainelApi';
 import { LoadingOverlay } from './LoadingOverlay';
 
 interface Props {
@@ -39,6 +40,7 @@ export function ActivationListActions({
 }: Props) {
   const selectedCount = selectedMasterKeys?.length ?? 0;
   const hasSelection = selectedCount > 0;
+  const consultorNome = useMemo(() => readConsultorIdentity().nome ?? undefined, []);
   const [running, setRunning] = useState(false);
   const [overlayMinimized, setOverlayMinimized] = useState(false);
   const eligible = total;
@@ -98,7 +100,9 @@ export function ActivationListActions({
     try {
       const { jobId } = await activationApi.runDatacrazyBatchAsync(
         category,
-        hasSelection ? { masterKeys: selectedMasterKeys } : undefined
+        hasSelection
+          ? { masterKeys: selectedMasterKeys, operatorNome: consultorNome }
+          : { operatorNome: consultorNome }
       );
 
       pollingRef.current = window.setInterval(async () => {
