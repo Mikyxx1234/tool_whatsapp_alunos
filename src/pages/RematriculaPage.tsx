@@ -1,17 +1,14 @@
-import { RematriculaReportPanel } from '../components/RematriculaReportPanel';
-import { RematriculaTrackingPanel } from '../components/RematriculaTrackingPanel';
-
-/** Painel Rematrícula — embedado no dcz-crm-sync via iframe (/rematricula). */
-export default function RematriculaPage() {
-  return (
-    <div className="min-h-screen bg-[#0b1623] text-slate-100 p-4 md:p-6 space-y-8">
-      <RematriculaTrackingPanel />
-      <div>
-        <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
-          Detalhamento por aluno
-        </h2>
-        <RematriculaReportPanel />
-      </div>
-    </div>
-  );
-}
+import { RematriculaReportPanel } from '../components/RematriculaReportPanel';
+
+/** Fila SIAA embedada no dcz — só detalhamento; conversão fica no painel nativo do CRM. */
+export default function RematriculaPage() {
+  return (
+    <div className="min-h-0 bg-[#0b1623] text-slate-100 p-3 md:p-4">
+      <div className="mb-3 rounded-lg border border-sky-800/40 bg-sky-950/30 px-3 py-2 text-xs text-sky-200/90">
+        <strong>Fila de campanha</strong> — alunos EM CURSO ainda pendentes de rematrícula no SIAA.
+        Rematrículas <strong>concluídas no novo ciclo</strong> estão no painel principal do CRM (Upload Acadêmico → matriculados).
+      </div>
+      <RematriculaReportPanel />
+    </div>
+  );
+}
