@@ -71,6 +71,20 @@ export async function listDailyStats(days = 30) {
   return rows.reverse();
 }
 
+/** @param {string} from YYYY-MM-DD @param {string} to YYYY-MM-DD */
+export async function listDailyStatsBetween(from, to) {
+  const { rows } = await query(
+    `
+    select *
+    from rematricula_daily_stats
+    where stat_date >= $1::date and stat_date <= $2::date
+    order by stat_date asc
+    `,
+    [from, to]
+  );
+  return rows;
+}
+
 /** @param {string} statDate YYYY-MM-DD */
 export async function getStatByDate(statDate) {
   const { rows } = await query(
@@ -112,7 +126,7 @@ export async function countActivationsOnDate(statDate) {
 
 /** Ativações rematrícula nos últimos N dias (BRT). */
 export async function activationsByDay(days = 30) {
-  const lim = Math.min(Math.max(Number(days) || 30, 1), 90);
+  const lim = Math.min(Math.max(Number(days) || 30, 1), 365);
   const { rows } = await query(
     `
     select
@@ -126,6 +140,26 @@ export async function activationsByDay(days = 30) {
     order by 1
     `,
     [lim]
+  );
+  return rows;
+}
+
+/** @param {string} from YYYY-MM-DD @param {string} to YYYY-MM-DD */
+export async function activationsByDayBetween(from, to) {
+  const { rows } = await query(
+    `
+    select
+      (created_at at time zone 'America/Sao_Paulo')::date as day,
+      count(*)::int as n
+    from activation_dispatch_events
+    where category = 'rematricula'
+      and status = 'sent'
+      and (created_at at time zone 'America/Sao_Paulo')::date >= $1::date
+      and (created_at at time zone 'America/Sao_Paulo')::date <= $2::date
+    group by 1
+    order by 1
+    `,
+    [from, to]
   );
   return rows;
 }

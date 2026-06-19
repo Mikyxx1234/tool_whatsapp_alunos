@@ -308,9 +308,12 @@ router.get('/rematricula/tracking', async (req, res) => {
     if (!isDbConfigured()) {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
-    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 365);
     const capture = String(req.query.capture || '') === '1';
-    const data = await getRematriculaTrackingDashboard({ days, capture });
+    const date = req.query.date ? String(req.query.date).trim().slice(0, 10) : null;
+    const from = req.query.from ? String(req.query.from).trim().slice(0, 10) : null;
+    const to = req.query.to ? String(req.query.to).trim().slice(0, 10) : null;
+    const data = await getRematriculaTrackingDashboard({ days, capture, date, from, to });
     res.json(data);
   } catch (err) {
     handleError(res, err);

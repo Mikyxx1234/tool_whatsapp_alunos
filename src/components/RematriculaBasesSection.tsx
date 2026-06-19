@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Upload, CheckCircle2 } from 'lucide-react';
-import { baseUploadApi, type RematriculaSource, type RematriculaBaseStatus } from '../services/baseUploadApi';
+import {
+  baseUploadApi,
+  type BaseSnapshotDto,
+  type RematriculaSource,
+  type RematriculaBaseStatus,
+} from '../services/baseUploadApi';
+import { RematriculaSnapshotHistory } from './RematriculaSnapshotHistory';
 import { isSupportedFile } from '../utils/fileToCsvText';
 
 const SLOTS: { source: RematriculaSource; title: string; hint: string }[] = [
@@ -39,17 +45,25 @@ interface Props {
 
 export function RematriculaBasesSection({ onToast }: Props) {
   const [status, setStatus] = useState<RematriculaBaseStatus | null>(null);
+  const [history, setHistory] = useState<BaseSnapshotDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [busy, setBusy] = useState<Partial<Record<RematriculaSource, boolean>>>({});
 
   const load = useCallback(async () => {
+    setHistoryLoading(true);
     try {
-      const data = await baseUploadApi.getRematriculaStatus();
+      const [data, hist] = await Promise.all([
+        baseUploadApi.getRematriculaStatus(),
+        baseUploadApi.listSnapshots('rematricula').catch(() => ({ snapshots: [] as BaseSnapshotDto[] })),
+      ]);
       setStatus(data);
+      setHistory(hist.snapshots ?? []);
     } catch (e) {
       onToast(e instanceof Error ? e.message : 'Erro ao carregar base Rematrícula.', 'error');
     } finally {
       setLoading(false);
+      setHistoryLoading(false);
     }
   }, [onToast]);
 
@@ -200,6 +214,12 @@ export function RematriculaBasesSection({ onToast }: Props) {
           );
         })}
       </div>
+
+      <RematriculaSnapshotHistory
+        snapshots={history}
+        activeSnapshotId={status?.active_snapshot?.id ?? null}
+        loading={historyLoading && !history.length}
+      />
     </section>
   );
 }

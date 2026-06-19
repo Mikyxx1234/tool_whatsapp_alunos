@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -12,6 +12,7 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
+import { RematriculaTrackingCalendar } from './RematriculaTrackingCalendar';
 import { reportApi, type RematriculaDailyStat, type RematriculaTrackingResponse } from '../services/reportApi';
 
 function fmt(n: number | null | undefined) {
@@ -154,14 +155,42 @@ export function RematriculaTrackingPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState(30);
+  const [focusDate, setFocusDate] = useState('');
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const [calMonth, setCalMonth] = useState(() => {
+    const t = new Date();
+    return { year: t.getFullYear(), month: t.getMonth() };
+  });
 
-  const load = useCallback(
-    async (capture = false) => {
+  const fetchTracking = useCallback(
+    async (
+      capture = false,
+      overrides: Partial<{ date: string; from: string; to: string; days: number }> = {}
+    ) => {
       setLoading(true);
       setError(null);
       try {
-        const r = await reportApi.rematriculaTracking({ days, capture });
+        const fd = overrides.date !== undefined ? overrides.date : focusDate;
+        const rf = overrides.from !== undefined ? overrides.from : rangeFrom;
+        const rt = overrides.to !== undefined ? overrides.to : rangeTo;
+        const d = overrides.days !== undefined ? overrides.days : days;
+
+        const opts: Parameters<typeof reportApi.rematriculaTracking>[0] = { capture };
+        if (rf && rt) {
+          opts.from = rf;
+          opts.to = rt;
+        } else {
+          opts.days = d;
+        }
+        if (fd) opts.date = fd;
+
+        const r = await reportApi.rematriculaTracking(opts);
         setData(r);
+        if (r.focus_date) {
+          const dt = new Date(`${r.focus_date}T12:00:00`);
+          setCalMonth({ year: dt.getFullYear(), month: dt.getMonth() });
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erro ao carregar painel');
         setData(null);
@@ -169,15 +198,57 @@ export function RematriculaTrackingPanel() {
         setLoading(false);
       }
     },
-    [days]
+    [days, focusDate, rangeFrom, rangeTo]
   );
 
-  useEffect(() => {
-    void load(true);
-  }, [load]);
+  const load = useCallback((capture = false) => fetchTracking(capture), [fetchTracking]);
+  const didMountRef = useRef(false);
 
-  const k = data?.kpis;
+  useEffect(() => {
+    void fetchTracking(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    if (rangeFrom || rangeTo || focusDate) return;
+    void fetchTracking(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days]);
+
   const series = data?.series ?? [];
+  const k = data?.kpis;
+  const viewingDate = data?.focus_date || null;
+  const dateFound = data?.focus_found;
+
+  const handlePickDate = (dateStr: string) => {
+    setFocusDate(dateStr);
+    setRangeFrom('');
+    setRangeTo('');
+    void fetchTracking(false, { date: dateStr, from: '', to: '' });
+  };
+
+  const applyFocusDate = () => {
+    void fetchTracking(false, { date: focusDate });
+  };
+
+  const clearFocus = () => {
+    setFocusDate('');
+    void fetchTracking(false, { date: '' });
+  };
+
+  const applyRange = () => {
+    if (rangeFrom && rangeTo) void fetchTracking(false);
+  };
+
+  const clearRange = () => {
+    setRangeFrom('');
+    setRangeTo('');
+    void fetchTracking(false, { from: '', to: '' });
+  };
 
   return (
     <div className="space-y-6">
@@ -196,30 +267,126 @@ export function RematriculaTrackingPanel() {
             .
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className="text-xs bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-2 py-1.5"
-          >
-            <option value={14}>14 dias</option>
-            <option value={30}>30 dias</option>
-            <option value={60}>60 dias</option>
-          </select>
-          <span className="text-[10px] text-slate-500 font-mono">
-            {data?.generated_at ? fmtDt(data.generated_at) : '—'}
-          </span>
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => void load(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-600 rounded-lg hover:bg-slate-700 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Atualizar
-          </button>
+        <div className="flex flex-col gap-2 w-full md:w-auto md:min-w-[28rem]">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
+              Data
+            </label>
+            <input
+              type="date"
+              value={focusDate}
+              onChange={(e) => setFocusDate(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && applyFocusDate()}
+              className="text-xs bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-2 py-1.5 [color-scheme:dark]"
+              title="Filtrar KPIs por dia"
+            />
+            <button
+              type="button"
+              disabled={loading || !focusDate}
+              onClick={() => applyFocusDate()}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-sky-700/80 text-white hover:bg-sky-600 disabled:opacity-40"
+            >
+              Buscar
+            </button>
+            {focusDate && (
+              <button
+                type="button"
+                onClick={() => clearFocus()}
+                className="text-[10px] px-2 py-1 rounded-lg border border-emerald-700/50 text-emerald-300 hover:bg-emerald-950/50"
+              >
+                Ao vivo
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
+              Período
+            </label>
+            <input
+              type="date"
+              value={rangeFrom}
+              onChange={(e) => setRangeFrom(e.target.value)}
+              className="text-xs bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-2 py-1.5 [color-scheme:dark]"
+              title="De"
+            />
+            <span className="text-slate-600 text-xs">→</span>
+            <input
+              type="date"
+              value={rangeTo}
+              onChange={(e) => setRangeTo(e.target.value)}
+              className="text-xs bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-2 py-1.5 [color-scheme:dark]"
+              title="Até"
+            />
+            <button
+              type="button"
+              disabled={loading || !rangeFrom || !rangeTo}
+              onClick={() => applyRange()}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-600 text-slate-200 hover:bg-slate-700 disabled:opacity-40"
+            >
+              Aplicar
+            </button>
+            {(rangeFrom || rangeTo) && (
+              <button
+                type="button"
+                onClick={() => clearRange()}
+                className="text-[10px] text-slate-500 hover:text-slate-300"
+              >
+                Limpar
+              </button>
+            )}
+            {!rangeFrom && !rangeTo && (
+              <select
+                value={days}
+                onChange={(e) => setDays(Number(e.target.value))}
+                className="text-xs bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-2 py-1.5"
+                title="Atalho: últimos N dias"
+              >
+                <option value={14}>14 dias</option>
+                <option value={30}>30 dias</option>
+                <option value={60}>60 dias</option>
+                <option value={90}>90 dias</option>
+                <option value={180}>180 dias</option>
+                <option value={365}>365 dias</option>
+              </select>
+            )}
+            <span className="text-[10px] text-slate-500 font-mono ml-auto">
+              {data?.generated_at ? fmtDt(data.generated_at) : '—'}
+            </span>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void load(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-600 rounded-lg hover:bg-slate-700 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Atualizar
+            </button>
+          </div>
         </div>
       </header>
+
+      {viewingDate && (
+        <p className="text-xs text-sky-300/90 bg-sky-950/40 border border-sky-800/50 rounded-lg px-3 py-2">
+          KPIs em <strong>{fmtDay(viewingDate)}</strong>
+          {dateFound === false ? ' — sem captura registrada neste dia' : ''}
+        </p>
+      )}
+
+      {data?.filter?.from && data?.filter?.to && (
+        <p className="text-xs text-slate-400 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2">
+          Gráfico e calendário: {data.filter.from} → {data.filter.to}
+        </p>
+      )}
+
+      {!loading && series.length > 0 && (
+        <RematriculaTrackingCalendar
+          series={series}
+          selectedDate={viewingDate || focusDate || null}
+          month={calMonth}
+          onSelectDate={handlePickDate}
+          onMonthChange={(year, month) => setCalMonth({ year, month })}
+        />
+      )}
 
       {data?.snapshot && (
         <p className="text-xs text-emerald-400/90 bg-emerald-950/40 border border-emerald-800/50 rounded-lg px-3 py-2 inline-flex flex-wrap gap-x-2">
@@ -279,7 +446,7 @@ export function RematriculaTrackingPanel() {
             {loading ? '…' : fmt(k?.ativacoes_hoje)}
           </p>
           <p className="text-xs text-slate-500 mt-0.5">
-            hoje · {fmt(k?.ativacoes_periodo)} no período
+            {viewingDate ? 'no dia filtrado' : 'hoje'} · {fmt(k?.ativacoes_periodo)} no período
           </p>
         </div>
       </div>

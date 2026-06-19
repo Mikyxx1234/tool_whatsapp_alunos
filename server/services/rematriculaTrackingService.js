@@ -140,23 +140,74 @@ export async function captureRematriculaDailyPoint(opts = {}) {
   });
 }
 
+function _parseIsoDate(v) {
+  const s = String(v || '').trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+function _kpisFromRow(row, activations_period) {
+  return {
+    total_em_curso: row.total_em_curso,
+    adimplente: row.adimplente,
+    inadimplente: row.inadimplente,
+    pct_inadimplente: Number(row.pct_inadimplente ?? 0),
+    delta_total: row.delta_total,
+    delta_inadimplente: row.delta_inadimplente,
+    delta_adimplente: row.delta_adimplente,
+    ativacoes_hoje: row.ativacoes_dia,
+    ativacoes_periodo: activations_period,
+    novos_inadimplentes: row.novos_inadimplentes ?? 0,
+    recuperados: row.recuperados_financeiro ?? 0,
+  };
+}
+
 /**
- * @param {{ days?: number, capture?: boolean }} [opts]
+ * @param {{ days?: number, capture?: boolean, date?: string, from?: string, to?: string }} [opts]
  */
 export async function getRematriculaTrackingDashboard(opts = {}) {
-  const days = Math.min(Math.max(Number(opts.days) || 30, 7), 90);
+  const days = Math.min(Math.max(Number(opts.days) || 30, 7), 365);
+  const focusDate = _parseIsoDate(opts.date);
+  const rangeFrom = _parseIsoDate(opts.from);
+  const rangeTo = _parseIsoDate(opts.to);
 
-  let series = await trackingRepo.listDailyStats(days);
+  let series;
+  if (rangeFrom && rangeTo && rangeFrom <= rangeTo) {
+    series = await trackingRepo.listDailyStatsBetween(rangeFrom, rangeTo);
+  } else {
+    series = await trackingRepo.listDailyStats(days);
+  }
+
   if (!series.length || opts.capture) {
     await captureRematriculaDailyPoint({ reason: opts.capture ? 'manual' : 'on_demand' });
-    series = await trackingRepo.listDailyStats(days);
+    if (rangeFrom && rangeTo && rangeFrom <= rangeTo) {
+      series = await trackingRepo.listDailyStatsBetween(rangeFrom, rangeTo);
+    } else {
+      series = await trackingRepo.listDailyStats(days);
+    }
+  }
+
+  if (focusDate) {
+    const has = series.some((s) => String(s.stat_date).slice(0, 10) === focusDate);
+    if (!has) {
+      const row = await trackingRepo.getStatByDate(focusDate);
+      if (row) {
+        series = [...series, row].sort((a, b) =>
+          String(a.stat_date).localeCompare(String(b.stat_date))
+        );
+      }
+    }
   }
 
   const latest = series[series.length - 1] || null;
   const prev = series.length > 1 ? series[series.length - 2] : null;
 
   const snap = await baseUploadRepo.getLatestSnapshot('rematricula');
-  const activations_series = await trackingRepo.activationsByDay(days);
+  let activations_series;
+  if (rangeFrom && rangeTo && rangeFrom <= rangeTo) {
+    activations_series = await trackingRepo.activationsByDayBetween(rangeFrom, rangeTo);
+  } else {
+    activations_series = await trackingRepo.activationsByDay(days);
+  }
 
   const list = snap ? await getIntersectionActivationList('rematricula') : null;
   const live = list
@@ -185,23 +236,32 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
   const activationsToday =
     activations_series.find((r) => String(r.day).slice(0, 10) === todayStatDateBrt())?.n ?? 0;
 
-  return {
-    live,
-    latest,
-    previous: prev,
-    series,
-    activations_series,
-    snapshot: snap
-      ? {
-          id: snap.id,
-          file_name: snap.file_name,
-          row_count: snap.row_count,
-          created_at: snap.created_at,
-          source: snap.source,
-        }
-      : null,
-    upload_diff,
-    kpis: {
+  let focusRow = null;
+  if (focusDate) {
+    focusRow =
+      series.find((s) => String(s.stat_date).slice(0, 10) === focusDate) ||
+      (await trackingRepo.getStatByDate(focusDate));
+  }
+
+  let kpis;
+  if (focusDate) {
+    kpis = focusRow
+      ? _kpisFromRow(focusRow, totalActivations)
+      : {
+          total_em_curso: 0,
+          adimplente: 0,
+          inadimplente: 0,
+          pct_inadimplente: 0,
+          delta_total: null,
+          delta_inadimplente: null,
+          delta_adimplente: null,
+          ativacoes_hoje: 0,
+          ativacoes_periodo: totalActivations,
+          novos_inadimplentes: 0,
+          recuperados: 0,
+        };
+  } else {
+    kpis = {
       total_em_curso: live?.total ?? latest?.total_em_curso ?? 0,
       adimplente: live?.adimplente ?? latest?.adimplente ?? 0,
       inadimplente: live?.inadimplente ?? latest?.inadimplente ?? 0,
@@ -213,7 +273,33 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
       ativacoes_periodo: totalActivations,
       novos_inadimplentes: latest?.novos_inadimplentes ?? upload_diff?.novos_inadimplentes ?? 0,
       recuperados: latest?.recuperados_financeiro ?? upload_diff?.recuperados_financeiro ?? 0,
+    };
+  }
+
+  return {
+    live,
+    latest,
+    previous: prev,
+    series,
+    activations_series,
+    focus_date: focusDate,
+    focus_found: focusDate ? Boolean(focusRow) : null,
+    filter: {
+      days: rangeFrom && rangeTo ? null : days,
+      from: rangeFrom,
+      to: rangeTo,
     },
+    snapshot: snap
+      ? {
+          id: snap.id,
+          file_name: snap.file_name,
+          row_count: snap.row_count,
+          created_at: snap.created_at,
+          source: snap.source,
+        }
+      : null,
+    upload_diff,
+    kpis,
     generated_at: new Date().toISOString(),
   };
 }

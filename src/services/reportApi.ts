@@ -103,6 +103,9 @@ export interface RematriculaTrackingResponse {
     novos_inadimplentes: number;
     recuperados: number;
   };
+  focus_date?: string | null;
+  focus_found?: boolean | null;
+  filter?: { days: number | null; from: string | null; to: string | null };
   generated_at: string;
 }
 
@@ -274,10 +277,19 @@ export const reportApi = {
     });
   },
 
-  rematriculaTracking(opts: { days?: number; capture?: boolean } = {}) {
+  rematriculaTracking(opts: {
+    days?: number;
+    capture?: boolean;
+    date?: string;
+    from?: string;
+    to?: string;
+  } = {}) {
     const p = new URLSearchParams();
     if (opts.days != null) p.set('days', String(opts.days));
     if (opts.capture) p.set('capture', '1');
+    if (opts.date) p.set('date', opts.date);
+    if (opts.from) p.set('from', opts.from);
+    if (opts.to) p.set('to', opts.to);
     const q = p.toString();
     return fetchJson<RematriculaTrackingResponse>(
       `/api/reports/rematricula/tracking${q ? `?${q}` : ''}`,
