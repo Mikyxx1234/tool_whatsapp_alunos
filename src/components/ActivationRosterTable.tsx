@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, MessageCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MessageCircle, Search } from 'lucide-react';
 import { TableLoadingState } from './TableLoadingState';
 import {
   activationApi,
@@ -140,6 +140,53 @@ function ResponseBadge({ row }: { row: ActivationRosterItem }) {
 
 const PAGE_SIZE = 100;
 
+function RosterPagination({
+  total,
+  safePage,
+  totalPages,
+  loading,
+  goToPage,
+  borderClass,
+}: {
+  total: number;
+  safePage: number;
+  totalPages: number;
+  loading: boolean;
+  goToPage: (next: number) => void;
+  borderClass: string;
+}) {
+  if (total <= PAGE_SIZE) return null;
+  return (
+    <div
+      className={`px-4 py-2.5 ${borderClass} flex flex-wrap items-center justify-between gap-2 bg-gray-50/50 dark:bg-slate-900/40`}
+    >
+      <span className="text-xs text-gray-600 dark:text-slate-400">
+        Página {safePage + 1} de {totalPages.toLocaleString('pt-BR')} · {PAGE_SIZE} por página
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          disabled={loading || safePage <= 0}
+          onClick={() => goToPage(safePage - 1)}
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" />
+          Anterior
+        </button>
+        <button
+          type="button"
+          disabled={loading || safePage >= totalPages - 1}
+          onClick={() => goToPage(safePage + 1)}
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40"
+        >
+          Próxima
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const BB_SUBGRUPO_FILTERS: {
   id: BbSubgrupo | 'all';
   label: string;
@@ -271,6 +318,8 @@ export function ActivationRosterTable({
   // Quando setado, backend esconde leads nunca-ativados.
   const [sort, setSort] = useState<ActivationRosterSort | null>(null);
   const [sortHiddenUnactivated, setSortHiddenUnactivated] = useState(0);
+  const [searchDraft, setSearchDraft] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -293,6 +342,7 @@ export function ActivationRosterTable({
           ciclo: cicloFilter || undefined,
           responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
           sort,
+          search: searchQuery || undefined,
         });
         setItems(r.items);
         setTotal(r.total);
@@ -314,12 +364,12 @@ export function ActivationRosterTable({
         setLoading(false);
       }
     },
-    [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort]
+    [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort, searchQuery]
   );
 
   useEffect(() => {
     setPage(0);
-  }, [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort]);
+  }, [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort, searchQuery]);
 
   /** Ciclo do click no header da coluna "Última ativação": null → oldest → newest → null. */
   const cycleSort = useCallback(() => {
@@ -337,6 +387,17 @@ export function ActivationRosterTable({
   const goToPage = (next: number) => {
     const clamped = Math.max(0, Math.min(next, totalPages - 1));
     setPage(clamped);
+  };
+
+  const applySearch = () => {
+    setSearchQuery(searchDraft.trim());
+    setPage(0);
+  };
+
+  const clearSearch = () => {
+    setSearchDraft('');
+    setSearchQuery('');
+    setPage(0);
   };
 
   const handleBulkSelect = useCallback(
@@ -360,6 +421,7 @@ export function ActivationRosterTable({
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
             sort,
+            search: searchQuery || undefined,
           });
           onReplaceSelection(r.master_keys);
         } catch (e) {
@@ -393,6 +455,7 @@ export function ActivationRosterTable({
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
             sort,
+            search: searchQuery || undefined,
           });
           for (const it of r.items) {
             if (it.master_key) accumulated.push(it.master_key);
@@ -413,6 +476,7 @@ export function ActivationRosterTable({
       rematSubgrupo,
       cicloFilter,
       sort,
+      searchQuery,
       safePage,
       totalPages,
       items,
@@ -460,6 +524,41 @@ export function ActivationRosterTable({
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-end gap-2 pt-1">
+          <label className="flex-1 min-w-[220px] max-w-md">
+            <span className="sr-only">Buscar aluno</span>
+            <input
+              type="search"
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  applySearch();
+                }
+              }}
+              placeholder="Nome, RGM, e-mail ou CPF…"
+              className="w-full px-3 py-1.5 text-xs border border-gray-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-gray-900 dark:text-slate-100 placeholder:text-gray-400 dark:placeholder:text-slate-500"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={applySearch}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-whatsapp-600 hover:bg-whatsapp-700 rounded-lg"
+          >
+            <Search className="w-3.5 h-3.5" />
+            Buscar
+          </button>
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={clearSearch}
+              className="px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800"
+            >
+              Limpar busca
+            </button>
+          )}
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
           <span>
             {loading ? (
@@ -469,7 +568,9 @@ export function ActivationRosterTable({
                 'Carregando…'
               )
             ) : total === 0 ? (
-              responseFilter === 'responded' ? (
+              searchQuery ? (
+                <>Nenhum aluno encontrado para &quot;{searchQuery}&quot;.</>
+              ) : responseFilter === 'responded' ? (
                 'Nenhum respondido nesta fila ainda.'
               ) : stageFilter === 'all' ? (
                 'Nenhum registro na fila'
@@ -480,15 +581,45 @@ export function ActivationRosterTable({
               <>
                 Mostrando {rangeStart.toLocaleString('pt-BR')}–{rangeEnd.toLocaleString('pt-BR')} de{' '}
                 {total.toLocaleString('pt-BR')}
+                {searchQuery && (
+                  <> · busca: &quot;{searchQuery}&quot;</>
+                )}
                 {stageFilter !== 'all' && totalUnfiltered != null && totalUnfiltered !== total && (
                   <> (de {totalUnfiltered.toLocaleString('pt-BR')} na fila)</>
                 )}
               </>
             )}
           </span>
-          <button type="button" onClick={() => void load(page)} className="text-whatsapp-700 hover:underline">
-            Atualizar fila
-          </button>
+          <div className="flex items-center gap-3">
+            {total > PAGE_SIZE && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={loading || safePage <= 0}
+                  onClick={() => goToPage(safePage - 1)}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40"
+                  title="Página anterior"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[11px] text-gray-600 dark:text-slate-400 tabular-nums">
+                  {safePage + 1}/{totalPages.toLocaleString('pt-BR')}
+                </span>
+                <button
+                  type="button"
+                  disabled={loading || safePage >= totalPages - 1}
+                  onClick={() => goToPage(safePage + 1)}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-40"
+                  title="Próxima página"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+            <button type="button" onClick={() => void load(page)} className="text-whatsapp-700 hover:underline">
+              Atualizar fila
+            </button>
+          </div>
         </div>
       </div>
 
@@ -681,6 +812,15 @@ export function ActivationRosterTable({
           )}
         </div>
       )}
+
+      <RosterPagination
+        total={total}
+        safePage={safePage}
+        totalPages={totalPages}
+        loading={loading}
+        goToPage={goToPage}
+        borderClass="border-b border-gray-100 dark:border-slate-800"
+      />
 
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
@@ -907,33 +1047,14 @@ export function ActivationRosterTable({
         </table>
       </div>
 
-      {total > PAGE_SIZE && (
-        <div className="px-4 py-3 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 bg-gray-50/50">
-          <span className="text-xs text-gray-600">
-            Página {safePage + 1} de {totalPages.toLocaleString('pt-BR')} · {PAGE_SIZE} por página
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              disabled={loading || safePage <= 0}
-              onClick={() => goToPage(safePage - 1)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              Anterior
-            </button>
-            <button
-              type="button"
-              disabled={loading || safePage >= totalPages - 1}
-              onClick={() => goToPage(safePage + 1)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40"
-            >
-              Próxima
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
+      <RosterPagination
+        total={total}
+        safePage={safePage}
+        totalPages={totalPages}
+        loading={loading}
+        goToPage={goToPage}
+        borderClass="border-t border-gray-100 dark:border-slate-800"
+      />
 
     </div>
   );

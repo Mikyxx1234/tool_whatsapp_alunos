@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-19 — Rematrícula SIAA: RGM/CPF em notação científica + lookup matriculados quebrado
+- **Modelo usado:** Opus 4.8 (principal). Bugfix operacional.
+- **Problema:** Após upload SIAA (`excel__19062026-122501.zip`, 20.163 linhas), ~67% dos alunos apareciam sem RGM no Disparador (`-`). Export ERP grava RGM/CPF/celular como número Excel → XML devolve `"4.8982197E7"`, `"3.240816687E10"`. O parser descartava ( `normalizeRgmCanonical` extraía dígitos errados; `isPlausibleInstitutionalRgm` falhava) e gravava `RGM`/`RGM_ALUN` vazios. Coluna **Ciclo** mostrava `EM CURSO` porque `rowToRematriculaItem` lia `SIT_2026_1` (situação acadêmica, não ciclo). Fallback `rgmFromMatriculadosLookup` nunca funcionou: passava `PersonIndexEntry` para `institutionalRgmFromAnyRow` em vez de usar `matEntry.ids` (`RGM:…`) ou `matEntry.row`.
+- **Decisão:**
+  1. Novo helper `excelNumericCell.js` (`parseExcelNumericCell`, `cpfDigitsFromExcelCell`, `phoneDigitsFromExcelCell`) — usado em `brokenExportXlsx.js`, `spreadsheetToObjects.js`, `rgmDisplay.js`, `baseComparisonService.js`, `siaaRematriculaRepair.js`.
+  2. `rgmFromMatriculadosLookup` lê `RGM:` de `matEntry.ids` primeiro.
+  3. `cicloFromRematriculaRow` infere ciclo de colunas `SIT_YYYY_N` → `YYYY/N` (default `REMAT_CICLO_ORIGEM`).
+  4. Script `repairRematriculaSnapshotRgms.mjs` — corrige snapshot já gravado + preenche RGM via matriculados. Rodado em prod no snapshot `984cbf52…`: **20.162/20.163** com RGM (1 órfão); re-run final **20.163/20.163**.
+  5. **`importRgmCellValue`** em `brokenExportXlsx.js` / `spreadsheetToObjects.js` — na importação SIAA, coluna `RGM_ALUN` (fileira I) preserva prefixo 20–39 (ex. Adara `39462617`); antes `isPlausibleInstitutionalRgm` (40–49) zerava na hora do parse.
+- **Correção adicional (mesmo dia):** RGMs prefixo 20–39 (alunos antigos) estavam gravados no DB mas **ocultos na UI** — filtro `isPlausibleInstitutionalRgm` limitava exibição a 40–49 (~1.836 linhas com `-`). Ampliado default para **20–52**; criado `displayRgmFromRematriculaRow` + `matriculadosRgmLookup.js` (dupla verificação CPF → e-mail → nome). Fila rematrícula: **0 sem RGM** após reparo.
+
 ### 2026-06-19 — Cleanup origem_ativacao: fallback por dispatch + verify no CLEAR
 
 - **Modelo usado:** Opus 4.7 (principal). Bugfix operacional.

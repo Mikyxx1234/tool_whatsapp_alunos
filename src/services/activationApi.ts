@@ -301,11 +301,13 @@ export const activationApi = {
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
       sort?: ActivationRosterSort | null;
+      search?: string;
     }
   ) {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     if (opts?.offset != null) params.set('offset', String(opts.offset));
+    if (opts?.search?.trim()) params.set('search', opts.search.trim());
     if (opts?.activationStage && opts.activationStage !== 'all') {
       params.set('activation_stage', opts.activationStage);
     }
@@ -337,6 +339,7 @@ export const activationApi = {
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
       sort?: ActivationRosterSort | null;
+      search?: string;
     }
   ) {
     const params = new URLSearchParams();
@@ -357,6 +360,9 @@ export const activationApi = {
     }
     if (opts?.sort) {
       params.set('sort', opts.sort);
+    }
+    if (opts?.search?.trim()) {
+      params.set('search', opts.search.trim());
     }
     const q = params.toString() ? `?${params}` : '';
     return jsonFetch<ActivationRosterKeysResponse>(`/api/activation/${category}/roster/keys${q}`);

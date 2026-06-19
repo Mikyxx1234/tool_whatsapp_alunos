@@ -163,7 +163,7 @@ export async function createSnapshotFromRowObjects(category, input) {
       objects = objects.map((row) => normalizeMatriculadosRowRgms(row));
     } else if (category === 'financeiro') {
       objects = objects.map((row) => normalizeFinanceiroRow(row));
-    } else {
+    } else if (category !== 'rematricula') {
       objects = objects.map((row) => normalizeRowRgms(row));
     }
     if (category === 'rematricula') {

@@ -1,3 +1,5 @@
+import { parseExcelNumericCell } from './excelNumericCell.js';
+
 /** Colunas que carregam RGM nas planilhas importadas. */
 export const RGM_COLUMN_KEYS = new Set(
   [
@@ -87,14 +89,14 @@ export function isFinanceiroValorAsRgm(raw) {
   return false;
 }
 
-/** Prefixo de 2 dígitos da série Cruzeiro EAD (48→49→50…). Configurável via env. */
+/** Prefixo de 2 dígitos da série Cruzeiro EAD (20…49, depois 50…). Configurável via env. */
 const INSTITUTIONAL_RGM_PREFIX_MIN = Math.max(
   0,
-  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MIN) || 40)
+  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MIN) || 20)
 );
 const INSTITUTIONAL_RGM_PREFIX_MAX = Math.max(
   INSTITUTIONAL_RGM_PREFIX_MIN,
-  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MAX) || 49)
+  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MAX) || 52)
 );
 
 /**
@@ -117,6 +119,40 @@ export function isPlausibleInstitutionalRgm(canon) {
 }
 
 /**
+ * RGM válido para Rematrícula: 8 dígitos, não ERP, não valor financeiro.
+ * Aceita série histórica (prefixo 20+) — não restringe só 40–49.
+ * @param {string} canon
+ */
+export function isValidRematriculaRgm(canon) {
+  if (!/^\d{8}$/.test(canon)) return false;
+  if (isLikelyErpMatriculaRgm(canon)) return false;
+  const prefix = institutionalRgmPrefix(canon);
+  if (prefix == null || prefix < 20 || prefix > 99) return false;
+  return true;
+}
+
+/**
+ * Normaliza célula RGM na importação SIAA/rematrícula — preserva série histórica (20–99).
+ * @param {unknown} raw
+ */
+export function importRgmCellValue(raw) {
+  if (isFinanceiroValorAsRgm(raw)) return '';
+  const canon = normalizeRgmCanonical(raw);
+  return isValidRematriculaRgm(canon) ? canon : '';
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ */
+export function displayRgmFromRematriculaRow(row) {
+  if (!row || typeof row !== 'object') return '';
+  const raw = rgmRawFromRow(row);
+  if (isFinanceiroValorAsRgm(raw)) return '';
+  const canon = normalizeRgmCanonical(raw);
+  return isValidRematriculaRgm(canon) ? canon : '';
+}
+
+/**
  * Varre todas as colunas da linha e retorna o primeiro RGM institucional plausível.
  * @param {Record<string, unknown>|null|undefined} row
  */
@@ -134,8 +170,13 @@ export function institutionalRgmFromAnyRow(row) {
 }
 
 export function normalizeRgmCanonical(raw) {
-  const s = String(raw ?? '').trim();
+  let s = String(raw ?? '').trim();
   if (!s) return '';
+
+  if (/[eE]/.test(s)) {
+    const fromSci = parseExcelNumericCell(s, { pad: 8, maxDigits: 8 });
+    if (/^\d{8}$/.test(fromSci) && !isFinanceiroValorAsRgm(fromSci)) return fromSci;
+  }
 
   if (isFinanceiroValorAsRgm(s)) return '';
 
@@ -301,9 +342,9 @@ export function pickDisplayRgm(matRow, otherRow, otherCategory) {
     if (fromOther) return fromOther;
   }
   if (!matRow) return '';
-  // Base Rematrícula (SIAA / Portal): RGM institucional 8 dígitos, não token ERP.
+  // Base Rematrícula (SIAA / Portal): aceita série histórica 20+.
   if (otherCategory === 'rematricula') {
-    return displayRgmFromRow(matRow);
+    return displayRgmFromRematriculaRow(matRow);
   }
   return displayRgmFromMatriculadosRow(matRow);
 }

@@ -1,6 +1,7 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import * as XLSX from 'xlsx';
-import { isRgmColumnKey, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from './rgmDisplay.js';
+import { parseExcelNumericCell } from './excelNumericCell.js';
+import { isRgmColumnKey, normalizeRgmCanonical, importRgmCellValue } from './rgmDisplay.js';
 
 /**
  * Export ERP com !ref inválido (ex.: "1:K6910") e células sem endereço A1/B1…
@@ -70,6 +71,9 @@ function cellValueFromXml(cellXml, sharedStrings) {
     return Number.isFinite(idx) ? String(sharedStrings[idx] ?? '').trim() : '';
   }
   if (t === 'b') return v === '1' ? 'true' : v === '0' ? 'false' : v;
+  if (/^[+-]?\d*\.?\d+([eE][+-]?\d+)?$/.test(v)) {
+    return parseExcelNumericCell(v);
+  }
   return v;
 }
 
@@ -194,8 +198,7 @@ export function brokenExportXlsxToRowObjects(buffer, sheetXmlPath = 'xl/workshee
       let val = String(cells[c] ?? '').trim();
       if (val) empty = false;
       if (isRgmColumnKey(key)) {
-        const canon = normalizeRgmCanonical(val);
-        val = canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+        val = importRgmCellValue(val);
       }
       o[key] = val;
     }

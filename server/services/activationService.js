@@ -24,8 +24,13 @@ import {
 import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFromRow.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import { isWindowOpen, calcJanela } from '../utils/caaWindow.js';
-import { pickDisplayRgm, institutionalRgmFromAnyRow } from '../utils/rgmDisplay.js';
+import { pickDisplayRgm, displayRgmFromRematriculaRow, displayRgmFromMatriculadosRow, isValidRematriculaRgm } from '../utils/rgmDisplay.js';
 import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
+import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
+import {
+  buildMatriculadosRgmMaps,
+  rgmFromMatriculadosMaps,
+} from '../utils/matriculadosRgmLookup.js';
 import {
   datacrazyClient,
   ORIGEM_ATIVACAO_BLOCK_MESSAGE,
@@ -410,28 +415,41 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
   };
 }
 
-/** Linha da base Rematrícula (SIAA / Portal de Polos). */
-function rowToRematriculaItem(row, matLookup = null) {
-  let rgm = institutionalRgmFromAnyRow(row);
-  const repaired = repairSiaaRematriculaRow(row);
-  if (!rgm) rgm = pickDisplayRgm(repaired, null, 'rematricula');
-  if (!rgm && matLookup) {
-    rgm = rgmFromMatriculadosLookup(repaired, matLookup);
+/** Ciclo acadêmico no export SIAA (SIT_2026_1 guarda situação, não o ciclo). */
+function cicloFromRematriculaRow(row) {
+  for (const key of Object.keys(row)) {
+    const m = /^SIT_(\d{4})_(\d)$/i.exec(key);
+    if (m) return `${m[1]}/${m[2]}`;
   }
+  const fromStandard = cicloFromRow(row);
+  if (/^\d{4}\/\d$/.test(fromStandard)) return fromStandard;
+  return String(process.env.REMAT_CICLO_ORIGEM || '2026/1').trim();
+}
+
+/** Linha da base Rematrícula (SIAA / Portal de Polos). */
+function rowToRematriculaItem(row, matFallback = null) {
+  const matLookup = matFallback?.lookup ?? null;
+  const matMaps = matFallback?.maps ?? null;
+  const repaired = repairSiaaRematriculaRow(row);
+  let rgm = displayRgmFromRematriculaRow(row) || displayRgmFromRematriculaRow(repaired);
+  if (!rgm) rgm = pickDisplayRgm(repaired, null, 'rematricula');
+  if (!rgm && matLookup) rgm = rgmFromMatriculadosLookup(repaired, matLookup);
+  if (!rgm && matMaps) rgm = rgmFromMatriculadosMaps(repaired, matMaps);
   const nome = String(repaired.NOME ?? repaired.Nome ?? repaired.Aluno ?? repaired.nome ?? '').trim();
   const email = String(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '').trim();
   const telefone = String(
     repaired.FONE_CEL ?? repaired.Celular ?? repaired['Fone celular'] ?? repaired.Telefone ?? ''
   ).trim();
+  const cpfDigits = cpfDigitsFromExcelCell(repaired.CPF_ALUN ?? repaired.CPF ?? '');
   return {
     nome,
     email,
     telefone,
     rgm,
-    cpf: String(repaired.CPF_ALUN ?? repaired.CPF ?? '').trim(),
+    cpf: cpfDigits || String(repaired.CPF_ALUN ?? repaired.CPF ?? '').trim(),
     polo: String(repaired.NOME_POLO ?? repaired.Polo ?? '').trim(),
     curso: String(repaired.DES_CURS ?? repaired.Curso ?? '').trim(),
-    ciclo: String(repaired.SIT_2026_1 ?? repaired.Ciclo ?? cicloFromRow(repaired) ?? '').trim(),
+    ciclo: cicloFromRematriculaRow(repaired),
     situacao_matricula: String(
       repaired.SIT_ATUAL ?? repaired.Sit_Atual ?? repaired['Situação Matrícula'] ?? repaired.Situacao ?? ''
     ).trim(),
@@ -450,20 +468,34 @@ function rgmFromMatriculadosLookup(rematRow, matLookup) {
     if (id.startsWith('RGM:')) continue;
     const matches = matLookup.get(id);
     if (!matches?.length) continue;
-    for (const matRow of matches) {
-      const rgm = institutionalRgmFromAnyRow(matRow);
-      if (rgm) return rgm;
+    for (const matEntry of matches) {
+      for (const matId of matEntry.ids) {
+        if (matId.startsWith('RGM:')) {
+          const canon = matId.slice(4);
+          if (isValidRematriculaRgm(canon)) return canon;
+        }
+      }
+      if (matEntry.row) {
+        const rgm = displayRgmFromMatriculadosRow(matEntry.row);
+        if (isValidRematriculaRgm(rgm)) return rgm;
+      }
     }
   }
   return '';
 }
 
-/** Lookup matriculados por identidade (CPF, e-mail, telefone) para RGM. */
-async function buildMatriculadosLookupForRemat() {
+/** Lookup matriculados: índice de identidade + mapas diretos (CPF/e-mail/nome). */
+async function buildMatriculadosFallbackForRemat() {
   const snap = await baseUploadRepo.getLatestSnapshot('matriculados');
-  if (!snap) return null;
-  const index = await buildPersonIndexFromSnapshot('matriculados', snap.id);
-  return buildIdentityLookup(index.byCanon);
+  if (!snap) return { lookup: null, maps: null };
+  const [index, maps] = await Promise.all([
+    buildPersonIndexFromSnapshot('matriculados', snap.id),
+    buildMatriculadosRgmMaps(snap.id),
+  ]);
+  return {
+    lookup: buildIdentityLookup(index.byCanon),
+    maps,
+  };
 }
 
 /**
@@ -926,14 +958,14 @@ async function _buildRematriculaList(category, rematSnap, excludeDispatched) {
   let skipped_duplicate_key = 0;
   let intersection_raw = 0;
 
-  const matLookup = await buildMatriculadosLookupForRemat();
+  const matFallback = await buildMatriculadosFallbackForRemat();
 
   await baseUploadRepo.forEachRowDataForSnapshot('rematricula', rematSnap.id, (row) => {
     if (!isRematriculaEmCursoRow(row)) return;
     intersection_raw += 1;
 
     const remat_subgrupo = rematFinanceiroSubgrupoFromRow(row);
-    const item = rowToRematriculaItem(row, matLookup);
+    const item = rowToRematriculaItem(row, matFallback);
     const master_key = masterKeyFromActivationItem(item) ?? undefined;
 
     if (master_key) {
@@ -1088,6 +1120,48 @@ function parseRosterSort(raw) {
   return null;
 }
 
+function normalizeRosterSearchText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+/** Busca por nome, e-mail, RGM, CPF, polo ou telefone (case/acento insensitive). */
+function matchesRosterSearch(row, query) {
+  const q = normalizeRosterSearchText(query);
+  if (!q) return true;
+  const parts = [
+    row.nome,
+    row.email,
+    row.telefone,
+    row.rgm,
+    row.cpf,
+    row.polo,
+    row.curso,
+    row.master_key,
+  ]
+    .filter(Boolean)
+    .map(normalizeRosterSearchText);
+  const hay = parts.join(' ');
+  if (hay.includes(q)) return true;
+  const qDigits = q.replace(/\D/g, '');
+  if (qDigits.length >= 3) {
+    const rgmDigits = String(row.rgm || '').replace(/\D/g, '');
+    const cpfDigits = String(row.cpf || '').replace(/\D/g, '');
+    const telDigits = String(row.telefone || '').replace(/\D/g, '');
+    if (
+      (rgmDigits && rgmDigits.includes(qDigits)) ||
+      (cpfDigits && cpfDigits.includes(qDigits)) ||
+      (telDigits && telDigits.includes(qDigits))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Aplica sort por última ativação e esconde leads nunca-ativados.
  * Decisão (UX): quando o usuário ordena por "última ativação", leads
@@ -1143,6 +1217,7 @@ export async function getActivationRoster(category, opts = {}) {
   const bbSubgrupoFilter = opts.bbSubgrupo || null;
   const rematSubgrupoFilter = opts.rematSubgrupo || null;
   const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
+  const searchQuery = String(opts.search || opts.q || '').trim();
 
   const { matSnap, otherSnapId } = await resolveActivationSnapshotPair(category);
   const { rows, meta } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
@@ -1199,6 +1274,10 @@ export async function getActivationRoster(category, opts = {}) {
       const c = normalizeCiclo(row.ciclo || '');
       return !c || !frozenSetForRoster.has(c);
     });
+  }
+
+  if (searchQuery) {
+    filtered = filtered.filter((row) => matchesRosterSearch(row, searchQuery));
   }
 
   if (responseFilter !== 'all' && filtered.length > 0) {
@@ -1277,6 +1356,7 @@ export async function getActivationRoster(category, opts = {}) {
     remat_subgrupo_counts: rematSubgrupoCountsUnfiltered,
     available_ciclos,
     counts_by_ciclo,
+    search: searchQuery || undefined,
     warning: meta?.remat_warning ?? undefined,
   };
 }
@@ -1297,6 +1377,7 @@ export async function getActivationRosterKeys(category, opts = {}) {
   const bbSubgrupoFilter = opts.bbSubgrupo || null;
   const rematSubgrupoFilter = opts.rematSubgrupo || null;
   const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
+  const searchQuery = String(opts.search || opts.q || '').trim();
 
   const { matSnap, otherSnapId } = await resolveActivationSnapshotPair(category);
   const { rows } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
@@ -1327,6 +1408,10 @@ export async function getActivationRosterKeys(category, opts = {}) {
       const c = normalizeCiclo(row.ciclo || '');
       return !c || !frozenSetForKeys.has(c);
     });
+  }
+
+  if (searchQuery) {
+    filtered = filtered.filter((row) => matchesRosterSearch(row, searchQuery));
   }
 
   if (responseFilter !== 'all' && filtered.length > 0) {

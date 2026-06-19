@@ -421,7 +421,16 @@ router.get('/:category/roster/keys', async (req, res) => {
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
     const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
-    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, rematSubgrupo, ciclo, responseFilter, sort });
+    const search = req.query.search ? String(req.query.search).trim() : undefined;
+    const data = await getActivationRosterKeys(category, {
+      activationStage,
+      bbSubgrupo,
+      rematSubgrupo,
+      ciclo,
+      responseFilter,
+      sort,
+      search,
+    });
     res.json(data);
   } catch (err) {
     handleError(res, err);
@@ -445,7 +454,18 @@ router.get('/:category/roster', async (req, res) => {
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
     const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
-    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, rematSubgrupo, ciclo, responseFilter, sort });
+    const search = req.query.search ? String(req.query.search).trim() : undefined;
+    const data = await getActivationRoster(category, {
+      limit,
+      offset,
+      activationStage,
+      bbSubgrupo,
+      rematSubgrupo,
+      ciclo,
+      responseFilter,
+      sort,
+      search,
+    });
     res.json(data);
   } catch (err) {
     handleError(res, err);

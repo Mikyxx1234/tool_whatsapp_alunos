@@ -4,7 +4,8 @@ import {
   brokenExportXlsxToRowObjects,
   sheetRefIsBroken,
 } from './brokenExportXlsx.js';
-import { isRgmColumnKey, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from './rgmDisplay.js';
+import { parseExcelNumericCell } from './excelNumericCell.js';
+import { isRgmColumnKey, importRgmCellValue } from './rgmDisplay.js';
 
 function cellToString(v, opts = {}) {
   if (v === null || v === undefined) return '';
@@ -27,11 +28,15 @@ function cellToString(v, opts = {}) {
     if (!Number.isFinite(v)) return '';
     if (Number.isInteger(v) && Math.abs(v) < 1e21) return v.toFixed(0);
     const s = String(v);
+    if (/[eE]/.test(s)) return parseExcelNumericCell(s);
     if (/^\d+\.\d{1,2}$/.test(s)) {
       const [a, b] = s.split('.');
       return `${a}${b.padEnd(2, '0')}`;
     }
     return s;
+  }
+  if (typeof v === 'string' && /[eE]/.test(v)) {
+    return parseExcelNumericCell(v);
   }
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (v instanceof Date) {
@@ -132,9 +137,7 @@ export function xlsxBufferToRowObjects(buffer, fileName) {
       const val = cellToString(row[c], { preferFormatted: isRgm }).trim();
       if (val) empty = false;
       if (isRgm) {
-        const canon = normalizeRgmCanonical(val);
-        o[key] =
-          canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+        o[key] = importRgmCellValue(val);
       } else {
         o[key] = val;
       }
@@ -175,8 +178,7 @@ export function csvTextToRowObjectsFast(csvText) {
         const isRgm = isRgmColumnKey(k);
         const s = v === null || v === undefined ? '' : String(v).trim();
         if (isRgm) {
-          const canon = normalizeRgmCanonical(s);
-          o[k] = canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+          o[k] = importRgmCellValue(s);
         } else {
           o[k] = s;
         }

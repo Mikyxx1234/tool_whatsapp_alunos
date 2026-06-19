@@ -1,8 +1,10 @@
 import {
   institutionalRgmFromAnyRow,
-  isPlausibleInstitutionalRgm,
+  isValidRematriculaRgm,
   normalizeRgmCanonical,
+  displayRgmFromRematriculaRow,
 } from './rgmDisplay.js';
+import { cpfDigitsFromExcelCell } from './excelNumericCell.js';
 
 /**
  * Corrige RGM em linhas do export SIAA Rematrícula.
@@ -11,7 +13,7 @@ import {
 export function repairSiaaRematriculaRow(row) {
   if (!row || typeof row !== 'object') return row;
   const out = { ...row };
-  const found = institutionalRgmFromAnyRow(row);
+  const found = displayRgmFromRematriculaRow(row) || institutionalRgmFromAnyRow(row);
   if (found) {
     out.RGM_ALUN = found;
     out.RGM = found;
@@ -26,9 +28,9 @@ export function repairSiaaRematriculaRow(row) {
  * @param {Record<string, unknown>} row
  */
 export function cpfDigitsFromSiaaRow(row) {
-  const d = String(row.CPF_ALUN ?? row.CPF ?? row['CPF Aluno'] ?? '')
-    .replace(/\D/g, '');
-  if (d.length >= 11) return d.slice(-11);
+  const raw = row.CPF_ALUN ?? row.CPF ?? row['CPF Aluno'] ?? '';
+  const d = cpfDigitsFromExcelCell(raw);
+  if (d.length === 11) return d;
   return '';
 }
 
@@ -53,5 +55,5 @@ export function siaaRematriculaRowQuality(row) {
  */
 export function siaaRgmFromRaw(raw) {
   const canon = normalizeRgmCanonical(raw);
-  return canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+  return canon && isValidRematriculaRgm(canon) ? canon : '';
 }

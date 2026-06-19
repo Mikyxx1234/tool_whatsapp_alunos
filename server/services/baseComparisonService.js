@@ -8,7 +8,8 @@ import {
 import { cicloFromRow, compareCicloSets } from '../utils/cicloFromRow.js';
 import { shouldReplaceEvasaoRow } from '../utils/evasaoDedup.js';
 import { personNameFromRow } from '../utils/personName.js';
-import { isLikelyErpMatriculaRgm, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from '../utils/rgmDisplay.js';
+import { isLikelyErpMatriculaRgm, normalizeRgmCanonical, isValidRematriculaRgm } from '../utils/rgmDisplay.js';
+import { cpfDigitsFromExcelCell, parseExcelNumericCell, phoneDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 
 /** @typedef {{ ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }} PersonIndexEntry */
 
@@ -70,9 +71,7 @@ const TEL_KEYS = [
 
 /** @param {unknown} v */
 function digits(v) {
-  return String(v ?? '')
-    .replace(/\D/g, '')
-    .trim();
+  return parseExcelNumericCell(v).replace(/\D/g, '').trim();
 }
 
 function normalizeEmail(v) {
@@ -83,7 +82,7 @@ function normalizeEmail(v) {
 }
 
 function normalizePhone(v) {
-  let d = digits(v);
+  let d = phoneDigitsFromExcelCell(v);
   if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
   return d.length >= 10 && d.length <= 11 ? d : '';
 }
@@ -101,11 +100,11 @@ export function collectRowIdentities(row, opts = {}) {
     if (opts.category === 'matriculados' && isLikelyErpMatriculaRgm(raw)) continue;
     const rgm = normalizeRgmCanonical(raw);
     if (!rgm) continue;
-    if (opts.category === 'rematricula' && !isPlausibleInstitutionalRgm(rgm)) continue;
+    if (opts.category === 'rematricula' && !isValidRematriculaRgm(rgm)) continue;
     out.add(`RGM:${rgm}`);
   }
   for (const k of CPF_KEYS) {
-    const d = digits(row[k]);
+    const d = cpfDigitsFromExcelCell(row[k]);
     if (d.length === 11) out.add(`CPF:${d}`);
   }
   for (const k of EMAIL_KEYS) {
