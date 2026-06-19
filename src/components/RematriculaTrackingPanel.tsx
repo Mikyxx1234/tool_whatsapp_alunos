@@ -12,7 +12,6 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
-import { RematriculaTrackingCalendar } from './RematriculaTrackingCalendar';
 import { reportApi, type RematriculaDailyStat, type RematriculaTrackingResponse } from '../services/reportApi';
 
 function fmt(n: number | null | undefined) {
@@ -150,6 +149,115 @@ function sourceLabel(source: string | null | undefined) {
   return '—';
 }
 
+/** Barras diárias: quantos viraram inad. vs quantos recuperaram (muda dia a dia, ao contrário do estoque). */
+function MovementChart({ series }: { series: RematriculaDailyStat[] }) {
+  const { bars, labels, w, h, barW } = useMemo(() => {
+    const width = 640;
+    const height = 220;
+    const pad = { t: 16, r: 12, b: 32, l: 12 };
+    if (!series.length) return { bars: [], labels: [], w: width, h: height, barW: 8 };
+
+    const innerW = width - pad.l - pad.r;
+    const innerH = height - pad.t - pad.b;
+    const maxVal = Math.max(
+      1,
+      ...series.flatMap((s) => [s.novos_inadimplentes ?? 0, s.recuperados_financeiro ?? 0])
+    );
+    const slotW = innerW / series.length;
+    const barW = Math.max(4, Math.min(14, slotW * 0.35));
+
+    const bars = series.map((s, i) => {
+      const cx = pad.l + slotW * i + slotW / 2;
+      const novos = s.novos_inadimplentes ?? 0;
+      const recup = s.recuperados_financeiro ?? 0;
+      const yNovos = pad.t + innerH - (novos / maxVal) * innerH;
+      const yRecup = pad.t + innerH - (recup / maxVal) * innerH;
+      return {
+        key: String(s.stat_date),
+        cx,
+        novos,
+        recup,
+        yNovos,
+        yRecup,
+        hNovos: pad.t + innerH - yNovos,
+        hRecup: pad.t + innerH - yRecup,
+      };
+    });
+
+    const lbl =
+      series.length <= 10
+        ? series.map((s, i) => ({
+            x: pad.l + slotW * i + slotW / 2,
+            text: fmtDay(s.stat_date),
+          }))
+        : series
+            .filter((_, i) => i === 0 || i === series.length - 1 || i % Math.ceil(series.length / 7) === 0)
+            .map((s) => {
+              const i = series.indexOf(s);
+              return { x: pad.l + slotW * i + slotW / 2, text: fmtDay(s.stat_date) };
+            });
+
+    return { bars, labels: lbl, w: width, h: height, barW };
+  }, [series]);
+
+  if (!bars.length) {
+    return (
+      <p className="text-sm text-slate-500 py-8 text-center">
+        Sem movimento registrado no período — aguardando capturas diárias ou novo upload SIAA.
+      </p>
+    );
+  }
+
+  const hasMovement = bars.some((b) => b.novos > 0 || b.recup > 0);
+
+  return (
+    <div className="w-full overflow-x-auto">
+      {!hasMovement && (
+        <p className="text-xs text-slate-500 mb-3 text-center">
+          Nenhuma mudança financeira entre capturas neste intervalo (base estável).
+        </p>
+      )}
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full min-w-[320px] h-auto" role="img" aria-label="Movimento financeiro diário">
+        {labels.map((l) => (
+          <text key={l.text + l.x} x={l.x} y={h - 8} textAnchor="middle" className="fill-slate-500 text-[9px]">
+            {l.text}
+          </text>
+        ))}
+        {bars.map((b) => (
+          <g key={b.key}>
+            <rect
+              x={b.cx - barW - 1}
+              y={b.yNovos}
+              width={barW}
+              height={Math.max(b.hNovos, b.novos > 0 ? 2 : 0)}
+              rx={2}
+              fill="#fb7185"
+              opacity={b.novos > 0 ? 0.9 : 0.15}
+            />
+            <rect
+              x={b.cx + 1}
+              y={b.yRecup}
+              width={barW}
+              height={Math.max(b.hRecup, b.recup > 0 ? 2 : 0)}
+              rx={2}
+              fill="#34d399"
+              opacity={b.recup > 0 ? 0.9 : 0.15}
+            />
+          </g>
+        ))}
+      </svg>
+      <div className="flex flex-wrap gap-4 mt-2 text-[10px] text-slate-400">
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-sm bg-rose-400 inline-block" /> Novos inadimplentes
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-400 inline-block" /> Recuperados (virou adimplente)
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function RematriculaTrackingPanel() {
   const [data, setData] = useState<RematriculaTrackingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -158,10 +266,6 @@ export function RematriculaTrackingPanel() {
   const [focusDate, setFocusDate] = useState('');
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
-  const [calMonth, setCalMonth] = useState(() => {
-    const t = new Date();
-    return { year: t.getFullYear(), month: t.getMonth() };
-  });
 
   const fetchTracking = useCallback(
     async (
@@ -187,10 +291,6 @@ export function RematriculaTrackingPanel() {
 
         const r = await reportApi.rematriculaTracking(opts);
         setData(r);
-        if (r.focus_date) {
-          const dt = new Date(`${r.focus_date}T12:00:00`);
-          setCalMonth({ year: dt.getFullYear(), month: dt.getMonth() });
-        }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erro ao carregar painel');
         setData(null);
@@ -223,13 +323,15 @@ export function RematriculaTrackingPanel() {
   const k = data?.kpis;
   const viewingDate = data?.focus_date || null;
   const dateFound = data?.focus_found;
+  const hasCustomRange = Boolean(data?.filter?.from && data?.filter?.to);
 
-  const handlePickDate = (dateStr: string) => {
-    setFocusDate(dateStr);
-    setRangeFrom('');
-    setRangeTo('');
-    void fetchTracking(false, { date: dateStr, from: '', to: '' });
-  };
+  const periodSummary = useMemo(() => {
+    if (series.length < 2) return null;
+    const novos = series.reduce((a, r) => a + (r.novos_inadimplentes ?? 0), 0);
+    const recup = series.reduce((a, r) => a + (r.recuperados_financeiro ?? 0), 0);
+    const ativ = series.reduce((a, r) => a + (r.ativacoes_dia ?? 0), 0);
+    return { novos, recup, ativ, saldo: recup - novos, days: series.length };
+  }, [series]);
 
   const applyFocusDate = () => {
     void fetchTracking(false, { date: focusDate });
@@ -374,18 +476,44 @@ export function RematriculaTrackingPanel() {
 
       {data?.filter?.from && data?.filter?.to && (
         <p className="text-xs text-slate-400 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2">
-          Gráfico e calendário: {data.filter.from} → {data.filter.to}
+          Período analisado: {data.filter.from} → {data.filter.to}
         </p>
       )}
 
-      {!loading && series.length > 0 && (
-        <RematriculaTrackingCalendar
-          series={series}
-          selectedDate={viewingDate || focusDate || null}
-          month={calMonth}
-          onSelectDate={handlePickDate}
-          onMonthChange={(year, month) => setCalMonth({ year, month })}
-        />
+      {periodSummary && (hasCustomRange || series.length >= 2) && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-xl border border-rose-800/40 bg-rose-950/25 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-wide text-rose-400 font-semibold">Novos inad. no período</p>
+            <p className="text-xl font-bold text-rose-200 tabular-nums mt-0.5">{fmt(periodSummary.novos)}</p>
+            <p className="text-[10px] text-slate-500">{periodSummary.days} dias com captura</p>
+          </div>
+          <div className="rounded-xl border border-emerald-800/40 bg-emerald-950/25 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-wide text-emerald-400 font-semibold">Recuperados no período</p>
+            <p className="text-xl font-bold text-emerald-200 tabular-nums mt-0.5">{fmt(periodSummary.recup)}</p>
+            <p className="text-[10px] text-slate-500">viraram adimplente</p>
+          </div>
+          <div className="rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Saldo líquido</p>
+            <p
+              className={`text-xl font-bold tabular-nums mt-0.5 ${
+                periodSummary.saldo > 0
+                  ? 'text-emerald-300'
+                  : periodSummary.saldo < 0
+                    ? 'text-rose-300'
+                    : 'text-slate-300'
+              }`}
+            >
+              {periodSummary.saldo > 0 ? '+' : ''}
+              {fmt(periodSummary.saldo)}
+            </p>
+            <p className="text-[10px] text-slate-500">recuperados − novos inad.</p>
+          </div>
+          <div className="rounded-xl border border-violet-800/40 bg-violet-950/25 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-wide text-violet-400 font-semibold">Ativações no período</p>
+            <p className="text-xl font-bold text-violet-200 tabular-nums mt-0.5">{fmt(periodSummary.ativ)}</p>
+            <p className="text-[10px] text-slate-500">disparos rematrícula</p>
+          </div>
+        </div>
       )}
 
       {data?.snapshot && (
@@ -477,7 +605,21 @@ export function RematriculaTrackingPanel() {
       </div>
 
       <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-5">
-        <h3 className="text-sm font-semibold text-slate-200 mb-4">Evolução diária</h3>
+        <h3 className="text-sm font-semibold text-slate-200 mb-1">Movimento financeiro no período</h3>
+        <p className="text-[11px] text-slate-500 mb-4">
+          Por dia: alunos que <strong className="text-rose-300/90">entraram</strong> em inadimplência vs que{' '}
+          <strong className="text-emerald-300/90">recuperaram</strong> — responde ao filtro De/Até.
+        </p>
+        {loading ? (
+          <p className="text-sm text-slate-500 py-8 text-center">Carregando…</p>
+        ) : (
+          <MovementChart series={series} />
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-5">
+        <h3 className="text-sm font-semibold text-slate-200 mb-1">Estoque da base (EM CURSO)</h3>
+        <p className="text-[11px] text-slate-500 mb-4">Totais adimplente / inadimplente — estável quando a base não muda.</p>
         {loading ? (
           <p className="text-sm text-slate-500 py-8 text-center">Carregando…</p>
         ) : (
@@ -505,7 +647,7 @@ export function RematriculaTrackingPanel() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {[...series].reverse().slice(0, 14).map((row) => (
+                {[...series].reverse().slice(0, hasCustomRange ? series.length : 14).map((row) => (
                   <tr key={row.stat_date} className="hover:bg-slate-800/40">
                     <td className="px-3 py-2 text-slate-300">{fmtDay(row.stat_date)}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-200">{fmt(row.total_em_curso)}</td>
