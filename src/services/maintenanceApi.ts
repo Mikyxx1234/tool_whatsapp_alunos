@@ -2,6 +2,8 @@ import { apiAuthHeaders } from './apiAuth';
 
 export interface CleanStaleOrigemAtivacaoResponse {
   scanned: number;
+  from_log?: number;
+  from_dispatch_only?: number;
   cleaned: number;
   failed: number;
   errors: Array<{ lead_id: string; error: string }>;

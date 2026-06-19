@@ -5,6 +5,18 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-19 — Cleanup origem_ativacao: fallback por dispatch + verify no CLEAR
+
+- **Modelo usado:** Opus 4.7 (principal). Bugfix operacional.
+- **Problema:** job `clean-stale-origem-ativacao` lia só `activation_origem_ativacao_log` (SET ok sem CLEAR). Leads com campo preenchido no CRM mas **sem linha no log** (insert falhou silenciosamente no disparo) ou com CLEAR `ok` no log mas CRM ainda preenchido (PUT 200 sem efeito) ficavam eternamente com `origem_ativacao` e a simulação mostrava 0.
+- **Decisão:**
+  1. `listStaleSetEntries` — último SET por lead (subquery), stale se `created_at` > janela e sem CLEAR ok posterior.
+  2. `listStaleDispatchEntriesWithoutClear` — `activation_dispatch_events` `sent` > janela sem CLEAR ok no log após o disparo (cobre log ausente).
+  3. Cleanup une as duas listas (dedupe por `datacrazy_lead_id`).
+  4. `clearOrigemAtivacaoForLead` — após PUT vazio, GET best-effort; se campo ainda preenchido → `ok: false` (não registra CLEAR ok no log).
+  5. Disparo — `recordOrigemAtivacaoLog` usa fallback `origemAtivacaoForCategory(category)` se `value` vazio (evita NOT NULL / insert falho).
+- **Alternativas descartadas:** varrer todo o CRM por leads com campo set (caro, sem índice); confiar só no log (bug original).
+
 ### 15/06/2026 — Rematrícula: **PAUSADO** — sem denominador comum com Excel; recalcular rota
 
 - **Modelo usado:** Opus 4.7 (principal).

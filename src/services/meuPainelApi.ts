@@ -7,6 +7,7 @@ export const MEU_PAINEL_CATEGORIES = [
   'acessos-blackboard',
   'processos-caa',
   'provavel-evasao',
+  'rematricula',
 ] as const;
 
 export type MeuPainelCategory = (typeof MEU_PAINEL_CATEGORIES)[number];
@@ -379,4 +380,5 @@ export const CATEGORY_LABEL: Record<string, string> = {
   'acessos-blackboard': 'Acessos Blackboard',
   'processos-caa': 'Processos CAA',
   'provavel-evasao': 'Provável Evasão',
+  rematricula: 'Rematrícula',
 };

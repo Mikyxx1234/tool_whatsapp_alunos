@@ -34,6 +34,7 @@ import { requireApiKey } from '../middleware/requireApiKey.js';
 const VALID_OUTCOMES = new Set(['revertido', 'confirmado', 'sem_contato', 'outro']);
 const VALID_MEU_PAINEL_CATEGORIES = new Set([
   'docs-pendentes', 'financeiro', 'acessos-blackboard', 'processos-caa', 'provavel-evasao',
+  'rematricula',
 ]);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

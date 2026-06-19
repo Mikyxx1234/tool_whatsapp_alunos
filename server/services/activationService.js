@@ -1537,9 +1537,10 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
         { skipRead: true }
       );
       try {
+        const expectedOrigem = datacrazyClient.origemAtivacaoForCategory(category);
         await activationOrigemRepo.recordOrigemAtivacaoLog({
           category,
-          origemValue: origemResult.value ?? null,
+          origemValue: origemResult.value ?? expectedOrigem ?? '',
           datacrazyLeadId: String(lead.id ?? ''),
           masterKey: master_key,
           cpf: item.cpf || lead.taxId || null,

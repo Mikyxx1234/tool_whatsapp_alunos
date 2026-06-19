@@ -617,7 +617,11 @@ export default function JourneyRulesPage() {
                   <code className="bg-gray-100 px-1 rounded">origem_ativacao</code> do lead é
                   limpo no CRM DataCrazy (PUT value="") e respostas que chegarem além desta
                   janela <strong>são ignoradas</strong> em painéis (taxa de resposta, badges do
-                  roster). Auditoria em{' '}
+                  roster). A lista usa o log local{' '}
+                  <code className="bg-gray-100 px-1 rounded">activation_origem_ativacao_log</code>{' '}
+                  e, quando o log falhou no disparo, os envios em{' '}
+                  <code className="bg-gray-100 px-1 rounded">activation_dispatch_events</code>.
+                  Auditoria em{' '}
                   <code className="bg-gray-100 px-1 rounded">activation_responses</code> é
                   preservada — só não conta nas métricas.
                 </div>
@@ -713,6 +717,12 @@ export default function JourneyRulesPage() {
                         <strong>Limpos:</strong> {cleanupResult.cleaned} ·{' '}
                         <strong>Falhas:</strong> {cleanupResult.failed}
                       </p>
+                      {cleanupResult.from_dispatch_only != null && (
+                        <p className="opacity-75 tabular-nums">
+                          Log: {cleanupResult.from_log ?? '—'} · só disparo (sem log):{' '}
+                          {cleanupResult.from_dispatch_only}
+                        </p>
+                      )}
                       <p className="opacity-75">
                         Janela: {cleanupResult.stale_window_hours}h · Taxa CRM:{' '}
                         {cleanupResult.crm_rate_per_second}/s

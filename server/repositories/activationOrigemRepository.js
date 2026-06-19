@@ -23,21 +23,58 @@ import { query } from '../db/client.js';
 export async function listStaleSetEntries(hours) {
   const safeHours = Math.max(1, Math.floor(Number(hours) || 72));
   const { rows } = await query(
-    `select distinct on (l.datacrazy_lead_id)
-       l.datacrazy_lead_id, l.category, l.master_key, l.created_at as last_set_at,
-       l.origem_value, l.nome, l.rgm, l.cpf
-     from activation_origem_ativacao_log l
-     where l.status = 'ok'
-       and l.origem_value <> ''
-       and l.created_at < now() - ($1::int * interval '1 hour')
+    `select latest_set.datacrazy_lead_id, latest_set.category, latest_set.master_key,
+            latest_set.last_set_at, latest_set.origem_value,
+            latest_set.nome, latest_set.rgm, latest_set.cpf
+       from (
+         select distinct on (l.datacrazy_lead_id)
+           l.datacrazy_lead_id, l.category, l.master_key,
+           l.created_at as last_set_at, l.origem_value, l.nome, l.rgm, l.cpf
+         from activation_origem_ativacao_log l
+         where l.status = 'ok'
+           and l.origem_value <> ''
+         order by l.datacrazy_lead_id, l.created_at desc
+       ) latest_set
+      where latest_set.last_set_at < now() - ($1::int * interval '1 hour')
+        and not exists (
+          select 1 from activation_origem_ativacao_log l2
+          where l2.datacrazy_lead_id = latest_set.datacrazy_lead_id
+            and l2.created_at > latest_set.last_set_at
+            and l2.origem_value = ''
+            and l2.status = 'ok'
+        )`,
+    [safeHours]
+  );
+  return rows;
+}
+
+/**
+ * Dispatches `sent` há mais de N horas sem CLEAR ok no log depois do disparo.
+ * Cobre leads cujo PUT gravou no CRM mas o insert no log falhou (silencioso).
+ *
+ * @param {number} hours
+ */
+export async function listStaleDispatchEntriesWithoutClear(hours) {
+  const safeHours = Math.max(1, Math.floor(Number(hours) || 72));
+  const { rows } = await query(
+    `select distinct on (d.datacrazy_lead_id)
+       d.datacrazy_lead_id, d.category, d.master_key,
+       d.created_at as last_set_at,
+       '' as origem_value,
+       d.nome, d.rgm, null::text as cpf
+     from activation_dispatch_events d
+     where d.status = 'sent'
+       and d.datacrazy_lead_id is not null
+       and trim(d.datacrazy_lead_id) <> ''
+       and d.created_at < now() - ($1::int * interval '1 hour')
        and not exists (
          select 1 from activation_origem_ativacao_log l2
-         where l2.datacrazy_lead_id = l.datacrazy_lead_id
-           and l2.created_at > l.created_at
+         where l2.datacrazy_lead_id = d.datacrazy_lead_id
            and l2.origem_value = ''
            and l2.status = 'ok'
+           and l2.created_at >= d.created_at
        )
-     order by l.datacrazy_lead_id, l.created_at desc`,
+     order by d.datacrazy_lead_id, d.created_at desc`,
     [safeHours]
   );
   return rows;

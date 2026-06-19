@@ -800,7 +800,8 @@ async function setOrigemAtivacaoForCategory(leadId, category) {
  * @param {string} leadId
  * @returns {Promise<{ ok: boolean, error?: string, status?: number }>}
  */
-async function clearOrigemAtivacaoForLead(leadId) {
+async function clearOrigemAtivacaoForLead(leadId, opts = {}) {
+  const skipRead = Boolean(opts.skipRead);
   if (!ORIGEM_ATIVACAO_FIELD_ID) {
     return {
       ok: false,
@@ -809,7 +810,34 @@ async function clearOrigemAtivacaoForLead(leadId) {
   }
   try {
     await updateLeadAdditionalField(leadId, ORIGEM_ATIVACAO_FIELD_ID, '');
-    return { ok: true };
+    if (skipRead) return { ok: true };
+
+    let read = null;
+    let readErrMsg = null;
+    try {
+      const lead = await getLeadById(leadId);
+      read = lead
+        ? extractAdditionalFieldValue(lead, ORIGEM_ATIVACAO_FIELD, ORIGEM_ATIVACAO_FIELD_ID)
+        : null;
+    } catch (readErr) {
+      readErrMsg = readErr.message;
+    }
+
+    if (read != null && read.trim() !== '') {
+      return {
+        ok: false,
+        verified: false,
+        error: `PUT 200 mas campo ainda preenchido: "${read.trim()}"`,
+        field: ORIGEM_ATIVACAO_FIELD,
+      };
+    }
+
+    if (readErrMsg) {
+      console.warn(
+        `[origem-ativacao] CLEAR PUT OK mas sem leitura lead=${leadId}: ${readErrMsg}`
+      );
+    }
+    return { ok: true, verified: read != null };
   } catch (err) {
     return {
       ok: false,

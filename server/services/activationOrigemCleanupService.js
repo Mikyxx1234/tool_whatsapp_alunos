@@ -40,7 +40,22 @@ export async function cleanStaleOrigemAtivacao({ dryRun = false } = {}) {
     Math.floor(Number(settings?.origem_ativacao_stale_hours) || 72)
   );
 
-  const stale = await origemRepo.listStaleSetEntries(hours);
+  const [fromLog, fromDispatch] = await Promise.all([
+    origemRepo.listStaleSetEntries(hours),
+    origemRepo.listStaleDispatchEntriesWithoutClear(hours),
+  ]);
+
+  /** @type {Map<string, object>} */
+  const staleMap = new Map();
+  for (const entry of fromLog) {
+    staleMap.set(entry.datacrazy_lead_id, { ...entry, source: 'log' });
+  }
+  for (const entry of fromDispatch) {
+    if (!staleMap.has(entry.datacrazy_lead_id)) {
+      staleMap.set(entry.datacrazy_lead_id, { ...entry, source: 'dispatch' });
+    }
+  }
+  const stale = [...staleMap.values()];
 
   let cleaned = 0;
   let failed = 0;
@@ -97,6 +112,8 @@ export async function cleanStaleOrigemAtivacao({ dryRun = false } = {}) {
 
   return {
     scanned: stale.length,
+    from_log: fromLog.length,
+    from_dispatch_only: stale.length - fromLog.length,
     cleaned,
     failed,
     errors: errors.slice(0, 20),
