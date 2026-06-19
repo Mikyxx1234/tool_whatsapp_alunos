@@ -414,12 +414,13 @@ router.get('/:category/roster/keys', async (req, res) => {
     assertActivationCategory(category);
     const activationStage = req.query.activation_stage;
     const bbSubgrupo = req.query.bb_subgrupo || null;
+    const rematSubgrupo = req.query.remat_subgrupo || null;
     const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : undefined;
     const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
     const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
-    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, ciclo, responseFilter, sort });
+    const data = await getActivationRosterKeys(category, { activationStage, bbSubgrupo, rematSubgrupo, ciclo, responseFilter, sort });
     res.json(data);
   } catch (err) {
     handleError(res, err);
@@ -437,12 +438,13 @@ router.get('/:category/roster', async (req, res) => {
     const offset = parseInt(req.query.offset, 10) || 0;
     const activationStage = req.query.activation_stage;
     const bbSubgrupo = req.query.bb_subgrupo || null;
+    const rematSubgrupo = req.query.remat_subgrupo || null;
     const ciclo = req.query.ciclo ? String(req.query.ciclo).trim() : undefined;
     const VALID_RESPONSE_FILTERS = new Set(['all', 'responded', 'not_responded']);
     const responseFilterRaw = String(req.query.responseFilter || req.query.response_filter || '');
     const responseFilter = VALID_RESPONSE_FILTERS.has(responseFilterRaw) ? responseFilterRaw : 'all';
     const sort = req.query.sort ? String(req.query.sort).trim() : undefined;
-    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, ciclo, responseFilter, sort });
+    const data = await getActivationRoster(category, { limit, offset, activationStage, bbSubgrupo, rematSubgrupo, ciclo, responseFilter, sort });
     res.json(data);
   } catch (err) {
     handleError(res, err);

@@ -6,13 +6,13 @@ import { CaaFunnelPanel } from '../components/CaaFunnelPanel';
 import { ConsultoresPanel } from '../components/ConsultoresPanel';
 import { Header } from '../components/Header';
 import { MatriculadosComparisonPanel } from '../components/MatriculadosComparisonPanel';
+import { RematriculaReportPanel } from '../components/RematriculaReportPanel';
 import {
   isComparisonBuilding,
   reportApi,
   type MatriculadosComparisonResponse,
   type ReportSlug,
 } from '../services/reportApi';
-import type { StudentDTO } from '../services/studentApi';
 import { academicTermApi, type AcademicTermDTO } from '../services/academicTermApi';
 
 const REPORT_CARDS: {
@@ -35,13 +35,25 @@ const REPORT_CARDS: {
     id: 'financeiro',
     title: 'Financeiro',
     description:
-      'Indicadores em raw_data: situação financeira pendente, inadimplência ou status financeiro.',
+      'Mensalidade em aberto (inclui quem ainda está no prazo). Cruzamento no painel de comparação.',
+  },
+  {
+    id: 'inadimplentes-vencidos',
+    title: 'Inadimplentes Vencidos',
+    description:
+      'Mensalidade vencida (após o prazo). Base legada; rematrícula usa SIAA/Portal em Bases.',
+  },
+  {
+    id: 'rematricula',
+    title: 'Rematrícula',
+    description:
+      'Upload SIAA ou Portal — SIT_ATUAL=EM CURSO. Filtro Adimplente / Inadimplente no relatório abaixo.',
   },
   {
     id: 'provavel-evasao',
     title: 'Provável evasão',
     description:
-      'Último snapshot importado em Bases (RGM, Ciclo, Faixa Risco Evasão). Cruzamento com matriculados no painel abaixo.',
+      'Último snapshot importado em Bases (RGM, Ciclo, Faixa Risco Evasão). Cruzamento no painel de comparação.',
   },
   {
     id: 'acessos-blackboard',
@@ -56,72 +68,6 @@ const REPORT_CARDS: {
   },
 ];
 
-function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR');
-}
-
-function fmtDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR');
-}
-
-function pickRaw(s: StudentDTO, keys: string[]): string {
-  const r = (s as StudentDTO & { raw_data?: Record<string, unknown> }).raw_data;
-  if (!r || typeof r !== 'object') return '—';
-  const parts: string[] = [];
-  for (const k of keys) {
-    const v = r[k];
-    if (v === undefined || v === null) continue;
-    const t = String(v).trim();
-    if (!t) continue;
-    parts.push(`${k}: ${t.length > 80 ? `${t.slice(0, 80)}…` : t}`);
-  }
-  return parts.length ? parts.join(' · ') : '—';
-}
-
-function detailColumn(slug: ReportSlug, s: StudentDTO): string {
-  switch (slug) {
-    case 'matriculados':
-      return [fmtDate(s.data_matricula), s.tipo_matricula || ''].filter(Boolean).join(' · ') || '—';
-    case 'docs-pendentes':
-      return pickRaw(s, [
-        'docs_pendentes',
-        'documentacao',
-        'pendencia_documental',
-        'status_documentacao',
-      ]);
-    case 'financeiro':
-      return pickRaw(s, [
-        'situacao_financeira',
-        'financeiro',
-        'inadimplente',
-        'status_financeiro',
-      ]);
-    case 'acessos-blackboard':
-      return [
-        fmtDateTime(s.ultimo_acesso_blackboard),
-        s.minutos_acesso != null ? `${s.minutos_acesso} min` : '',
-        s.total_interacoes != null ? `${s.total_interacoes} interações` : '',
-      ]
-        .filter(Boolean)
-        .join(' · ') || '—';
-    case 'processos-caa':
-      return pickRaw(s, ['processo_caa', 'protocolo_caa', 'status_caa', 'caa']);
-    case 'provavel-evasao':
-      return pickRaw(s, [
-        'faixa_risco_evasao',
-        'Faixa Risco Evasão',
-        'evasao_media',
-        'Evasão Média',
-      ]);
-    default:
-      return '—';
-  }
-}
-
 export default function ReportsPage() {
   const [terms, setTerms] = useState<AcademicTermDTO[]>([]);
   const [termId, setTermId] = useState('');
@@ -130,15 +76,11 @@ export default function ReportsPage() {
   const [counts, setCounts] = useState<Partial<Record<ReportSlug, number>>>({});
   const [countHints, setCountHints] = useState<Partial<Record<ReportSlug, string>>>({});
   const [caaOpenCount, setCaaOpenCount] = useState<number | null>(null);
-  const [students, setStudents] = useState<StudentDTO[]>([]);
-  const [total, setTotal] = useState(0);
   const [loadingOverview, setLoadingOverview] = useState(true);
-  const [loadingList, setLoadingList] = useState(true);
   const [comparison, setComparison] = useState<MatriculadosComparisonResponse | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(true);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
 
   const filters = useMemo(
     () => ({
@@ -212,22 +154,6 @@ export default function ReportsPage() {
     }
   }, []);
 
-  const loadList = useCallback(async () => {
-    setLoadingList(true);
-    setListError(null);
-    try {
-      const r = await reportApi.list(active, { ...filters, limit: 200, offset: 0 });
-      setStudents(r.students);
-      setTotal(r.total);
-    } catch (e) {
-      setListError(e instanceof Error ? e.message : 'Erro ao carregar lista');
-      setStudents([]);
-      setTotal(0);
-    } finally {
-      setLoadingList(false);
-    }
-  }, [active, filters]);
-
   useEffect(() => {
     academicTermApi
       .list({})
@@ -247,10 +173,6 @@ export default function ReportsPage() {
     }, delay);
     return () => window.clearTimeout(t);
   }, [loadComparison, loadingOverview, overviewError]);
-
-  useEffect(() => {
-    void loadList();
-  }, [loadList]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -281,14 +203,13 @@ export default function ReportsPage() {
                 await reportApi.overviewInvalidate().catch(() => {});
                 await loadOverview();
                 await loadComparison({ refresh: true });
-                await loadList();
               })();
             }}
-            disabled={loadingOverview || loadingList || loadingComparison}
+            disabled={loadingOverview || loadingComparison}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50"
           >
             <RefreshCw
-              className={`w-4 h-4 ${loadingOverview || loadingList || loadingComparison ? 'animate-spin' : ''}`}
+              className={`w-4 h-4 ${loadingOverview || loadingComparison ? 'animate-spin' : ''}`}
             />
             Atualizar
           </button>
@@ -380,80 +301,7 @@ export default function ReportsPage() {
 
         {active === 'processos-caa' && <ConsultoresPanel />}
 
-        {active !== 'processos-caa' && (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-gray-900">
-                {REPORT_CARDS.find((c) => c.id === active)?.title ?? active}
-              </h3>
-              <span className="text-xs text-gray-500">
-                {loadingList ? 'Carregando…' : `Mostrando ${students.length} de ${total.toLocaleString('pt-BR')}`}
-              </span>
-            </div>
-            {listError && (
-              <div className="mx-4 mt-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 px-3 py-2">
-                Lista CRM: {listError} (os cards acima vêm das planilhas em Bases.)
-              </div>
-            )}
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Aluno</th>
-                    <th className="px-3 py-2 text-left font-medium">RGM</th>
-                    <th className="px-3 py-2 text-left font-medium">Curso</th>
-                    <th className="px-3 py-2 text-left font-medium">Polo</th>
-                    <th className="px-3 py-2 text-left font-medium">Status</th>
-                    <th className="px-3 py-2 text-left font-medium min-w-[220px]">Detalhe</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {students.length === 0 && !loadingList ? (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500 max-w-xl mx-auto">
-                        {(counts[active] ?? 0) > 0 ? (
-                          <>
-                            Há {(counts[active] ?? 0).toLocaleString('pt-BR')} linhas na planilha importada (
-                            {REPORT_CARDS.find((c) => c.id === active)?.title}), mas nenhum aluno na base CRM
-                            com os filtros atuais. Use o painel de comparação acima para cruzar matriculados ×
-                            outras bases.
-                          </>
-                        ) : (
-                          'Nenhum registro para este relatório com os filtros atuais.'
-                        )}
-                      </td>
-                    </tr>
-                  ) : (
-                    students.map((s) => (
-                      <tr key={s.id} className="hover:bg-gray-50/60">
-                        <td className="px-3 py-2">
-                          <Link
-                            to={`/students/${s.id}`}
-                            className="font-medium text-whatsapp-700 hover:underline"
-                          >
-                            {s.nome}
-                          </Link>
-                          {s.email && <div className="text-xs text-gray-500">{s.email}</div>}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-700">{s.rgm || '—'}</td>
-                        <td className="px-3 py-2 text-gray-700 max-w-[180px] truncate" title={s.curso || ''}>
-                          {s.curso || '—'}
-                        </td>
-                        <td className="px-3 py-2 text-gray-700 max-w-[140px] truncate" title={s.polo || ''}>
-                          {s.polo || '—'}
-                        </td>
-                        <td className="px-3 py-2 text-gray-700">{s.status}</td>
-                        <td className="px-3 py-2 text-xs text-gray-600 whitespace-pre-wrap break-words max-w-xl">
-                          {detailColumn(active, s)}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        {active === 'rematricula' && <RematriculaReportPanel onRefreshOverview={() => void loadOverview()} />}
       </main>
     </div>
   );

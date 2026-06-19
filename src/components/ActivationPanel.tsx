@@ -5,6 +5,7 @@ import { ActivationListActions } from './ActivationListActions';
 import { ActivationRosterTable } from './ActivationRosterTable';
 import { ActivationTemplateMapping } from './ActivationTemplateMapping';
 import type { ActivationCategory } from '../services/activationApi';
+import { activationApi } from '../services/activationApi';
 import {
   isComparisonBuilding,
   reportApi,
@@ -22,6 +23,7 @@ const CATEGORIES: { id: ActivationCategory; label: string; comparisonId: Activat
   },
   { id: 'processos-caa', label: 'CAA cancelamento', comparisonId: 'processos-caa' },
   { id: 'aguardando-inicio', label: 'Aguardando início', comparisonId: 'aguardando-inicio' },
+  { id: 'rematricula', label: 'Rematrícula', comparisonId: 'rematricula' },
 ];
 
 function activationQueueCount(
@@ -99,6 +101,17 @@ export function ActivationPanel() {
       }
     };
 
+    const overrideRematriculaCount = async (
+      map: Partial<Record<ActivationCategory, number>>
+    ) => {
+      try {
+        const r = await activationApi.roster('rematricula', { limit: 1, offset: 0 });
+        if (!cancelled) map.rematricula = r.total;
+      } catch {
+        /* fila depende de bases importadas */
+      }
+    };
+
     const load = async () => {
       try {
         const first = await reportApi.matriculadosComparison();
@@ -109,6 +122,7 @@ export function ActivationPanel() {
             map[c.id] = activationQueueCount(first.comparisons, c.comparisonId);
           }
           await overrideCaaCount(map);
+          await overrideRematriculaCount(map);
           if (!cancelled) setIntersectionByCat(map);
           return;
         }
@@ -123,6 +137,7 @@ export function ActivationPanel() {
                 map[c.id] = activationQueueCount(data.comparisons, c.comparisonId);
               }
               await overrideCaaCount(map);
+              await overrideRematriculaCount(map);
               if (!cancelled) setIntersectionByCat(map);
             }
             break;

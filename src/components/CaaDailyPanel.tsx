@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { AlertTriangle, ArrowUpRight, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   reportApi,
   type CaaStatus,
@@ -10,6 +10,8 @@ import {
 } from '../services/reportApi';
 
 type TabId = 'novos' | 'perdidos' | 'revertidos';
+
+const CAA_EXPANDED_STORAGE_KEY = 'reports_caa_expanded_v1';
 
 const TAB_TO_STATUS: Record<TabId, CaaStatus[]> = {
   novos: ['open'],
@@ -46,10 +48,17 @@ interface Props {
 }
 
 export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
+  const [expanded, setExpanded] = useState(() => {
+    try {
+      return localStorage.getItem(CAA_EXPANDED_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [summary, setSummary] = useState<CaaSummaryResponse | null>(null);
   const [items, setItems] = useState<CaaTransitionItem[]>([]);
   const [tab, setTab] = useState<TabId>('perdidos');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [funnelCounts, setFunnelCounts] = useState<CaaFunnelCounts | null>(null);
   const [cicloFilter, setCicloFilter] = useState('all');
@@ -72,6 +81,18 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
       ciclo: c,
       value: Number(summaryByCiclo[c]?.transitions?.[key] ?? 0),
     }));
+  };
+
+  const toggleExpanded = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(CAA_EXPANDED_STORAGE_KEY, next ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
   };
 
   const load = useCallback(
@@ -109,16 +130,64 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
   );
 
   useEffect(() => {
+    const scope: 'hours' | 'last_snapshot' = useHoursScope ? 'hours' : 'last_snapshot';
+    const args = useHoursScope ? { scope, hours } : { scope };
+    if (!expanded) {
+      void reportApi
+        .caaSummary(args)
+        .then(setSummary)
+        .catch(() => {})
+        .finally(() => setLoading(false));
+      return;
+    }
     void load(tab);
-  }, [load, tab]);
+  }, [load, tab, expanded, hours, useHoursScope]);
+
+  const pendentesBadge =
+    summary?.current.open != null
+      ? summary.current.open.toLocaleString('pt-BR')
+      : loading && expanded
+        ? '…'
+        : null;
+
+  const subtitleCollapsed =
+    summary?.snapshot?.file_name ??
+    (useHoursScope ? `Últimas ${hours ?? 24}h` : 'Clique para expandir');
 
   return (
-    <section className="bg-white rounded-xl border border-gray-100 shadow-sm">
-      <header className="flex flex-wrap items-end justify-between gap-3 px-5 py-4 border-b border-gray-100">
+    <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={toggleExpanded}
+        className={`w-full flex items-start gap-2 px-5 py-4 text-left hover:bg-gray-50/80 transition-colors ${
+          expanded ? 'border-b border-gray-100' : ''
+        }`}
+      >
+        <span className="mt-0.5 text-gray-400 flex-shrink-0">
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="text-base font-semibold text-gray-900">
+              CAA — Painel D+1 {useHoursScope ? `(últimas ${hours ?? 24}h)` : '(último export)'}
+            </span>
+            {pendentesBadge != null && (
+              <span className="text-xs font-semibold tabular-nums text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                Pendentes: {pendentesBadge}
+              </span>
+            )}
+          </span>
+          {!expanded && (
+            <span className="block text-xs text-gray-500 mt-0.5 truncate">{subtitleCollapsed}</span>
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <>
+      <header className="flex flex-wrap items-end justify-between gap-3 px-5 py-3 border-b border-gray-100 bg-gray-50/50">
         <div>
-          <h3 className="text-base font-semibold text-gray-900">
-            CAA — Painel D+1 {useHoursScope ? `(últimas ${hours ?? 24}h)` : '(último export)'}
-          </h3>
           <p className="text-xs text-gray-500 mt-0.5">
             {summary?.snapshot ? (
               summary.needs_previous ? (
@@ -314,6 +383,8 @@ export function CaaDailyPanel({ hours, useHoursScope = false }: Props = {}) {
           </div>
         )}
       </div>
+        </>
+      )}
     </section>
   );
 }
@@ -405,7 +476,7 @@ function TabButton({
   id: TabId;
   active: TabId;
   onClick: (id: TabId) => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const selected = active === id;
   return (

@@ -13,6 +13,14 @@ import { requireApiKey } from '../middleware/requireApiKey.js';
 import { getCaaFunnel } from '../services/caaFunnelService.js';
 import { getActivationConversion } from '../services/activationConversionService.js';
 import { getConsultorReport } from '../services/consultorReportService.js';
+import {
+  getRematriculaReportDetail,
+  getRematriculaReportSummary,
+} from '../services/rematriculaReportService.js';
+import {
+  captureRematriculaDailyPoint,
+  getRematriculaTrackingDashboard,
+} from '../services/rematriculaTrackingService.js';
 import { getRgmToCicloMap, getAvailableCiclos } from '../services/cicloResolverService.js';
 import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 
@@ -56,9 +64,18 @@ router.get('/overview', async (req, res) => {
     if (!isDbConfigured()) {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
-    const { counts, count_hints } = await reportOverviewCache.getCachedOverview(() =>
-      reportRepo.overviewFromSnapshots(parseFilters(req))
-    );
+    const { counts, count_hints } = await reportOverviewCache.getCachedOverview(async () => {
+      const base = await reportRepo.overviewFromSnapshots(parseFilters(req));
+      try {
+        const remat = await getRematriculaReportSummary();
+        base.counts.rematricula = remat.total_fila;
+        base.count_hints.rematricula = remat.hint;
+      } catch (err) {
+        console.warn('[reports] overview rematrícula:', err.message);
+        base.counts.rematricula = 0;
+      }
+      return base;
+    });
     res.json({ counts, count_hints });
   } catch (err) {
     handleError(res, err);
@@ -286,9 +303,53 @@ router.get('/consultores', requireApiKey, async (req, res) => {
   }
 });
 
+router.get('/rematricula/tracking', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+    const capture = String(req.query.capture || '') === '1';
+    const data = await getRematriculaTrackingDashboard({ days, capture });
+    res.json(data);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+router.post('/rematricula/tracking/capture', requireApiKey, async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const row = await captureRematriculaDailyPoint({ reason: 'manual', force: true });
+    res.json({ ok: true, row });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+router.get('/rematricula', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const subgrupo = req.query.subgrupo ? String(req.query.subgrupo) : 'all';
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const data = await getRematriculaReportDetail({ subgrupo, limit, offset });
+    res.json(data);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 router.get('/:type', async (req, res) => {
   try {
     const type = req.params.type;
+    if (type === 'rematricula') {
+      return res.status(404).json({ error: 'Use GET /api/reports/rematricula' });
+    }
     if (type === 'matriculados-comparison' || type === 'matriculados-comparison/status') {
       return res.status(404).json({
         error: 'Use GET /api/reports/matriculados-comparison ou /status',

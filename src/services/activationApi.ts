@@ -33,7 +33,10 @@ export type ActivationCategory =
   | 'provavel-evasao'
   | 'acessos-blackboard'
   | 'processos-caa'
-  | 'aguardando-inicio';
+  | 'aguardando-inicio'
+  | 'rematricula';
+
+export type RematSubgrupo = 'adimplente' | 'inadimplente';
 
 export type BbSubgrupo =
   | 'podia_e_nao_acessou'
@@ -128,6 +131,8 @@ export interface ActivationRosterItem extends ActivationListItem {
   bb_dias_apos_inicio?: number | null;
   bb_term_codigo?: string | null;
   bb_subgrupo?: BbSubgrupo;
+  remat_subgrupo?: RematSubgrupo;
+  remat_ciclo_origem?: string;
   dias_ate_inicio?: number | null;
   caa_janela?: CaaJanelaInfo | null;
 }
@@ -153,10 +158,16 @@ export interface ActivationRosterResponse {
     nao_acessa_faz_tempo: number;
     acessou_pouco: number;
   };
+  remat_subgrupo_counts?: {
+    adimplente: number;
+    inadimplente: number;
+  };
   /** Ciclos distintos presentes no snapshot de matriculados (antes do filtro de ciclo). */
   available_ciclos?: string[];
   /** Contagem de alunos por ciclo na fila completa (antes de qualquer filtro). */
   counts_by_ciclo?: Record<string, number>;
+  /** Aviso operacional (ex.: base auxiliar ausente). */
+  warning?: string;
 }
 
 export interface ActivationRosterKeysResponse {
@@ -286,6 +297,7 @@ export const activationApi = {
       offset?: number;
       activationStage?: ActivationStageFilter;
       bbSubgrupo?: BbSubgrupo | 'all';
+      rematSubgrupo?: RematSubgrupo | 'all';
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
       sort?: ActivationRosterSort | null;
@@ -299,6 +311,9 @@ export const activationApi = {
     }
     if (opts?.bbSubgrupo && opts.bbSubgrupo !== 'all') {
       params.set('bb_subgrupo', opts.bbSubgrupo);
+    }
+    if (opts?.rematSubgrupo && opts.rematSubgrupo !== 'all') {
+      params.set('remat_subgrupo', opts.rematSubgrupo);
     }
     if (opts?.ciclo) {
       params.set('ciclo', opts.ciclo);
@@ -318,6 +333,7 @@ export const activationApi = {
     opts?: {
       activationStage?: ActivationStageFilter;
       bbSubgrupo?: BbSubgrupo | 'all';
+      rematSubgrupo?: RematSubgrupo | 'all';
       ciclo?: string;
       responseFilter?: ActivationResponseFilter;
       sort?: ActivationRosterSort | null;
@@ -329,6 +345,9 @@ export const activationApi = {
     }
     if (opts?.bbSubgrupo && opts.bbSubgrupo !== 'all') {
       params.set('bb_subgrupo', opts.bbSubgrupo);
+    }
+    if (opts?.rematSubgrupo && opts.rematSubgrupo !== 'all') {
+      params.set('remat_subgrupo', opts.rematSubgrupo);
     }
     if (opts?.ciclo) {
       params.set('ciclo', opts.ciclo);

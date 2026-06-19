@@ -37,6 +37,7 @@ export const ORIGEM_ATIVACAO_BY_CATEGORY = {
   'provavel-evasao': 'Evasao',
   'acessos-blackboard': 'BB',
   'aguardando-inicio': 'AguardInicio',
+  rematricula: 'Remat',
 };
 
 export function origemAtivacaoForCategory(category) {

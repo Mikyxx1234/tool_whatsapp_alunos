@@ -21,6 +21,7 @@ const CATEGORY_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'acessos-blackboard', label: 'Sem acesso BB' },
   { value: 'provavel-evasao', label: 'Provável evasão' },
   { value: 'aguardando-inicio', label: 'Aguardando início' },
+  { value: 'rematricula', label: 'Rematrícula' },
 ];
 
 const PERIOD_OPTIONS = [

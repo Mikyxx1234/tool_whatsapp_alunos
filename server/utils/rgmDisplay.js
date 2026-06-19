@@ -1,8 +1,17 @@
 /** Colunas que carregam RGM nas planilhas importadas. */
 export const RGM_COLUMN_KEYS = new Set(
-  ['RGM', 'Rgm', 'rgm', 'Matricula', 'matricula', 'MATRICULA', 'Matrícula', 'matrícula'].map(
-    (k) => k.toLowerCase()
-  )
+  [
+    'RGM',
+    'Rgm',
+    'rgm',
+    'RGM_ALUN',
+    'RGM_ALUNO',
+    'Matricula',
+    'matricula',
+    'MATRICULA',
+    'Matrícula',
+    'matrícula',
+  ].map((k) => k.toLowerCase())
 );
 
 /**

@@ -10,6 +10,7 @@ import {
   type ActivationRosterSort,
   type ActivationStageFilter,
   type BbSubgrupo,
+  type RematSubgrupo,
 } from '../services/activationApi';
 
 function fmtRelative(iso: string): string {
@@ -177,6 +178,35 @@ const BB_SUBGRUPO_BADGE: Record<BbSubgrupo, { cls: string; label: string }> = {
   },
 };
 
+const REMAT_SUBGRUPO_FILTERS: {
+  id: RematSubgrupo | 'all';
+  label: string;
+  title: string;
+}[] = [
+  { id: 'all', label: 'Todos', title: 'Adimplentes e inadimplentes vencidos' },
+  {
+    id: 'inadimplente',
+    label: 'Inadimplente',
+    title: 'Mensalidade vencida (consta em Inadimplentes Vencidos)',
+  },
+  {
+    id: 'adimplente',
+    label: 'Adimplente',
+    title: 'EM CURSO em 2026/1 sem mensalidade vencida',
+  },
+];
+
+const REMAT_SUBGRUPO_BADGE: Record<RematSubgrupo, { cls: string; label: string }> = {
+  inadimplente: {
+    cls: 'bg-rose-50 text-rose-700 border-rose-200',
+    label: 'Inadimplente',
+  },
+  adimplente: {
+    cls: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    label: 'Adimplente',
+  },
+};
+
 const STAGE_FILTERS: { id: ActivationStageFilter; label: string; title: string }[] = [
   { id: 'all', label: 'Todas', title: 'Toda a fila' },
   { id: 'first', label: '1ª ativação', title: 'Nunca ativou nesta categoria' },
@@ -225,6 +255,7 @@ export function ActivationRosterTable({
   const [stageFilter, setStageFilter] = useState<ActivationStageFilter>('all');
   const [responseFilter, setResponseFilter] = useState<ActivationResponseFilter>('not_responded');
   const [bbSubgrupo, setBbSubgrupo] = useState<BbSubgrupo | 'all'>('all');
+  const [rematSubgrupo, setRematSubgrupo] = useState<RematSubgrupo | 'all'>('all');
   const [cicloFilter, setCicloFilter] = useState('');
   const [availableCiclos, setAvailableCiclos] = useState<string[]>([]);
   const [totalUnfiltered, setTotalUnfiltered] = useState<number | null>(null);
@@ -232,8 +263,10 @@ export function ActivationRosterTable({
   const [skippedLimbo, setSkippedLimbo] = useState(0);
   const [urgencyCounts, setUrgencyCounts] = useState<{ alta: number; media: number; normal: number; sem_turma: number } | null>(null);
   const [subgrupoCounts, setSubgrupoCounts] = useState<{ podia_e_nao_acessou: number; nao_acessa_faz_tempo: number; acessou_pouco: number } | null>(null);
+  const [rematSubgrupoCounts, setRematSubgrupoCounts] = useState<{ adimplente: number; inadimplente: number } | null>(null);
   const [bulkSelecting, setBulkSelecting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   // Sort por última ativação. null = ordem natural (default).
   // Quando setado, backend esconde leads nunca-ativados.
   const [sort, setSort] = useState<ActivationRosterSort | null>(null);
@@ -248,6 +281,7 @@ export function ActivationRosterTable({
     async (pageIndex: number) => {
       setLoading(true);
       setError(null);
+      setWarning(null);
       const slowTimer = window.setTimeout(() => setSlowLoad(true), 8000);
       try {
         const r = await activationApi.roster(category, {
@@ -255,6 +289,7 @@ export function ActivationRosterTable({
           offset: pageIndex * PAGE_SIZE,
           activationStage: stageFilter,
           bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
+          rematSubgrupo: category === 'rematricula' ? rematSubgrupo : undefined,
           ciclo: cicloFilter || undefined,
           responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
           sort,
@@ -265,8 +300,10 @@ export function ActivationRosterTable({
         setSkippedLimbo(r.skipped_bb_limbo ?? 0);
         setUrgencyCounts(r.bb_urgency_counts ?? null);
         setSubgrupoCounts(r.bb_subgrupo_counts ?? null);
+        setRematSubgrupoCounts(r.remat_subgrupo_counts ?? null);
         setAvailableCiclos(r.available_ciclos ?? []);
         setSortHiddenUnactivated(r.sort_hidden_unactivated ?? 0);
+        setWarning(r.warning ?? null);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erro ao carregar fila');
         setItems([]);
@@ -277,12 +314,12 @@ export function ActivationRosterTable({
         setLoading(false);
       }
     },
-    [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter, sort]
+    [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort]
   );
 
   useEffect(() => {
     setPage(0);
-  }, [category, stageFilter, responseFilter, bbSubgrupo, cicloFilter, sort]);
+  }, [category, stageFilter, responseFilter, bbSubgrupo, rematSubgrupo, cicloFilter, sort]);
 
   /** Ciclo do click no header da coluna "Última ativação": null → oldest → newest → null. */
   const cycleSort = useCallback(() => {
@@ -319,6 +356,7 @@ export function ActivationRosterTable({
           const r = await activationApi.rosterKeys(category, {
             activationStage: stageFilter,
             bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
+            rematSubgrupo: category === 'rematricula' ? rematSubgrupo : undefined,
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
             sort,
@@ -351,6 +389,7 @@ export function ActivationRosterTable({
             offset: targetPage * PAGE_SIZE,
             activationStage: stageFilter,
             bbSubgrupo: category === 'acessos-blackboard' ? bbSubgrupo : undefined,
+            rematSubgrupo: category === 'rematricula' ? rematSubgrupo : undefined,
             ciclo: cicloFilter || undefined,
             responseFilter: responseFilter !== 'all' ? responseFilter : undefined,
             sort,
@@ -371,6 +410,7 @@ export function ActivationRosterTable({
       stageFilter,
       responseFilter,
       bbSubgrupo,
+      rematSubgrupo,
       cicloFilter,
       sort,
       safePage,
@@ -458,6 +498,12 @@ export function ActivationRosterTable({
         </div>
       )}
 
+      {warning && !error && (
+        <div className="mx-4 mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          {warning} Importe em <strong>Bases → Inadimplentes Vencidos</strong> (planilha &quot;Alunos com mensalidade em aberto&quot;).
+        </div>
+      )}
+
       {category === 'acessos-blackboard' && subgrupoCounts && (
         <div className="px-4 pt-2 pb-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -489,6 +535,40 @@ export function ActivationRosterTable({
               );
             })}
           </div>
+        </div>
+      )}
+      {category === 'rematricula' && rematSubgrupoCounts && (
+        <div className="px-4 pt-2 pb-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-medium text-gray-600 mr-1">Rematrícula:</span>
+            {REMAT_SUBGRUPO_FILTERS.map((f) => {
+              const count =
+                f.id === 'all'
+                  ? rematSubgrupoCounts.adimplente + rematSubgrupoCounts.inadimplente
+                  : rematSubgrupoCounts[f.id];
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  title={f.title}
+                  onClick={() => { setRematSubgrupo(f.id); setPage(0); }}
+                  className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-colors ${
+                    rematSubgrupo === f.id
+                      ? 'border-whatsapp-500 bg-whatsapp-50 text-whatsapp-800'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {f.label}
+                  {count != null && (
+                    <span className="ml-1 tabular-nums opacity-75">({count})</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1 text-[10px] text-gray-500">
+            Fila: upload em Bases → Rematrícula (SIAA ou Portal), <strong>SIT_ATUAL = EM CURSO</strong>. Filtro financeiro: Adimplente / Inadimplente.
+          </p>
         </div>
       )}
       {availableCiclos.length > 1 && (
@@ -664,6 +744,7 @@ export function ActivationRosterTable({
               <th className="px-3 py-2 text-left font-medium">Ciclo</th>
               <th className="px-3 py-2 text-left font-medium">Polo</th>
               {category === 'acessos-blackboard' && <th className="px-3 py-2 text-left font-medium">Grupo</th>}
+              {category === 'rematricula' && <th className="px-3 py-2 text-left font-medium">Financeiro</th>}
               {category === 'aguardando-inicio' && <th className="px-3 py-2 text-left font-medium">Início em</th>}
               {category === 'processos-caa' && (
                 <th className="px-3 py-2 text-left font-medium" title="Tempo restante na janela 48h CAA">
@@ -700,7 +781,7 @@ export function ActivationRosterTable({
               <TableLoadingState
                 colSpan={
                   (category === 'processos-caa' ? 10
-                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 9
+                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'rematricula' ? 9
                     : 8) + (selectedMasterKeys ? 1 : 0)
                 }
                 slow={slowLoad}
@@ -711,7 +792,7 @@ export function ActivationRosterTable({
                 <td
                   colSpan={
                     (category === 'processos-caa' ? 10
-                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' ? 9
+                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'rematricula' ? 9
                       : 8) + (selectedMasterKeys ? 1 : 0)
                   }
                   className="px-3 py-6 text-center text-gray-500 text-xs"
@@ -756,6 +837,17 @@ export function ActivationRosterTable({
                           className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full border ${BB_SUBGRUPO_BADGE[row.bb_subgrupo].cls}`}
                         >
                           {BB_SUBGRUPO_BADGE[row.bb_subgrupo].label}
+                        </span>
+                      ) : '—'}
+                    </td>
+                  )}
+                  {category === 'rematricula' && (
+                    <td className="px-3 py-2">
+                      {row.remat_subgrupo && REMAT_SUBGRUPO_BADGE[row.remat_subgrupo] ? (
+                        <span
+                          className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full border ${REMAT_SUBGRUPO_BADGE[row.remat_subgrupo].cls}`}
+                        >
+                          {REMAT_SUBGRUPO_BADGE[row.remat_subgrupo].label}
                         </span>
                       ) : '—'}
                     </td>

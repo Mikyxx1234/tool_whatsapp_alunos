@@ -14,6 +14,7 @@ const CATEGORY_LABELS = {
   'acessos-blackboard': 'Acessos Blackboard',
   'provavel-evasao':    'Provável Evasão',
   'aguardando-inicio':  'Aguardando Início',
+  rematricula:          'Rematrícula',
 };
 
 /**

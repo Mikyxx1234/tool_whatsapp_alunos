@@ -28,6 +28,7 @@ const CATEGORY_LABEL: Record<ActivationCategory, string> = {
   'acessos-blackboard': 'Sem acesso BB (fora do export)',
   'processos-caa': 'CAA cancelamento',
   'aguardando-inicio': 'Aguardando início da turma',
+  rematricula: 'Rematrícula (2026/1 → 2026/2)',
 };
 
 export function ActivationListActions({

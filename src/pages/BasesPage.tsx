@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Download, Loader2, Trash2, Upload, UploadCloud, FileSpreadsheet, Lock, Unlock } from 'lucide-react';
 import { v4 as uuid } from 'uuid';
 import { Header } from '../components/Header';
+import { RematriculaBasesSection } from '../components/RematriculaBasesSection';
 import { Toast, type ToastVariant } from '../components/Toast';
 import { detectFileKind, fileToCsvText, isSupportedFile } from '../utils/fileToCsvText';
 import {
@@ -34,7 +35,13 @@ const SECTIONS: { id: ReportSlug; title: string; hint: string }[] = [
   {
     id: 'financeiro',
     title: 'Financeiro',
-    hint: 'Base financeira / inadimplência / boletos.',
+    hint: 'Base financeira / mensalidade em aberto (inclui quem ainda está no prazo de pagamento).',
+  },
+  {
+    id: 'inadimplentes-vencidos',
+    title: 'Inadimplentes Vencidos',
+    hint:
+      'Alunos com mensalidade vencida (legado). Preferir uploads em Rematrícula (SIAA / Portal de Polos).',
   },
   {
     id: 'acessos-blackboard',
@@ -645,6 +652,9 @@ export default function BasesPage() {
         <CyclesPanel />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <RematriculaBasesSection
+            onToast={(message, variant) => showToast(message, variant)}
+          />
           {SECTIONS.map((section) => {
             const list = store[section.id] || [];
             const isBusy = Boolean(busy[section.id]);

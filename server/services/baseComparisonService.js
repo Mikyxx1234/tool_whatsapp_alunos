@@ -16,6 +16,9 @@ const RGM_KEYS = [
   'RGM',
   'Rgm',
   'rgm',
+  'RGM_ALUN',
+  'RGM_ALUNO',
+  'Rgm Aluno',
   'Matricula',
   'matricula',
   'MATRICULA',
@@ -30,6 +33,7 @@ const RGM_KEYS = [
 
 const CPF_KEYS = [
   'CPF',
+  'CPF_ALUN',
   'Cpf Aluno',
   'Cpf',
   'cpf',
@@ -335,6 +339,11 @@ function comparePersonIndexes(matByCanon, otherByCanon) {
 const COMPARISONS = [
   { id: 'docs-pendentes', title: 'Documentos pendentes', mode: 'other_is_problem_list' },
   { id: 'financeiro', title: 'Financeiro / inadimplência', mode: 'other_is_problem_list' },
+  {
+    id: 'inadimplentes-vencidos',
+    title: 'Inadimplentes vencidos',
+    mode: 'other_is_problem_list',
+  },
   {
     id: 'provavel-evasao',
     title: 'Provável evasão',

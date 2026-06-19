@@ -82,6 +82,17 @@ function sheetToCellMatrix(sheet) {
  * @returns {Record<string, string>[]}
  */
 export function xlsxBufferToRowObjects(buffer, fileName) {
+  // Exports SIAA/ERP (.xlsm, !ref quebrado): XML direto evita OOM do SheetJS em planilhas grandes.
+  if (/\.xlsm$/i.test(fileName)) {
+    const fromXml = brokenExportXlsxToRowObjects(buffer);
+    if (fromXml.length) {
+      console.log(
+        `[spreadsheet] ${fileName}: ${fromXml.length.toLocaleString('pt-BR')} linhas (XML SIAA/ERP)`
+      );
+      return fromXml;
+    }
+  }
+
   const wb = XLSX.read(buffer, {
     type: 'buffer',
     cellDates: false,

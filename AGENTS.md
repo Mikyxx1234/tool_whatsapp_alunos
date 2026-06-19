@@ -5,6 +5,47 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 15/06/2026 — Rematrícula: **PAUSADO** — sem denominador comum com Excel; recalcular rota
+
+- **Modelo usado:** Opus 4.7 (principal).
+- **Status:** **Congelado em 15/06/2026.** Não iterar mais na lógica atual (instituição + matriculados × vencidos) até nova definição de produto/dados. Código entregue (bases `inadimplentes-vencidos`, categoria `rematricula`, migrations 032–033) **permanece no repo** mas **não é fonte de verdade operacional** até reabrir.
+- **Motivo da pausa:** após cruzamento RGM/CPF com `remat1506.xlsx` (`SIT_2026_1 + SIT_ATUAL = EM CURSO`), overlap ficou alto mas **não fechou 100%** — divergências persistentes em financeiro (`SIT_FINAN` ERP vs base vencidos ~300 pessoas “trocadas de lado”) e situação acadêmica (duplo EM CURSO no Excel vs `Situação Matrícula` única no snapshot matriculados ~170 só no painel). Time não chegou a denominador comum aceito.
+- **Números no congelamento** (painel vs Excel, após incluir Braz Cubas Grad EAD):
+  - Adimplente: **17.902** painel vs **17.520** Excel — **17.460 em comum** (99,7%)
+  - Inadimplente: **3.468** painel vs **3.680** Excel — **3.401 em comum** (92,4%)
+  - Total painel **21.370** vs Excel **21.200**
+- **O que NÃO fazer até reabrir:** ajustar mais filtros de instituição, trocar para `SIT_FINAN`, ou “forçar” números ao Excel sem decisão explícita nova.
+- **Rotas a reavaliar quando retomar** (sem implementar agora):
+  1. ~~**Upload do relatório remat unificado**~~ → **15/06 tarde:** base **Rematrícula** em Bases com **dois uploads** (`SIAA`, `Portal de Polos`); snapshot **mais recente** (por `created_at`) define inadimplentes na fila (migration `034`). Ver entrada abaixo.
+  2. **Híbrido:** universo do relatório remat + inadimplente só da base vencidos (ou só `SIT_FINAN`) — escolher UMA regra financeira e documentar.
+  3. **Manter derivação atual** mas aceitar delta ~1–8% vs Excel como custo de não depender do relatório lento do ERP.
+  4. **Desativar aba Rematrícula** na UI até rota definida (flag/env) — só se operação pedir.
+- **Implementação congelada** (referência): ver entrada abaixo; instituições no filtro = UNICID + Cruzeiro 16 Grad EAD + Braz Cubas Grad EAD.
+
+### 15/06/2026 — Base Rematrícula: uploads SIAA + Portal de Polos (mais recente vence)
+
+- **Modelo usado:** Opus 4.7 (principal).
+- **Decisão:** Nova seção **Rematrícula** em Bases com **dois uploads independentes** (`siaa`, `portal-de-polos`). Para classificar **inadimplente** no Disparador, usar sempre o snapshot com maior `created_at` entre as duas fontes (não merge — substituição pelo mais recente). Migration `034_rematricula_base.sql`. Base legada `inadimplentes-vencidos` permanece na UI mas deixa de alimentar a fila.
+- **API:** `GET /api/base-uploads/rematricula/status`; upload com header `X-Remat-Source: siaa|portal-de-polos`.
+- **UI:** card full-width no topo da grade de Bases; badge “Em uso” na fonte ativa.
+
+### 15/06/2026 — Rematrícula: fila 2026/1 EM CURSO + inadimplente *(implementação; inadimplente migrado para base Rematrícula SIAA/Portal)*
+
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** campanha de rematrícula precisa atingir matriculados **2026/1** ainda **EM CURSO**, excluindo quem já aparece em **2026/2** (concluída), com segmentação **adimplente vs inadimplente vencido**. A base **Financeiro** (~7,4k) mistura quem está no prazo com quem está vencido; o relatório operacional correto é **"Alunos com mensalidade em aberto (3).xlsx"** (~3,7k RGMs).
+- **Decisão:**
+  - Nova base em Bases: **Inadimplentes Vencidos** (`inadimplentes-vencidos`, migration `032`).
+  - Nova categoria de ativação **`rematricula`** (migration `033`): universo = matriculados snapshot **2026/1** + situação **EM CURSO** + **instituição UNICID, Cruzeiro Grad EAD (16) ou Braz Cubas Grad EAD** + não concluinte + **sem** linha no mesmo canon em **2026/2**.
+  - **Inadimplente** = canon no snapshot mais recente da base **Rematrícula** (SIAA ou Portal de Polos — o upload mais novo). **Adimplente** = resto do universo.
+  - Ciclos configuráveis: `REMAT_CICLO_ORIGEM` (default `2026/1`), `REMAT_CICLO_DESTINO` (default `2026/2`).
+  - UI Disparador: aba Rematrícula, filtros Adimplente/Inadimplente, coluna Financeiro, bulk select respeita filtro.
+  - `origem_ativacao` DataCrazy: `Remat`. Cooldown 24h.
+- **Invalidação de cache:** upload de `matriculados` ou `rematricula` invalida fila `rematricula`.
+- **Alternativas descartadas:**
+  - **Usar base Financeiro** para inadimplente — infla ~2× (inclui mensalidade em aberto ainda no prazo).
+  - **Coluna `SIT_FINAN=Inadimplente` só no export matriculados** — ~93% de overlap com o relatório vencido, mas menos auditável que cruzar com snapshot dedicado.
+  - **Categoria sem subgrupos** — operação precisa disparar mensagens distintas por segmento.
+
 ### 12/06/2026 — Disparador: criar anotação no card do DataCrazy a cada envio (rastreabilidade no CRM)
 
 - **Modelo usado:** Opus 4.7 (principal) decidiu; Executor (Sonnet 4.6) implementará.

@@ -10,6 +10,7 @@ import {
   csvTextToRowObjectsFast,
   xlsxBufferToRowObjects,
 } from '../utils/spreadsheetToObjects.js';
+import { bufferToRowObjectsForUpload } from '../utils/siaaZipImport.js';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 
 const router = Router();
@@ -25,6 +26,12 @@ function afterBaseUpload(category) {
   if (category === 'matriculados') {
     bustCicloCache();
     invalidateActivationListCache();
+    invalidateActivationListCache('rematricula');
+  } else if (category === 'inadimplentes-vencidos') {
+    invalidateActivationListCache('inadimplentes-vencidos');
+    invalidateActivationListCache('rematricula');
+  } else if (category === 'rematricula') {
+    invalidateActivationListCache('rematricula');
   } else {
     invalidateActivationListCache(category);
   }
@@ -43,6 +50,26 @@ function assertCategory(category) {
     throw err;
   }
 }
+
+function parseRematriculaSource(req) {
+  const raw =
+    req.headers['x-remat-source'] ||
+    req.body?.rematriculaSource ||
+    req.body?.metadata?.rematricula_source;
+  return raw ? baseUploadRepo.normalizeRematriculaSource(raw) : null;
+}
+
+router.get('/rematricula/status', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const status = await baseUploadRepo.getRematriculaBaseStatus();
+    res.json({ ok: true, ...status });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
 
 router.get('/:category/snapshots', async (req, res) => {
   try {
@@ -73,14 +100,28 @@ router.post('/:category/upload-file', requireApiKey, rawFileUpload, async (req, 
       `[base-uploads] upload-file ${category}: "${fileName}" (${(buffer.length / 1024 / 1024).toFixed(1)} MB)…`
     );
     const t0 = Date.now();
-    const isXlsx = /\.(xlsx|xls|xlsm|xlsb|ods)$/i.test(fileName);
-    const objects = isXlsx
-      ? xlsxBufferToRowObjects(buffer, fileName)
-      : csvTextToRowObjectsFast(buffer.toString('utf8'));
+    const rematriculaSource =
+      category === 'rematricula' ? parseRematriculaSource(req) : null;
+    if (category === 'rematricula' && !rematriculaSource) {
+      return res.status(400).json({
+        error: 'Header X-Remat-Source obrigatório (siaa ou portal-de-polos).',
+      });
+    }
+    const isZip = /\.zip$/i.test(fileName);
+    if (isZip && category !== 'rematricula') {
+      return res.status(400).json({ error: 'Upload ZIP só é suportado na base Rematrícula.' });
+    }
+    const objects = bufferToRowObjectsForUpload(buffer, fileName, {
+      siaaSource: rematriculaSource === 'siaa',
+    });
+    if (!objects.length) {
+      return res.status(400).json({ error: 'Nenhuma linha válida encontrada no arquivo.' });
+    }
     const result = await baseUploadRepo.createSnapshotFromRowObjects(category, {
       fileName,
       fileSizeBytes: buffer.length,
       objects,
+      rematriculaSource: rematriculaSource ?? undefined,
     });
     console.log(
       `[base-uploads] ok ${category} (arquivo) em ${((Date.now() - t0) / 1000).toFixed(1)}s (${result.rowCount} linhas)`
@@ -103,6 +144,13 @@ router.post('/:category/upload', async (req, res) => {
     if (!csvText || !fileName) {
       return res.status(400).json({ error: 'fileName e csvText são obrigatórios.' });
     }
+    const rematriculaSource =
+      category === 'rematricula' ? parseRematriculaSource(req) : null;
+    if (category === 'rematricula' && !rematriculaSource) {
+      return res.status(400).json({
+        error: 'rematriculaSource obrigatório (siaa ou portal-de-polos).',
+      });
+    }
     const lineEstimate = String(csvText).split(/\r?\n/).length;
     console.log(
       `[base-uploads] importando ${category}: "${fileName}" (~${lineEstimate.toLocaleString('pt-BR')} linhas CSV)…`
@@ -113,6 +161,7 @@ router.post('/:category/upload', async (req, res) => {
       csvText,
       fileSizeBytes,
       metadata,
+      rematriculaSource: rematriculaSource ?? undefined,
     });
     console.log(
       `[base-uploads] ok ${category} em ${((Date.now() - t0) / 1000).toFixed(1)}s (${result.rowCount} linhas)`

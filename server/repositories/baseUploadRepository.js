@@ -14,12 +14,16 @@ import {
   normalizeRowRgms,
 } from '../utils/rgmDisplay.js';
 
-/** @typedef {'matriculados'|'docs-pendentes'|'financeiro'|'acessos-blackboard'|'processos-caa'|'provavel-evasao'} BaseCategory */
+/** @typedef {'matriculados'|'docs-pendentes'|'financeiro'|'inadimplentes-vencidos'|'rematricula'|'acessos-blackboard'|'processos-caa'|'provavel-evasao'} BaseCategory */
+
+export const REMATRICULA_SOURCES = /** @type {const} */ (['siaa', 'portal-de-polos']);
 
 export const BASE_CATEGORIES = /** @type {const} */ ([
   'matriculados',
   'docs-pendentes',
   'financeiro',
+  'inadimplentes-vencidos',
+  'rematricula',
   'acessos-blackboard',
   'processos-caa',
   'provavel-evasao',
@@ -29,6 +33,11 @@ const TABLES = {
   matriculados: { snapshots: 'matriculados_snapshots', rows: 'matriculados_rows' },
   'docs-pendentes': { snapshots: 'docs_pendentes_snapshots', rows: 'docs_pendentes_rows' },
   financeiro: { snapshots: 'financeiro_snapshots', rows: 'financeiro_rows' },
+  'inadimplentes-vencidos': {
+    snapshots: 'inadimplentes_vencidos_snapshots',
+    rows: 'inadimplentes_vencidos_rows',
+  },
+  rematricula: { snapshots: 'rematricula_snapshots', rows: 'rematricula_rows' },
   'acessos-blackboard': { snapshots: 'acessos_blackboard_snapshots', rows: 'acessos_blackboard_rows' },
   'processos-caa': { snapshots: 'processos_caa_snapshots', rows: 'processos_caa_rows' },
   'provavel-evasao': { snapshots: 'provavel_evasao_snapshots', rows: 'provavel_evasao_rows' },
@@ -56,6 +65,24 @@ export function resolveTables(category) {
     throw err;
   }
   return t;
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {'siaa'|'portal-de-polos'}
+ */
+export function normalizeRematriculaSource(raw) {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (s === 'siaa') return 'siaa';
+  if (s === 'portal-de-polos' || s === 'portal de polos' || s === 'portal-polos') {
+    return 'portal-de-polos';
+  }
+  const err = new Error('Fonte rematrícula inválida. Use siaa ou portal-de-polos.');
+  err.status = 400;
+  throw err;
 }
 
 /**
@@ -181,13 +208,35 @@ export async function createSnapshotFromRowObjects(category, input) {
     }
   }
   const fileName = String(input.fileName || 'upload.csv').slice(0, 512);
+  const rematSource =
+    category === 'rematricula'
+      ? normalizeRematriculaSource(input.rematriculaSource ?? meta.rematricula_source)
+      : null;
+  if (rematSource) {
+    meta.rematricula_source = rematSource;
+  }
 
-  const { rows: snapRows } = await query(
-    `insert into ${st} (file_name, file_size_bytes, row_count, metadata)
-     values ($1, $2, $3, $4::jsonb)
-     returning id, file_name, file_size_bytes, row_count, created_at, metadata`,
-    [fileName, input.fileSizeBytes ?? null, objects.length, JSON.stringify(meta)]
-  );
+  const snapSql =
+    category === 'rematricula'
+      ? `insert into ${st} (file_name, file_size_bytes, row_count, metadata, source)
+         values ($1, $2, $3, $4::jsonb, $5)
+         returning id, file_name, file_size_bytes, row_count, created_at, metadata, source`
+      : `insert into ${st} (file_name, file_size_bytes, row_count, metadata)
+         values ($1, $2, $3, $4::jsonb)
+         returning id, file_name, file_size_bytes, row_count, created_at, metadata`;
+
+  const snapParams =
+    category === 'rematricula'
+      ? [
+          fileName,
+          input.fileSizeBytes ?? null,
+          objects.length,
+          JSON.stringify(meta),
+          rematSource,
+        ]
+      : [fileName, input.fileSizeBytes ?? null, objects.length, JSON.stringify(meta)];
+
+  const { rows: snapRows } = await query(snapSql, snapParams);
   const snap = snapRows[0];
   const snapshotId = snap.id;
 
@@ -232,6 +281,14 @@ export async function createSnapshotFromRowObjects(category, input) {
     }
   }
 
+  if (category === 'rematricula') {
+    import('../services/rematriculaTrackingService.js')
+      .then((m) => m.captureRematriculaDailyPoint({ reason: 'upload' }))
+      .catch((err) => {
+        console.warn('[rematricula-tracking] capture após upload:', err.message);
+      });
+  }
+
   return {
     snapshot: snap,
     rowCount: objects.length,
@@ -253,6 +310,7 @@ export async function createSnapshotFromCsv(category, input) {
     fileSizeBytes: input.fileSizeBytes,
     objects,
     metadata: input.metadata,
+    rematriculaSource: input.rematriculaSource,
   });
 }
 
@@ -264,7 +322,9 @@ export async function listSnapshots(category, { limit = 80 } = {}) {
   const { snapshots: st } = resolveTables(category);
   const lim = Math.min(Math.max(Number(limit) || 80, 1), 200);
   const { rows } = await query(
-    `select id, file_name, file_size_bytes, row_count, created_at, metadata
+    `select id, file_name, file_size_bytes, row_count, created_at, metadata${
+      category === 'rematricula' ? ', source' : ''
+    }
        from ${st}
       order by created_at desc
       limit $1`,
@@ -288,17 +348,52 @@ export async function getSnapshot(category, snapshotId) {
 }
 
 /**
+ * Snapshot mais recente da base rematrícula (qualquer fonte — SIAA ou Portal de Polos).
  * @param {string} category
  */
 export async function getLatestSnapshot(category) {
   const { snapshots: st } = resolveTables(category);
   const { rows } = await query(
-    `select id, file_name, file_size_bytes, row_count, created_at, metadata
+    `select id, file_name, file_size_bytes, row_count, created_at, metadata${
+      category === 'rematricula' ? ', source' : ''
+    }
        from ${st}
       order by created_at desc
       limit 1`
   );
   return rows[0] || null;
+}
+
+/**
+ * @param {'siaa'|'portal-de-polos'} source
+ */
+export async function getLatestRematriculaSnapshotBySource(source) {
+  const src = normalizeRematriculaSource(source);
+  const { snapshots: st } = resolveTables('rematricula');
+  const { rows } = await query(
+    `select id, file_name, file_size_bytes, row_count, created_at, metadata, source
+       from ${st}
+      where source = $1
+      order by created_at desc
+      limit 1`,
+    [src]
+  );
+  return rows[0] || null;
+}
+
+export async function getRematriculaBaseStatus() {
+  const [active, siaa, portal] = await Promise.all([
+    getLatestSnapshot('rematricula'),
+    getLatestRematriculaSnapshotBySource('siaa'),
+    getLatestRematriculaSnapshotBySource('portal-de-polos'),
+  ]);
+  return {
+    active_source: active?.source ?? null,
+    active_snapshot: active,
+    active_row_count: active?.row_count ?? 0,
+    siaa,
+    portal_de_polos: portal,
+  };
 }
 
 /**

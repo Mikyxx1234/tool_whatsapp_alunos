@@ -1,4 +1,5 @@
 import { unzipSync, strFromU8 } from 'fflate';
+import * as XLSX from 'xlsx';
 import { isRgmColumnKey, normalizeRgmCanonical } from './rgmDisplay.js';
 
 /**
@@ -27,21 +28,116 @@ export function readXlsxEntryXml(buffer, entryPath = 'xl/worksheets/sheet1.xml')
 }
 
 /**
- * @param {string} rowXml
+ * @param {Buffer | ArrayBuffer | Uint8Array} buffer
  * @returns {string[]}
  */
-export function cellsFromRowXml(rowXml) {
+function readSharedStrings(buffer) {
+  try {
+    const xml = readXlsxEntryXml(buffer, 'xl/sharedStrings.xml');
+    /** @type {string[]} */
+    const strings = [];
+    const siRe = /<(?:\w+:)?si[^>]*>([\s\S]*?)<\/(?:\w+:)?si>/g;
+    let m;
+    while ((m = siRe.exec(xml))) {
+      const inner = m[1];
+      const parts = [...inner.matchAll(/<(?:\w+:)?t[^>]*>([^<]*)<\/(?:\w+:)?t>/g)].map((x) => x[1]);
+      strings.push(parts.join('').trim());
+    }
+    return strings;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * @param {string} cellXml
+ * @param {string[]} sharedStrings
+ * @returns {string}
+ */
+function cellValueFromXml(cellXml, sharedStrings) {
+  const tMatch = /\bt="([^"]+)"/.exec(cellXml);
+  const t = tMatch ? tMatch[1] : '';
+  if (t === 'inlineStr') {
+    const parts = [...cellXml.matchAll(/<(?:\w+:)?t[^>]*>([^<]*)<\/(?:\w+:)?t>/g)].map(
+      (x) => x[1]
+    );
+    return parts.join('').trim();
+  }
+  const vMatch = /<(?:\w+:)?v>([^<]*)<\/(?:\w+:)?v>/.exec(cellXml);
+  const v = vMatch ? String(vMatch[1]).trim() : '';
+  if (t === 's' && v !== '') {
+    const idx = parseInt(v, 10);
+    return Number.isFinite(idx) ? String(sharedStrings[idx] ?? '').trim() : '';
+  }
+  if (t === 'b') return v === '1' ? 'true' : v === '0' ? 'false' : v;
+  return v;
+}
+
+/**
+ * @param {string} rowXml
+ * @param {string[]} sharedStrings
+ * @returns {string[]}
+ */
+export function cellsFromRowXml(rowXml, sharedStrings = []) {
   /** @type {string[]} */
   const cells = [];
-  const cellRe = /<x:c[^>]*>([\s\S]*?)<\/x:c>/g;
+  const cellRe = /<(?:\w+:)?c\b[^>]*>[\s\S]*?<\/(?:\w+:)?c>/g;
   let m;
   while ((m = cellRe.exec(rowXml))) {
-    const inner = m[1];
-    const t = /<x:t[^>]*>([^<]*)<\/x:t>/.exec(inner);
-    const v = /<x:v>([^<]*)<\/x:v>/.exec(inner);
-    cells.push(t ? t[1].trim() : v ? String(v[1]).trim() : '');
+    cells.push(cellValueFromXml(m[0], sharedStrings));
   }
   return cells;
+}
+
+/**
+ * @param {string[]} cells
+ */
+function looksLikeHeaderRow(cells) {
+  const joined = cells.map((c) => String(c).trim()).filter(Boolean);
+  if (joined.length < 3) return false;
+  const upper = joined.join('|').toUpperCase();
+  if (/RGM|CPF|EMPRESA|INSTITUICAO|NOME/.test(upper)) return true;
+  if (/POLO|MENSALIDADE|VENCIMENTO|SIT_FINAN/.test(upper)) return true;
+  return false;
+}
+
+/**
+ * @param {string[]} rowXmls
+ * @param {string[]} sharedStrings
+ */
+function findHeaderRowIndex(rowXmls, sharedStrings) {
+  if (rowXmls.length >= 1) {
+    const h0 = cellsFromRowXml(rowXmls[0], sharedStrings);
+    if (looksLikeHeaderRow(h0)) return 0;
+  }
+  const limit = Math.min(rowXmls.length, 12);
+  for (let i = 1; i < limit; i += 1) {
+    const cells = cellsFromRowXml(rowXmls[i], sharedStrings);
+    if (looksLikeHeaderRow(cells)) return i;
+  }
+  return 0;
+}
+
+/**
+ * Extrai conteúdo interno de cada <row> sem regex global no XML inteiro (evita OOM em exports SIAA ~9MB).
+ * @param {string} xml
+ * @returns {string[]}
+ */
+function extractRowInners(xml) {
+  /** @type {string[]} */
+  const inners = [];
+  const openRe = /<(?:\w+:)?row\b[^>]*>/g;
+  let m;
+  while ((m = openRe.exec(xml)) !== null) {
+    const start = m.index + m[0].length;
+    const closeRe = /<\/(?:\w+:)?row>/g;
+    closeRe.lastIndex = start;
+    const cm = closeRe.exec(xml);
+    if (!cm) break;
+    inners.push(xml.slice(start, cm.index));
+    openRe.lastIndex = cm.index + cm[0].length;
+  }
+  return inners;
 }
 
 /**
@@ -50,16 +146,18 @@ export function cellsFromRowXml(rowXml) {
  * @returns {Record<string, string>[]}
  */
 export function brokenExportXlsxToRowObjects(buffer, sheetXmlPath = 'xl/worksheets/sheet1.xml') {
+  const sharedStrings = readSharedStrings(buffer);
   const xml = readXlsxEntryXml(buffer, sheetXmlPath);
-  const rowXmls = [...xml.matchAll(/<x:row[^>]*>([\s\S]*?)<\/x:row>/g)].map((x) => x[1]);
+  const rowXmls = extractRowInners(xml);
   if (rowXmls.length < 2) return [];
 
-  const headers = cellsFromRowXml(rowXmls[0]).map((h) => h.trim());
+  const headerIdx = findHeaderRowIndex(rowXmls, sharedStrings);
+  const headers = cellsFromRowXml(rowXmls[headerIdx], sharedStrings).map((h) => h.trim());
   /** @type {Record<string, string>[]} */
   const objects = [];
 
-  for (let i = 1; i < rowXmls.length; i += 1) {
-    const cells = cellsFromRowXml(rowXmls[i]);
+  for (let i = headerIdx + 1; i < rowXmls.length; i += 1) {
+    const cells = cellsFromRowXml(rowXmls[i], sharedStrings);
     /** @type {Record<string, string>} */
     const o = {};
     let empty = true;

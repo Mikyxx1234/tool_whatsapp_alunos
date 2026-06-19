@@ -3,10 +3,12 @@ import { normalizeRgmCanonical } from './rgmNormalize';
 
 const XLSX_EXT = /\.(xlsx|xls|xlsm|xlsb|ods)$/i;
 const CSV_EXT = /\.(csv|txt|tsv)$/i;
+const ZIP_EXT = /\.zip$/i;
 
-export type SupportedFileKind = 'csv' | 'xlsx' | 'unknown';
+export type SupportedFileKind = 'csv' | 'xlsx' | 'zip' | 'unknown';
 
 export function detectFileKind(file: File): SupportedFileKind {
+  if (ZIP_EXT.test(file.name)) return 'zip';
   if (XLSX_EXT.test(file.name)) return 'xlsx';
   if (CSV_EXT.test(file.name)) return 'csv';
   const mime = (file.type || '').toLowerCase();

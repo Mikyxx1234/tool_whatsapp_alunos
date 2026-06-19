@@ -38,6 +38,11 @@ import {
 } from '../utils/caaRowFilters.js';
 import { parseFlexibleDate } from '../utils/dateParser.js';
 import { createRateLimiter } from '../utils/rateLimiter.js';
+import {
+  instituicaoFromRow,
+  isRematriculaEmCursoRow,
+  rematFinanceiroSubgrupoFromRow,
+} from '../utils/rematriculaEligibility.js';
 
 export const URGENCY_HIGH_DAYS = 30;
 export const URGENCY_MEDIUM_DAYS = 14;
@@ -72,6 +77,7 @@ const COOLDOWN_HOURS_BY_CATEGORY = {
   'acessos-blackboard': 24,
   'provavel-evasao': 24,
   'aguardando-inicio': 24,
+  rematricula: 24,
 };
 
 function getCooldownHoursForCategory(category) {
@@ -101,6 +107,7 @@ export const ACTIVATION_CATEGORIES = /** @type {const} */ ([
   'acessos-blackboard',
   'processos-caa',
   'aguardando-inicio',
+  'rematricula',
 ]);
 
 /** @type {Map<string, { expires: number, data: object }>} */
@@ -242,6 +249,11 @@ async function buildRosterRowsCached(category, matSnapId, otherSnapId) {
         skipped_ciclo_divergente: list.skipped_ciclo_divergente || 0,
         bb_urgency_counts: list.bb_urgency_counts,
         bb_subgrupo_counts: list.bb_subgrupo_counts,
+        remat_subgrupo_counts: list.remat_subgrupo_counts,
+        remat_warning: list.remat_warning ?? null,
+        intersection_raw: list.intersection_raw ?? null,
+        skipped_remat_concluida: list.skipped_remat_concluida ?? null,
+        remat_inadimplente_source: list.remat_inadimplente_source ?? null,
       };
 
       activationRosterCaches.set(rosterCacheKey, {
@@ -263,15 +275,13 @@ async function buildRosterRowsCached(category, matSnapId, otherSnapId) {
 /** Evita trabalho pesado em paralelo; só responde se o cache já estiver pronto. */
 export async function warmActivationRoster(category) {
   assertActivationCategory(category);
-  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
-  if (!matSnap) return { ok: false, category, reason: 'missing_snapshot' };
-  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
-    ? null
-    : await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
-    return { ok: false, category, reason: 'missing_snapshot' };
+  let matSnap;
+  let otherSnapId;
+  try {
+    ({ matSnap, otherSnapId } = await resolveActivationSnapshotPair(category));
+  } catch (err) {
+    return { ok: false, category, reason: 'missing_snapshot', error: err.message };
   }
-  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
   const rosterCacheKey = `${category}:${matSnap.id}:${otherSnapId}`;
   const hit = activationRosterCaches.get(rosterCacheKey);
   if (hit && hit.expires > Date.now()) {
@@ -293,6 +303,42 @@ export function assertActivationCategory(category) {
     err.status = 400;
     throw err;
   }
+}
+
+/**
+ * Par matriculados + snapshot auxiliar por categoria de ativação.
+ * @param {string} category
+ */
+async function resolveActivationSnapshotPair(category) {
+  if (category === 'rematricula') {
+    const rematSnap = await baseUploadRepo.getLatestSnapshot('rematricula');
+    if (!rematSnap) {
+      const err = new Error('Nenhum upload em Rematrícula (SIAA ou Portal de Polos).');
+      err.status = 404;
+      throw err;
+    }
+    return { matSnap: rematSnap, otherSnap: rematSnap, otherSnapId: rematSnap.id };
+  }
+
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) {
+    const err = new Error('Nenhum snapshot de matriculados.');
+    err.status = 404;
+    throw err;
+  }
+  if (category === 'aguardando-inicio') {
+    return { matSnap, otherSnap: null, otherSnapId: 'none' };
+  }
+  if (category === 'processos-caa') {
+    return { matSnap, otherSnap: null, otherSnapId: 'estoque' };
+  }
+  const otherSnap = await baseUploadRepo.getLatestSnapshot(category);
+  if (!otherSnap) {
+    const err = new Error(`Nenhum snapshot de ${category}.`);
+    err.status = 404;
+    throw err;
+  }
+  return { matSnap, otherSnap, otherSnapId: otherSnap.id };
 }
 
 /**
@@ -360,6 +406,30 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
         ''
     ).trim(),
     subprocesso_caa: String(src.Subprocesso ?? matRow.Subprocesso ?? '').trim(),
+  };
+}
+
+/** Linha da base Rematrícula (SIAA / Portal de Polos). */
+function rowToRematriculaItem(row) {
+  const nome = String(row.NOME ?? row.Nome ?? row.Aluno ?? row.nome ?? '').trim();
+  const email = String(row.E_MAIL ?? row.Email ?? row['E-mail'] ?? '').trim();
+  const telefone = String(
+    row.FONE_CEL ?? row.Celular ?? row['Fone celular'] ?? row.Telefone ?? ''
+  ).trim();
+  const rgm = pickDisplayRgm(row, null, 'rematricula');
+  return {
+    nome,
+    email,
+    telefone,
+    rgm,
+    cpf: String(row.CPF_ALUN ?? row.CPF ?? '').trim(),
+    polo: String(row.NOME_POLO ?? row.Polo ?? '').trim(),
+    curso: String(row.DES_CURS ?? row.Curso ?? '').trim(),
+    ciclo: String(row.SIT_2026_1 ?? row.Ciclo ?? cicloFromRow(row) ?? '').trim(),
+    situacao_matricula: String(
+      row.SIT_ATUAL ?? row.Sit_Atual ?? row['Situação Matrícula'] ?? row.Situacao ?? ''
+    ).trim(),
+    subprocesso_caa: '',
   };
 }
 
@@ -458,6 +528,17 @@ async function buildCaaPendingIndexFromProtocols() {
 export async function getIntersectionActivationList(category, opts = {}) {
   const excludeDispatched = opts.excludeDispatched !== false;
   assertActivationCategory(category);
+
+  if (category === 'rematricula') {
+    const rematSnap = await baseUploadRepo.getLatestSnapshot('rematricula');
+    if (!rematSnap) {
+      const err = new Error('Nenhum upload em Rematrícula (SIAA ou Portal de Polos).');
+      err.status = 404;
+      throw err;
+    }
+    return _buildRematriculaList(category, rematSnap, excludeDispatched);
+  }
+
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
   if (!matSnap) {
     const err = new Error('Nenhum snapshot de matriculados.');
@@ -791,6 +872,96 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
   return result;
 }
 
+/**
+ * Fila rematrícula: upload SIAA ou Portal de Polos — SIT_ATUAL=EM CURSO;
+ * adimplente/inadimplente via SIT_FINAN (ou inadimplente no Portal).
+ */
+async function _buildRematriculaList(category, rematSnap, excludeDispatched) {
+  const rematSource = rematSnap?.source ?? null;
+  const cacheKey = `${category}:${rematSnap.id}:${excludeDispatched ? 'ex' : 'all'}`;
+  const cached = activationListCaches.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
+  const lastSentMap = await activationDispatchRepo.getLastSentAtByMasterKey(category);
+  const cooldownHours = getCooldownHoursForCategory(category);
+  const cooldownNow = Date.now();
+
+  /** @type {Array<object>} */
+  const items = [];
+  const seenMaster = new Set();
+  let skipped_already_dispatched = 0;
+  let skipped_duplicate_key = 0;
+  let intersection_raw = 0;
+
+  await baseUploadRepo.forEachRowDataForSnapshot('rematricula', rematSnap.id, (row) => {
+    if (!isRematriculaEmCursoRow(row)) return;
+    intersection_raw += 1;
+
+    const remat_subgrupo = rematFinanceiroSubgrupoFromRow(row);
+    const item = rowToRematriculaItem(row);
+    const master_key = masterKeyFromActivationItem(item) ?? undefined;
+
+    if (master_key) {
+      if (seenMaster.has(master_key)) {
+        skipped_duplicate_key += 1;
+        return;
+      }
+      seenMaster.add(master_key);
+      if (isOnCooldown(lastSentMap, master_key, cooldownHours, cooldownNow)) {
+        skipped_already_dispatched += 1;
+        if (excludeDispatched) return;
+      }
+    }
+
+    items.push({
+      ...(master_key ? { ...item, master_key } : item),
+      instituicao: instituicaoFromRow(row),
+      remat_subgrupo,
+    });
+  });
+
+  const SUBGRUPO_ORDER = { inadimplente: 0, adimplente: 1 };
+  items.sort((a, b) => {
+    const sa = SUBGRUPO_ORDER[a.remat_subgrupo] ?? 9;
+    const sb = SUBGRUPO_ORDER[b.remat_subgrupo] ?? 9;
+    if (sa !== sb) return sa - sb;
+    return a.nome.localeCompare(b.nome, 'pt-BR');
+  });
+
+  const remat_subgrupo_counts = {
+    adimplente: items.filter((i) => i.remat_subgrupo === 'adimplente').length,
+    inadimplente: items.filter((i) => i.remat_subgrupo === 'inadimplente').length,
+  };
+
+  const result = {
+    category,
+    total: items.length,
+    items,
+    intersection_raw,
+    already_dispatched_in_db: lastSentMap.size,
+    cooldown_hours: cooldownHours,
+    skipped_already_dispatched,
+    skipped_duplicate_key,
+    skipped_ciclo_divergente: 0,
+    skipped_bb_limbo: 0,
+    skipped_remat_concluida: 0,
+    remat_subgrupo_counts,
+    exclude_dispatched: excludeDispatched,
+    matriculados_snapshot_id: null,
+    other_snapshot_id: rematSnap.id,
+    remat_warning: null,
+    remat_inadimplente_source: rematSource,
+    generated_at: new Date().toISOString(),
+  };
+
+  activationListCaches.set(cacheKey, {
+    expires: Date.now() + ACTIVATION_CACHE_TTL_MS,
+    data: result,
+  });
+
+  return result;
+}
+
 export async function getDocsPendentesActivationList() {
   return getIntersectionActivationList('docs-pendentes');
 }
@@ -935,23 +1106,10 @@ export async function getActivationRoster(category, opts = {}) {
   }
 
   const bbSubgrupoFilter = opts.bbSubgrupo || null;
+  const rematSubgrupoFilter = opts.rematSubgrupo || null;
   const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
 
-  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
-  if (!matSnap) {
-    const err = new Error('Snapshots de matriculados não encontrados.');
-    err.status = 404;
-    throw err;
-  }
-  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
-    ? null
-    : await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
-    const err = new Error(`Snapshots de ${category} não encontrados.`);
-    err.status = 404;
-    throw err;
-  }
-  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
+  const { matSnap, otherSnapId } = await resolveActivationSnapshotPair(category);
   const { rows, meta } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
   const rosterCached = activationRosterCaches.get(`${category}:${matSnap.id}:${otherSnapId}`);
 
@@ -979,6 +1137,7 @@ export async function getActivationRoster(category, opts = {}) {
 
   // bb_subgrupo_counts deve refletir o total antes do filtro de subgrupo.
   const bbSubgrupoCountsUnfiltered = meta?.bb_subgrupo_counts ?? undefined;
+  const rematSubgrupoCountsUnfiltered = meta?.remat_subgrupo_counts ?? undefined;
 
   let filtered =
     stageFilter === 'all'
@@ -989,6 +1148,10 @@ export async function getActivationRoster(category, opts = {}) {
 
   if (bbSubgrupoFilter && category === 'acessos-blackboard') {
     filtered = filtered.filter((row) => row.bb_subgrupo === bbSubgrupoFilter);
+  }
+
+  if (rematSubgrupoFilter && category === 'rematricula') {
+    filtered = filtered.filter((row) => row.remat_subgrupo === rematSubgrupoFilter);
   }
 
   if (cicloFilterRaw) {
@@ -1076,8 +1239,10 @@ export async function getActivationRoster(category, opts = {}) {
     skipped_ciclo_divergente: meta?.skipped_ciclo_divergente || 0,
     bb_urgency_counts: meta?.bb_urgency_counts,
     bb_subgrupo_counts: bbSubgrupoCountsUnfiltered,
+    remat_subgrupo_counts: rematSubgrupoCountsUnfiltered,
     available_ciclos,
     counts_by_ciclo,
+    warning: meta?.remat_warning ?? undefined,
   };
 }
 
@@ -1095,23 +1260,10 @@ export async function getActivationRosterKeys(category, opts = {}) {
   })();
 
   const bbSubgrupoFilter = opts.bbSubgrupo || null;
+  const rematSubgrupoFilter = opts.rematSubgrupo || null;
   const cicloFilterRaw = opts.ciclo ? normalizeCiclo(String(opts.ciclo)) : '';
 
-  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
-  if (!matSnap) {
-    const err = new Error('Snapshots de matriculados não encontrados.');
-    err.status = 404;
-    throw err;
-  }
-  const otherSnap = (category === 'aguardando-inicio' || category === 'processos-caa')
-    ? null
-    : await baseUploadRepo.getLatestSnapshot(category);
-  if (!otherSnap && category !== 'aguardando-inicio' && category !== 'processos-caa') {
-    const err = new Error(`Snapshots de ${category} não encontrados.`);
-    err.status = 404;
-    throw err;
-  }
-  const otherSnapId = category === 'processos-caa' ? 'estoque' : (otherSnap?.id ?? 'none');
+  const { matSnap, otherSnapId } = await resolveActivationSnapshotPair(category);
   const { rows } = await buildRosterRowsCached(category, matSnap.id, otherSnapId);
 
   let filtered =
@@ -1123,6 +1275,10 @@ export async function getActivationRosterKeys(category, opts = {}) {
 
   if (bbSubgrupoFilter && category === 'acessos-blackboard') {
     filtered = filtered.filter((row) => row.bb_subgrupo === bbSubgrupoFilter);
+  }
+
+  if (rematSubgrupoFilter && category === 'rematricula') {
+    filtered = filtered.filter((row) => row.remat_subgrupo === rematSubgrupoFilter);
   }
 
   if (cicloFilterRaw) {

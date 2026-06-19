@@ -143,6 +143,19 @@ app.listen(PORT, '0.0.0.0', () => {
         });
     }, CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS);
 
+    // Snapshot diário rematrícula (evolução EM CURSO / adimplente / inadimplente).
+    const REMAT_TRACKING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    setTimeout(() => {
+      import('./services/rematriculaTrackingService.js')
+        .then((m) => m.captureRematriculaDailyPoint({ reason: 'scheduled' }))
+        .catch((err) => console.warn('[rematricula-tracking] startup:', err.message));
+    }, 12_000);
+    setInterval(() => {
+      import('./services/rematriculaTrackingService.js')
+        .then((m) => m.captureRematriculaDailyPoint({ reason: 'scheduled' }))
+        .catch((err) => console.error('[rematricula-tracking] FAIL:', err.message));
+    }, REMAT_TRACKING_INTERVAL_MS);
+
     // Cron interno de sync de desfechos CAA via CRM DataCrazy.
     // Endpoint manual: POST /api/maintenance/sync-crm-desfechos.
     const CRM_DESFECHO_SYNC_INTERVAL_HOURS = Math.max(

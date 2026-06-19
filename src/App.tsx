@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import { BrowserRouter, Route, Routes, Navigate, useLocation } from 'react-router-dom';
+import RematriculaPage from './pages/RematriculaPage';
 import DisparadorPage from './pages/DisparadorPage';
 import StudentsPage from './pages/StudentsPage';
 import StudentDetailPage from './pages/StudentDetailPage';
@@ -55,6 +56,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/rematricula" element={<RematriculaPage />} />
         <Route path="/" element={<ProtectedRoute slug="disparador"><DisparadorPage /></ProtectedRoute>} />
         <Route path="/students" element={<ProtectedRoute slug="alunos"><StudentsPage /></ProtectedRoute>} />
         <Route path="/students/:id" element={<ProtectedRoute slug="alunos"><StudentDetailPage /></ProtectedRoute>} />

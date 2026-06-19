@@ -5,9 +5,106 @@ export type ReportSlug =
   | 'matriculados'
   | 'docs-pendentes'
   | 'financeiro'
+  | 'inadimplentes-vencidos'
+  | 'rematricula'
   | 'acessos-blackboard'
   | 'processos-caa'
   | 'provavel-evasao';
+
+export type RematSubgrupoFilter = 'all' | 'adimplente' | 'inadimplente';
+
+export interface RematriculaReportRow {
+  nome: string;
+  rgm: string;
+  cpf: string;
+  email: string;
+  telefone: string;
+  polo: string;
+  curso: string;
+  ciclo: string;
+  instituicao: string;
+  situacao_matricula: string;
+  financeiro: string;
+  remat_subgrupo: 'adimplente' | 'inadimplente';
+  prior_activation_count: number;
+  last_dispatch_at: string | null;
+}
+
+export interface RematriculaReportSummary {
+  total_fila: number;
+  adimplente: number;
+  inadimplente: number;
+  hint: string;
+  warning: string | null;
+  active_source: string | null;
+  matriculados_snapshot: SnapshotMetaDto | null;
+  remat_base: (SnapshotMetaDto & { source?: string }) | null;
+}
+
+export interface RematriculaReportResponse {
+  summary: RematriculaReportSummary;
+  subgrupo: RematSubgrupoFilter;
+  total: number;
+  total_fila: number;
+  remat_subgrupo_counts: { adimplente: number; inadimplente: number };
+  items: RematriculaReportRow[];
+  offset: number;
+  limit: number;
+  generated_at: string;
+}
+
+export interface RematriculaDailyStat {
+  stat_date: string;
+  snapshot_id: string | null;
+  source: string | null;
+  total_em_curso: number;
+  adimplente: number;
+  inadimplente: number;
+  pct_inadimplente: number | string | null;
+  delta_total: number | null;
+  delta_adimplente: number | null;
+  delta_inadimplente: number | null;
+  novos_inadimplentes: number | null;
+  recuperados_financeiro: number | null;
+  sairam_da_base: number | null;
+  ativacoes_dia: number;
+  captured_at: string;
+}
+
+export interface RematriculaTrackingResponse {
+  live: {
+    total: number;
+    adimplente: number;
+    inadimplente: number;
+    pct_inadimplente: number;
+  } | null;
+  latest: RematriculaDailyStat | null;
+  previous: RematriculaDailyStat | null;
+  series: RematriculaDailyStat[];
+  activations_series: { day: string; n: number }[];
+  snapshot: (SnapshotMetaDto & { source?: string }) | null;
+  upload_diff: {
+    novos_inadimplentes: number;
+    recuperados_financeiro: number;
+    novos_na_base?: number;
+    sairam_da_base: number;
+    from_snapshot_at?: string;
+  } | null;
+  kpis: {
+    total_em_curso: number;
+    adimplente: number;
+    inadimplente: number;
+    pct_inadimplente: number;
+    delta_total: number | null;
+    delta_inadimplente: number | null;
+    delta_adimplente: number | null;
+    ativacoes_hoje: number;
+    ativacoes_periodo: number;
+    novos_inadimplentes: number;
+    recuperados: number;
+  };
+  generated_at: string;
+}
 
 export interface ReportOverviewResponse {
   counts: Record<ReportSlug, number>;
@@ -148,7 +245,7 @@ export const reportApi = {
   },
 
   list(
-    type: ReportSlug,
+    type: Exclude<ReportSlug, 'rematricula'>,
     filters: { term_id?: string; polo?: string; limit?: number; offset?: number } = {}
   ) {
     const p = new URLSearchParams();
@@ -160,6 +257,32 @@ export const reportApi = {
     return fetchJson<ReportListResponse>(`/api/reports/${type}${q ? `?${q}` : ''}`, {
       timeoutMs: 180_000,
     });
+  },
+
+  rematricula(filters: {
+    subgrupo?: RematSubgrupoFilter;
+    limit?: number;
+    offset?: number;
+  } = {}) {
+    const p = new URLSearchParams();
+    if (filters.subgrupo && filters.subgrupo !== 'all') p.set('subgrupo', filters.subgrupo);
+    if (filters.limit != null) p.set('limit', String(filters.limit));
+    if (filters.offset != null) p.set('offset', String(filters.offset));
+    const q = p.toString();
+    return fetchJson<RematriculaReportResponse>(`/api/reports/rematricula${q ? `?${q}` : ''}`, {
+      timeoutMs: 180_000,
+    });
+  },
+
+  rematriculaTracking(opts: { days?: number; capture?: boolean } = {}) {
+    const p = new URLSearchParams();
+    if (opts.days != null) p.set('days', String(opts.days));
+    if (opts.capture) p.set('capture', '1');
+    const q = p.toString();
+    return fetchJson<RematriculaTrackingResponse>(
+      `/api/reports/rematricula/tracking${q ? `?${q}` : ''}`,
+      { timeoutMs: 120_000 }
+    );
   },
 
   caaSummary(opts: { scope?: 'last_snapshot' | 'hours'; hours?: number; ciclo?: string } = {}) {
