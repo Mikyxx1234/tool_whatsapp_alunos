@@ -24,8 +24,8 @@ import {
 import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFromRow.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import { isWindowOpen, calcJanela } from '../utils/caaWindow.js';
-import { pickDisplayRgm, displayRgmFromRow, displayRgmFromMatriculadosRow, isPlausibleInstitutionalRgm } from '../utils/rgmDisplay.js';
-import { repairSiaaRematriculaRow, cpfDigitsFromSiaaRow } from '../utils/siaaRematriculaRepair.js';
+import { pickDisplayRgm, institutionalRgmFromAnyRow } from '../utils/rgmDisplay.js';
+import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
 import {
   datacrazyClient,
   ORIGEM_ATIVACAO_BLOCK_MESSAGE,
@@ -411,18 +411,18 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
 }
 
 /** Linha da base Rematrícula (SIAA / Portal de Polos). */
-function rowToRematriculaItem(row, matRgmByCpf = null) {
+function rowToRematriculaItem(row, matLookup = null) {
+  let rgm = institutionalRgmFromAnyRow(row);
   const repaired = repairSiaaRematriculaRow(row);
+  if (!rgm) rgm = pickDisplayRgm(repaired, null, 'rematricula');
+  if (!rgm && matLookup) {
+    rgm = rgmFromMatriculadosLookup(repaired, matLookup);
+  }
   const nome = String(repaired.NOME ?? repaired.Nome ?? repaired.Aluno ?? repaired.nome ?? '').trim();
   const email = String(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '').trim();
   const telefone = String(
     repaired.FONE_CEL ?? repaired.Celular ?? repaired['Fone celular'] ?? repaired.Telefone ?? ''
   ).trim();
-  let rgm = pickDisplayRgm(repaired, null, 'rematricula');
-  if (!rgm && matRgmByCpf) {
-    const cpf = cpfDigitsFromSiaaRow(repaired);
-    if (cpf) rgm = matRgmByCpf.get(cpf) ?? '';
-  }
   return {
     nome,
     email,
@@ -439,23 +439,31 @@ function rowToRematriculaItem(row, matRgmByCpf = null) {
   };
 }
 
-/** Mapa CPF → RGM institucional da base matriculados (fallback quando SIAA desloca colunas). */
-async function buildMatriculadosRgmByCpfMap() {
-  const snap = await baseUploadRepo.getLatestSnapshot('matriculados');
-  if (!snap) return new Map();
-  /** @type {Map<string, string>} */
-  const map = new Map();
-  await baseUploadRepo.forEachRowDataForSnapshot('matriculados', snap.id, (matRow) => {
-    const cpf = String(matRow.CPF ?? matRow.cpf ?? '').replace(/\D/g, '');
-    if (cpf.length < 11) return;
-    const cpf11 = cpf.slice(-11);
-    let rgm = displayRgmFromMatriculadosRow(matRow);
-    if (!rgm || !isPlausibleInstitutionalRgm(rgm)) {
-      rgm = displayRgmFromRow(matRow);
+/**
+ * @param {Record<string, unknown>} rematRow
+ * @param {Map<string, object[]>|null} matLookup
+ */
+function rgmFromMatriculadosLookup(rematRow, matLookup) {
+  if (!matLookup) return '';
+  const ids = collectRowIdentities(rematRow, { category: 'rematricula' });
+  for (const id of ids) {
+    if (id.startsWith('RGM:')) continue;
+    const matches = matLookup.get(id);
+    if (!matches?.length) continue;
+    for (const matRow of matches) {
+      const rgm = institutionalRgmFromAnyRow(matRow);
+      if (rgm) return rgm;
     }
-    if (rgm && isPlausibleInstitutionalRgm(rgm)) map.set(cpf11, rgm);
-  });
-  return map;
+  }
+  return '';
+}
+
+/** Lookup matriculados por identidade (CPF, e-mail, telefone) para RGM. */
+async function buildMatriculadosLookupForRemat() {
+  const snap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!snap) return null;
+  const index = await buildPersonIndexFromSnapshot('matriculados', snap.id);
+  return buildIdentityLookup(index.byCanon);
 }
 
 /**
@@ -918,14 +926,14 @@ async function _buildRematriculaList(category, rematSnap, excludeDispatched) {
   let skipped_duplicate_key = 0;
   let intersection_raw = 0;
 
-  const matRgmByCpf = await buildMatriculadosRgmByCpfMap();
+  const matLookup = await buildMatriculadosLookupForRemat();
 
   await baseUploadRepo.forEachRowDataForSnapshot('rematricula', rematSnap.id, (row) => {
     if (!isRematriculaEmCursoRow(row)) return;
     intersection_raw += 1;
 
     const remat_subgrupo = rematFinanceiroSubgrupoFromRow(row);
-    const item = rowToRematriculaItem(row, matRgmByCpf);
+    const item = rowToRematriculaItem(row, matLookup);
     const master_key = masterKeyFromActivationItem(item) ?? undefined;
 
     if (master_key) {

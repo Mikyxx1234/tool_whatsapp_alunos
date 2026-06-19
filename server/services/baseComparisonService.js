@@ -8,7 +8,7 @@ import {
 import { cicloFromRow, compareCicloSets } from '../utils/cicloFromRow.js';
 import { shouldReplaceEvasaoRow } from '../utils/evasaoDedup.js';
 import { personNameFromRow } from '../utils/personName.js';
-import { isLikelyErpMatriculaRgm, normalizeRgmCanonical } from '../utils/rgmDisplay.js';
+import { isLikelyErpMatriculaRgm, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from '../utils/rgmDisplay.js';
 
 /** @typedef {{ ids: Set<string>, ciclos: Set<string>, row?: Record<string, unknown> }} PersonIndexEntry */
 
@@ -46,6 +46,7 @@ const CPF_KEYS = [
 const EMAIL_KEYS = [
   'Email',
   'E-mail',
+  'E_MAIL',
   'email',
   'EMAIL',
   'e-mail',
@@ -61,6 +62,7 @@ const TEL_KEYS = [
   'Telefone',
   'telefone',
   'Fone',
+  'FONE_CEL',
   'Celular Aluno',
   'Telefone Aluno',
   'Fone Celular',
@@ -98,7 +100,9 @@ export function collectRowIdentities(row, opts = {}) {
     const raw = row[k];
     if (opts.category === 'matriculados' && isLikelyErpMatriculaRgm(raw)) continue;
     const rgm = normalizeRgmCanonical(raw);
-    if (rgm) out.add(`RGM:${rgm}`);
+    if (!rgm) continue;
+    if (opts.category === 'rematricula' && !isPlausibleInstitutionalRgm(rgm)) continue;
+    out.add(`RGM:${rgm}`);
   }
   for (const k of CPF_KEYS) {
     const d = digits(row[k]);

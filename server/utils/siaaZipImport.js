@@ -1,6 +1,10 @@
 import { unzipSync } from 'fflate';
 import { xlsxBufferToRowObjects, csvTextToRowObjectsFast } from './spreadsheetToObjects.js';
 import { normalizeRgmCanonical } from './rgmDisplay.js';
+import {
+  cpfDigitsFromSiaaRow,
+  siaaRematriculaRowQuality,
+} from './siaaRematriculaRepair.js';
 
 const SPREADSHEET_EXT = /\.(xlsx|xls|xlsm|xlsb|ods|csv|tsv|txt)$/i;
 
@@ -10,7 +14,6 @@ const SPREADSHEET_EXT = /\.(xlsx|xls|xlsm|xlsb|ods|csv|tsv|txt)$/i;
  */
 export function isZipBuffer(buffer, fileName = '') {
   if (/\.zip$/i.test(fileName)) return true;
-  // XLSX/XLSM também são ZIP internamente — não usar magic bytes PK sem extensão .zip
   return false;
 }
 
@@ -35,13 +38,13 @@ function rowIdentityKey(row) {
     row.RGM_ALUN || row.RGM || row['RGM Aluno'] || row['RGM_ALUNO'] || ''
   );
   if (rgm) return `rgm:${rgm}`;
-  const cpf = String(row.CPF_ALUN || row.CPF || row['CPF Aluno'] || '')
-    .replace(/\D/g, '');
-  if (cpf.length >= 11) return `cpf:${cpf}`;
+  const cpf = cpfDigitsFromSiaaRow(row);
+  if (cpf) return `cpf:${cpf}`;
   return '';
 }
 
 /**
+ * Mantém a linha com mais dados úteis (RGM válido > linha parcial de outro XLSM no ZIP).
  * @param {Record<string, string>[]} rows
  */
 export function dedupeRowsByIdentity(rows) {
@@ -49,13 +52,15 @@ export function dedupeRowsByIdentity(rows) {
   for (const row of rows) {
     const key = rowIdentityKey(row);
     if (!key) continue;
-    if (!map.has(key)) map.set(key, row);
+    const existing = map.get(key);
+    if (!existing || siaaRematriculaRowQuality(row) > siaaRematriculaRowQuality(existing)) {
+      map.set(key, row);
+    }
   }
   return [...map.values()];
 }
 
 /**
- * Export SIAA traz adimplentes e inadimplentes; a base Rematrícula só indexa inadimplentes.
  * @param {Record<string, string>[]} rows
  */
 export function filterSiaaInadimplenteRows(rows) {
@@ -68,7 +73,6 @@ function siaaSitAtualFromRow(row) {
 }
 
 /**
- * Coluna F (Sit_Atual) do export SIAA — só alunos em curso entram na base Rematrícula.
  * @param {Record<string, string>[]} rows
  */
 export function filterSiaaEmCursoRows(rows) {
@@ -76,7 +80,6 @@ export function filterSiaaEmCursoRows(rows) {
 }
 
 /**
- * Upload SIAA na base Rematrícula: só Sit_Atual/SIT_ATUAL = EM CURSO (adimplente e inadimplente).
  * @param {Record<string, string>[]} rows
  * @param {string} [logPrefix]
  */

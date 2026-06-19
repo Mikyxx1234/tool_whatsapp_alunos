@@ -116,6 +116,23 @@ export function isPlausibleInstitutionalRgm(canon) {
   return prefix >= INSTITUTIONAL_RGM_PREFIX_MIN && prefix <= INSTITUTIONAL_RGM_PREFIX_MAX;
 }
 
+/**
+ * Varre todas as colunas da linha e retorna o primeiro RGM institucional plausível.
+ * @param {Record<string, unknown>|null|undefined} row
+ */
+export function institutionalRgmFromAnyRow(row) {
+  if (!row || typeof row !== 'object') return '';
+  const fromCol = displayRgmFromRow(row);
+  if (fromCol && isPlausibleInstitutionalRgm(fromCol)) return fromCol;
+  const fromMat = displayRgmFromMatriculadosRow(row);
+  if (fromMat && isPlausibleInstitutionalRgm(fromMat)) return fromMat;
+  for (const val of Object.values(row)) {
+    const canon = normalizeRgmCanonical(val);
+    if (canon && isPlausibleInstitutionalRgm(canon)) return canon;
+  }
+  return '';
+}
+
 export function normalizeRgmCanonical(raw) {
   const s = String(raw ?? '').trim();
   if (!s) return '';
