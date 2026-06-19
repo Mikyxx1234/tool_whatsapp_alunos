@@ -1,6 +1,6 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import * as XLSX from 'xlsx';
-import { isRgmColumnKey, normalizeRgmCanonical } from './rgmDisplay.js';
+import { isRgmColumnKey, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from './rgmDisplay.js';
 
 /**
  * Export ERP com !ref inválido (ex.: "1:K6910") e células sem endereço A1/B1…
@@ -74,17 +74,45 @@ function cellValueFromXml(cellXml, sharedStrings) {
 }
 
 /**
+ * @param {string} ref — ex. "A3", "BC12"
+ * @returns {number} índice 0-based da coluna, ou -1
+ */
+function colIndexFromCellRef(ref) {
+  const m = /^([A-Za-z]+)/.exec(String(ref ?? '').trim());
+  if (!m) return -1;
+  let col = 0;
+  for (const ch of m[1].toUpperCase()) {
+    col = col * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return col - 1;
+}
+
+/**
  * @param {string} rowXml
  * @param {string[]} sharedStrings
  * @returns {string[]}
  */
 export function cellsFromRowXml(rowXml, sharedStrings = []) {
-  /** @type {string[]} */
-  const cells = [];
-  const cellRe = /<(?:\w+:)?c\b[^>]*>[\s\S]*?<\/(?:\w+:)?c>/g;
+  const cellRe = /<(?:\w+:)?c\b([^>]*)>[\s\S]*?<\/(?:\w+:)?c>/g;
+  /** @type {Map<number, string>} */
+  const byCol = new Map();
+  let maxCol = -1;
+  let seq = 0;
   let m;
   while ((m = cellRe.exec(rowXml))) {
-    cells.push(cellValueFromXml(m[0], sharedStrings));
+    const attrs = m[1];
+    const rMatch = /\br="([^"]+)"/.exec(attrs);
+    let colIdx = rMatch ? colIndexFromCellRef(rMatch[1]) : seq;
+    if (colIdx < 0) colIdx = seq;
+    const val = cellValueFromXml(m[0], sharedStrings);
+    byCol.set(colIdx, val);
+    if (colIdx > maxCol) maxCol = colIdx;
+    seq += 1;
+  }
+  if (maxCol < 0) return [];
+  const cells = [];
+  for (let c = 0; c <= maxCol; c += 1) {
+    cells.push(byCol.get(c) ?? '');
   }
   return cells;
 }
@@ -167,7 +195,7 @@ export function brokenExportXlsxToRowObjects(buffer, sheetXmlPath = 'xl/workshee
       if (val) empty = false;
       if (isRgmColumnKey(key)) {
         const canon = normalizeRgmCanonical(val);
-        val = canon || val;
+        val = canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
       }
       o[key] = val;
     }

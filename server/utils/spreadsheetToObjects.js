@@ -4,7 +4,7 @@ import {
   brokenExportXlsxToRowObjects,
   sheetRefIsBroken,
 } from './brokenExportXlsx.js';
-import { isRgmColumnKey, normalizeRgmCanonical } from './rgmDisplay.js';
+import { isRgmColumnKey, normalizeRgmCanonical, isPlausibleInstitutionalRgm } from './rgmDisplay.js';
 
 function cellToString(v, opts = {}) {
   if (v === null || v === undefined) return '';
@@ -131,7 +131,13 @@ export function xlsxBufferToRowObjects(buffer, fileName) {
       const isRgm = isRgmColumnKey(key);
       const val = cellToString(row[c], { preferFormatted: isRgm }).trim();
       if (val) empty = false;
-      o[key] = isRgm ? normalizeRgmCanonical(val) || val : val;
+      if (isRgm) {
+        const canon = normalizeRgmCanonical(val);
+        o[key] =
+          canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+      } else {
+        o[key] = val;
+      }
     }
     if (!empty) objects.push(o);
   }
@@ -168,7 +174,12 @@ export function csvTextToRowObjectsFast(csvText) {
       for (const [k, v] of Object.entries(row)) {
         const isRgm = isRgmColumnKey(k);
         const s = v === null || v === undefined ? '' : String(v).trim();
-        o[k] = isRgm ? normalizeRgmCanonical(s) || s : s;
+        if (isRgm) {
+          const canon = normalizeRgmCanonical(s);
+          o[k] = canon && isPlausibleInstitutionalRgm(canon) ? canon : '';
+        } else {
+          o[k] = s;
+        }
       }
     }
     return o;

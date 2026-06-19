@@ -24,7 +24,8 @@ import {
 import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFromRow.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import { isWindowOpen, calcJanela } from '../utils/caaWindow.js';
-import { pickDisplayRgm } from '../utils/rgmDisplay.js';
+import { pickDisplayRgm, displayRgmFromRow, displayRgmFromMatriculadosRow, isPlausibleInstitutionalRgm } from '../utils/rgmDisplay.js';
+import { repairSiaaRematriculaRow, cpfDigitsFromSiaaRow } from '../utils/siaaRematriculaRepair.js';
 import {
   datacrazyClient,
   ORIGEM_ATIVACAO_BLOCK_MESSAGE,
@@ -410,27 +411,51 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
 }
 
 /** Linha da base Rematrícula (SIAA / Portal de Polos). */
-function rowToRematriculaItem(row) {
-  const nome = String(row.NOME ?? row.Nome ?? row.Aluno ?? row.nome ?? '').trim();
-  const email = String(row.E_MAIL ?? row.Email ?? row['E-mail'] ?? '').trim();
+function rowToRematriculaItem(row, matRgmByCpf = null) {
+  const repaired = repairSiaaRematriculaRow(row);
+  const nome = String(repaired.NOME ?? repaired.Nome ?? repaired.Aluno ?? repaired.nome ?? '').trim();
+  const email = String(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '').trim();
   const telefone = String(
-    row.FONE_CEL ?? row.Celular ?? row['Fone celular'] ?? row.Telefone ?? ''
+    repaired.FONE_CEL ?? repaired.Celular ?? repaired['Fone celular'] ?? repaired.Telefone ?? ''
   ).trim();
-  const rgm = pickDisplayRgm(row, null, 'rematricula');
+  let rgm = pickDisplayRgm(repaired, null, 'rematricula');
+  if (!rgm && matRgmByCpf) {
+    const cpf = cpfDigitsFromSiaaRow(repaired);
+    if (cpf) rgm = matRgmByCpf.get(cpf) ?? '';
+  }
   return {
     nome,
     email,
     telefone,
     rgm,
-    cpf: String(row.CPF_ALUN ?? row.CPF ?? '').trim(),
-    polo: String(row.NOME_POLO ?? row.Polo ?? '').trim(),
-    curso: String(row.DES_CURS ?? row.Curso ?? '').trim(),
-    ciclo: String(row.SIT_2026_1 ?? row.Ciclo ?? cicloFromRow(row) ?? '').trim(),
+    cpf: String(repaired.CPF_ALUN ?? repaired.CPF ?? '').trim(),
+    polo: String(repaired.NOME_POLO ?? repaired.Polo ?? '').trim(),
+    curso: String(repaired.DES_CURS ?? repaired.Curso ?? '').trim(),
+    ciclo: String(repaired.SIT_2026_1 ?? repaired.Ciclo ?? cicloFromRow(repaired) ?? '').trim(),
     situacao_matricula: String(
-      row.SIT_ATUAL ?? row.Sit_Atual ?? row['Situação Matrícula'] ?? row.Situacao ?? ''
+      repaired.SIT_ATUAL ?? repaired.Sit_Atual ?? repaired['Situação Matrícula'] ?? repaired.Situacao ?? ''
     ).trim(),
     subprocesso_caa: '',
   };
+}
+
+/** Mapa CPF → RGM institucional da base matriculados (fallback quando SIAA desloca colunas). */
+async function buildMatriculadosRgmByCpfMap() {
+  const snap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!snap) return new Map();
+  /** @type {Map<string, string>} */
+  const map = new Map();
+  await baseUploadRepo.forEachRowDataForSnapshot('matriculados', snap.id, (matRow) => {
+    const cpf = String(matRow.CPF ?? matRow.cpf ?? '').replace(/\D/g, '');
+    if (cpf.length < 11) return;
+    const cpf11 = cpf.slice(-11);
+    let rgm = displayRgmFromMatriculadosRow(matRow);
+    if (!rgm || !isPlausibleInstitutionalRgm(rgm)) {
+      rgm = displayRgmFromRow(matRow);
+    }
+    if (rgm && isPlausibleInstitutionalRgm(rgm)) map.set(cpf11, rgm);
+  });
+  return map;
 }
 
 /**
@@ -893,12 +918,14 @@ async function _buildRematriculaList(category, rematSnap, excludeDispatched) {
   let skipped_duplicate_key = 0;
   let intersection_raw = 0;
 
+  const matRgmByCpf = await buildMatriculadosRgmByCpfMap();
+
   await baseUploadRepo.forEachRowDataForSnapshot('rematricula', rematSnap.id, (row) => {
     if (!isRematriculaEmCursoRow(row)) return;
     intersection_raw += 1;
 
     const remat_subgrupo = rematFinanceiroSubgrupoFromRow(row);
-    const item = rowToRematriculaItem(row);
+    const item = rowToRematriculaItem(row, matRgmByCpf);
     const master_key = masterKeyFromActivationItem(item) ?? undefined;
 
     if (master_key) {

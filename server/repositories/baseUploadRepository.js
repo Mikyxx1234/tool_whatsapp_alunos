@@ -13,6 +13,7 @@ import {
   normalizeRgmCanonical,
   normalizeRowRgms,
 } from '../utils/rgmDisplay.js';
+import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
 
 /** @typedef {'matriculados'|'docs-pendentes'|'financeiro'|'inadimplentes-vencidos'|'rematricula'|'acessos-blackboard'|'processos-caa'|'provavel-evasao'} BaseCategory */
 
@@ -164,6 +165,9 @@ export async function createSnapshotFromRowObjects(category, input) {
       objects = objects.map((row) => normalizeFinanceiroRow(row));
     } else {
       objects = objects.map((row) => normalizeRowRgms(row));
+    }
+    if (category === 'rematricula') {
+      objects = objects.map((row) => repairSiaaRematriculaRow(row));
     }
   }
 

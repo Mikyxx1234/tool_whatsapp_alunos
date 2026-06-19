@@ -6,6 +6,8 @@ export const RGM_COLUMN_KEYS = new Set(
     'rgm',
     'RGM_ALUN',
     'RGM_ALUNO',
+    'RGM Aluno',
+    'RGM ALUNO',
     'Matricula',
     'matricula',
     'MATRICULA',
@@ -13,6 +15,18 @@ export const RGM_COLUMN_KEYS = new Set(
     'matrícula',
   ].map((k) => k.toLowerCase())
 );
+
+/** Colunas SIAA / Portal usadas antes do scan genérico por nome de coluna. */
+const RGM_RAW_FALLBACK_KEYS = [
+  'RGM_ALUN',
+  'RGM',
+  'RGM_ALUNO',
+  'RGM Aluno',
+  'RGM ALUNO',
+  'Matricula',
+  'MATRICULA',
+  'Matrícula',
+];
 
 /**
  * @param {string} key
@@ -73,13 +87,33 @@ export function isFinanceiroValorAsRgm(raw) {
   return false;
 }
 
+/** Prefixo de 2 dígitos da série Cruzeiro EAD (48→49→50…). Configurável via env. */
+const INSTITUTIONAL_RGM_PREFIX_MIN = Math.max(
+  0,
+  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MIN) || 40)
+);
+const INSTITUTIONAL_RGM_PREFIX_MAX = Math.max(
+  INSTITUTIONAL_RGM_PREFIX_MIN,
+  Math.floor(Number(process.env.INSTITUTIONAL_RGM_PREFIX_MAX) || 49)
+);
+
 /**
+ * @param {string} canon — 8 dígitos
+ */
+export function institutionalRgmPrefix(canon) {
+  if (!/^\d{8}$/.test(canon)) return null;
+  return parseInt(canon.slice(0, 2), 10);
+}
+
+/**
+ * RGM institucional Cruzeiro: 8 dígitos, prefixo crescente (hoje 40–49, depois 50…).
  * @param {string} canon
  */
 export function isPlausibleInstitutionalRgm(canon) {
   if (!/^\d{8}$/.test(canon)) return false;
-  const n = parseInt(canon, 10);
-  return Number.isFinite(n) && n >= 1_000_000;
+  const prefix = institutionalRgmPrefix(canon);
+  if (prefix == null || !Number.isFinite(prefix)) return false;
+  return prefix >= INSTITUTIONAL_RGM_PREFIX_MIN && prefix <= INSTITUTIONAL_RGM_PREFIX_MAX;
 }
 
 export function normalizeRgmCanonical(raw) {
@@ -144,7 +178,8 @@ export function normalizeRowRgms(row) {
   for (const [key, val] of Object.entries(row)) {
     if (!isRgmColumnKey(key)) continue;
     const canon = normalizeRgmCanonical(val);
-    if (canon) out[key] = canon;
+    if (canon && isPlausibleInstitutionalRgm(canon)) out[key] = canon;
+    else out[key] = '';
   }
   return out;
 }
@@ -198,6 +233,13 @@ export function detectFinanceiroRgmColumnIsValor(objects) {
  * @param {Record<string, unknown>} row
  */
 export function rgmRawFromRow(row) {
+  if (!row || typeof row !== 'object') return '';
+  for (const key of RGM_RAW_FALLBACK_KEYS) {
+    const v = row[key];
+    if (v !== null && v !== undefined && String(v).trim() !== '') {
+      return String(v).trim();
+    }
+  }
   for (const key of Object.keys(row)) {
     if (!isRgmColumnKey(key)) continue;
     const v = row[key];
@@ -242,5 +284,9 @@ export function pickDisplayRgm(matRow, otherRow, otherCategory) {
     if (fromOther) return fromOther;
   }
   if (!matRow) return '';
+  // Base Rematrícula (SIAA / Portal): RGM institucional 8 dígitos, não token ERP.
+  if (otherCategory === 'rematricula') {
+    return displayRgmFromRow(matRow);
+  }
   return displayRgmFromMatriculadosRow(matRow);
 }
