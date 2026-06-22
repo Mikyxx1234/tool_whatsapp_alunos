@@ -4,8 +4,14 @@ import { getIntersectionActivationList } from './activationService.js';
 import {
   isRematriculaEmCursoRow,
   rematFinanceiroSubgrupoFromRow,
+  REMAT_CICLO_DESTINO,
 } from '../utils/rematriculaEligibility.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
+import { normalizeCiclo } from '../utils/cicloFromRow.js';
+import {
+  dataMatriculaDateKey,
+  isMatriculadosRematriculaRow,
+} from '../utils/matriculadosTipoMatricula.js';
 
 const BRT = 'America/Sao_Paulo';
 
@@ -145,7 +151,60 @@ function _parseIsoDate(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 
-function _kpisFromRow(row, activations_period) {
+function _periodBounds(opts) {
+  if (opts.from && opts.to) return { from: opts.from, to: opts.to };
+  const days = Math.min(Math.max(Number(opts.days) || 30, 1), 365);
+  const to = todayStatDateBrt();
+  const end = new Date(`${to}T12:00:00`);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  return {
+    from: start.toLocaleDateString('en-CA', { timeZone: BRT }),
+    to,
+  };
+}
+
+/**
+ * Conta rematrículas no snapshot matriculados (tipo_matricula), alinhado ao Dashboard Acadêmico.
+ * @param {{ ciclo?: string, from?: string|null, to?: string|null, days?: number }} [opts]
+ */
+export async function countMatriculadosRematriculas(opts = {}) {
+  const snap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!snap) {
+    return { total: 0, hoje: 0, periodo: 0, ciclo: REMAT_CICLO_DESTINO, snapshot: null };
+  }
+
+  const cicloNorm = normalizeCiclo(opts.ciclo || REMAT_CICLO_DESTINO);
+  const today = todayStatDateBrt();
+  const { from, to } = _periodBounds(opts);
+
+  let total = 0;
+  let hoje = 0;
+  let periodo = 0;
+
+  await baseUploadRepo.forEachRowDataForSnapshot('matriculados', snap.id, (row) => {
+    if (!isMatriculadosRematriculaRow(row, cicloNorm)) return;
+    total += 1;
+    const dk = dataMatriculaDateKey(row);
+    if (dk === today) hoje += 1;
+    if (dk && dk >= from && dk <= to) periodo += 1;
+  });
+
+  return {
+    total,
+    hoje,
+    periodo,
+    ciclo: cicloNorm,
+    snapshot: {
+      id: snap.id,
+      file_name: snap.file_name,
+      row_count: snap.row_count,
+      created_at: snap.created_at,
+    },
+  };
+}
+
+function _kpisFromRow(row, activations_period, rematCounts) {
   return {
     total_em_curso: row.total_em_curso,
     adimplente: row.adimplente,
@@ -158,6 +217,10 @@ function _kpisFromRow(row, activations_period) {
     ativacoes_periodo: activations_period,
     novos_inadimplentes: row.novos_inadimplentes ?? 0,
     recuperados: row.recuperados_financeiro ?? 0,
+    rematriculas_acumuladas: rematCounts.total,
+    rematriculas_hoje: rematCounts.hoje,
+    rematriculas_periodo: rematCounts.periodo,
+    rematriculas_ciclo: rematCounts.ciclo,
   };
 }
 
@@ -243,10 +306,18 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
       (await trackingRepo.getStatByDate(focusDate));
   }
 
+  const currentTotal = live?.total ?? latest?.total_em_curso ?? 0;
+
+  const rematCounts = await countMatriculadosRematriculas({
+    from: rangeFrom,
+    to: rangeTo,
+    days: rangeFrom && rangeTo ? undefined : days,
+  });
+
   let kpis;
   if (focusDate) {
     kpis = focusRow
-      ? _kpisFromRow(focusRow, totalActivations)
+      ? _kpisFromRow(focusRow, totalActivations, rematCounts)
       : {
           total_em_curso: 0,
           adimplente: 0,
@@ -259,10 +330,14 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
           ativacoes_periodo: totalActivations,
           novos_inadimplentes: 0,
           recuperados: 0,
+          rematriculas_acumuladas: rematCounts.total,
+          rematriculas_hoje: rematCounts.hoje,
+          rematriculas_periodo: rematCounts.periodo,
+          rematriculas_ciclo: rematCounts.ciclo,
         };
   } else {
     kpis = {
-      total_em_curso: live?.total ?? latest?.total_em_curso ?? 0,
+      total_em_curso: currentTotal,
       adimplente: live?.adimplente ?? latest?.adimplente ?? 0,
       inadimplente: live?.inadimplente ?? latest?.inadimplente ?? 0,
       pct_inadimplente: live?.pct_inadimplente ?? Number(latest?.pct_inadimplente ?? 0),
@@ -273,6 +348,10 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
       ativacoes_periodo: totalActivations,
       novos_inadimplentes: latest?.novos_inadimplentes ?? upload_diff?.novos_inadimplentes ?? 0,
       recuperados: latest?.recuperados_financeiro ?? upload_diff?.recuperados_financeiro ?? 0,
+      rematriculas_acumuladas: rematCounts.total,
+      rematriculas_hoje: rematCounts.hoje,
+      rematriculas_periodo: rematCounts.periodo,
+      rematriculas_ciclo: rematCounts.ciclo,
     };
   }
 
@@ -299,6 +378,7 @@ export async function getRematriculaTrackingDashboard(opts = {}) {
         }
       : null,
     upload_diff,
+    matriculados_snapshot: rematCounts.snapshot,
     kpis,
     generated_at: new Date().toISOString(),
   };

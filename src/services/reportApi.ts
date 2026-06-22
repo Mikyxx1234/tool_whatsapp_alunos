@@ -102,7 +102,12 @@ export interface RematriculaTrackingResponse {
     ativacoes_periodo: number;
     novos_inadimplentes: number;
     recuperados: number;
+    rematriculas_acumuladas: number;
+    rematriculas_hoje: number;
+    rematriculas_periodo: number;
+    rematriculas_ciclo: string;
   };
+  matriculados_snapshot: (SnapshotMetaDto & { source?: string }) | null;
   focus_date?: string | null;
   focus_found?: boolean | null;
   filter?: { days: number | null; from: string | null; to: string | null };
