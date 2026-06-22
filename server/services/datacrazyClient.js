@@ -286,7 +286,7 @@ async function searchLeads(opts = {}) {
   }
   const url = `${baseUrl}${SEARCH_LEADS_PATH}?${params.toString()}`;
 
-  const maxAttempts = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1);
+  const maxAttempts = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 3, 1);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await datacrazyCrmLimiter.acquire();
     const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
@@ -299,7 +299,7 @@ async function searchLeads(opts = {}) {
     }
 
     if (response.status === 429 && attempt < maxAttempts) {
-      await sleep(Math.min(1200 * attempt, 8000));
+      await sleep(Math.min(800 * attempt, 4000));
       continue;
     }
 
@@ -343,35 +343,41 @@ function isRateLimitErrorMessage(msg) {
 function directSearchSettings() {
   return {
     concurrency: Math.max(
-      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 2, 15),
+      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 4, 15),
       1
     ),
-    delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 500, 0),
-    maxAttempts: Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1),
+    delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 0, 0),
+    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 1500, 300),
   };
 }
 
-/** Busca direta com retry/backoff extra — evita falso "não encontrado" por 429. */
+/** Pausa compartilhada só quando a API retorna 429 (não entre todo lote). */
+let directSearchCooldownUntil = 0;
+
+/** Busca direta — retry único após cooldown adaptativo em 429. */
 async function searchLeadsDirect(term) {
-  const { maxAttempts } = directSearchSettings();
-  let lastErr = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await searchLeads({ search: term, take: 5 });
-    } catch (err) {
-      lastErr = err;
-      const rateLimited = err.status === 429 || isRateLimitErrorMessage(err.message);
-      if (rateLimited && attempt < maxAttempts) {
-        await sleep(Math.min(1500 * attempt, 10000));
-        continue;
-      }
-      break;
-    }
+  const { cooldownMs } = directSearchSettings();
+  const now = Date.now();
+  if (now < directSearchCooldownUntil) {
+    await sleep(directSearchCooldownUntil - now);
   }
-  console.warn(
-    `[datacrazy] direct search "${term}" falhou: ${lastErr?.message ?? 'erro desconhecido'}`
-  );
-  return null;
+  try {
+    return await searchLeads({ search: term, take: 5 });
+  } catch (err) {
+    const rateLimited = err.status === 429 || isRateLimitErrorMessage(err.message);
+    if (rateLimited) {
+      directSearchCooldownUntil = Date.now() + cooldownMs;
+      await sleep(cooldownMs);
+      try {
+        return await searchLeads({ search: term, take: 5 });
+      } catch (retryErr) {
+        console.warn(`[datacrazy] direct search "${term}" falhou: ${retryErr.message}`);
+        return null;
+      }
+    }
+    console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -562,21 +568,25 @@ async function buildLeadsLookupIndex(needed = {}) {
 
   let cpfDirectQueries = 0;
   let cpfDirectHits = 0;
-  if (personList.length > 0) {
-    const cpfPass = await runCpfDirectPass();
-    cpfDirectQueries = cpfPass.queries;
-    cpfDirectHits = cpfPass.hits;
-  }
-
   // Métrica do threshold calculada APÓS FASE 0 — personList já está filtrado
   // pelos hits do cache, representando apenas quem precisa de consulta à API.
   const totalRemaining = personList.length > 0
     ? personList.length
     : Math.max(remainingEmails.size, remainingPhones.size);
+  const useDirectSearch = totalRemaining > 0 && totalRemaining <= directThreshold;
+
+  // CPF pass antecipado só na paginação (> threshold). Em busca direta o 2º passe
+  // já tenta CPF — evita ~N chamadas duplicadas (ex.: 100 leads = −100 requests).
+  if (personList.length > 0 && !useDirectSearch) {
+    const cpfPass = await runCpfDirectPass();
+    cpfDirectQueries = cpfPass.queries;
+    cpfDirectHits = cpfPass.hits;
+  }
+
   let directHits = 0;
   let directQueries = 0;
   let directSkippedInvalid = 0;
-  if (totalRemaining > 0 && totalRemaining <= directThreshold) {
+  if (useDirectSearch) {
     // Estratégia: 1ª passada consulta 1 termo por pessoa (telefone preferido,
     // email só se sem telefone). 2ª passada cobre quem não foi encontrado,
     // tentando o termo restante (email). Economiza ~50% das chamadas no caso
@@ -604,10 +614,10 @@ async function buildLeadsLookupIndex(needed = {}) {
     };
 
     if (personList.length > 0) {
-      // 1ª passada: 1 termo por pessoa (prefere telefone)
+      // 1ª passada: telefone → CPF → e-mail (CPF costuma bater melhor no SIAA/Kommo)
       const firstPass = [];
       for (const person of personList) {
-        const term = person.phone || person.email || person.cpf;
+        const term = person.phone || person.cpf || person.email;
         if (term && !queriedTerms.has(term)) {
           queriedTerms.add(term);
           firstPass.push(term);
@@ -615,11 +625,11 @@ async function buildLeadsLookupIndex(needed = {}) {
       }
       await runDirectBatch(firstPass);
 
-      // 2ª passada: pessoas ainda não encontradas tentam termo alternativo (email, depois cpf)
+      // 2ª passada: termos alternativos ainda não consultados
       const secondPass = [];
       for (const person of personList) {
         if (personFoundInIndex(person, byEmail, byPhone, byCpf)) continue;
-        for (const term of [person.email, person.cpf]) {
+        for (const term of [person.phone, person.cpf, person.email]) {
           if (term && !queriedTerms.has(term)) {
             queriedTerms.add(term);
             secondPass.push(term);
