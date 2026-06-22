@@ -44,6 +44,8 @@ export function cpfDigitsFromExcelCell(raw) {
   const parsed = parseExcelNumericCell(raw);
   const d = parsed.replace(/\D/g, '');
   if (d.length === 11) return d;
+  // Excel numérico perde zero à esquerda → 10 dígitos (ex.: 2670853978 → 02670853978)
+  if (d.length === 10) return d.padStart(11, '0');
   if (d.length > 11) return d.slice(-11);
   return '';
 }
