@@ -13,6 +13,12 @@
  */
 
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
+import { datacrazyCrmLimiter } from '../utils/datacrazyCrmLimiter.js';
+import {
+  isValidDatacrazySearchTerm,
+  sanitizeContactEmail,
+  sanitizeContactPhone,
+} from '../utils/datacrazySearchTerm.js';
 
 const SEND_MESSAGE_PATH = '/v1/messages';
 const LIST_TEMPLATES_PATH = '/v1/templates';
@@ -265,8 +271,13 @@ async function getLeadById(leadId) {
 
 async function searchLeads(opts = {}) {
   const { apiKey, baseUrl } = getConfig();
+  const searchTerm = opts.search ? String(opts.search).trim() : '';
+  if (searchTerm && !isValidDatacrazySearchTerm(searchTerm)) {
+    return { data: [], count: 0, skipped_invalid_search: true };
+  }
+
   const params = new URLSearchParams();
-  if (opts.search) params.set('search', String(opts.search).trim());
+  if (searchTerm) params.set('search', searchTerm);
   const maxTake = Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) || 100;
   params.set('take', String(Math.min(Math.max(opts.take ?? 10, 1), maxTake)));
   params.set('skip', String(Math.max(opts.skip ?? 0, 0)));
@@ -274,36 +285,44 @@ async function searchLeads(opts = {}) {
     params.set('complete[additionalFields]', 'true');
   }
   const url = `${baseUrl}${SEARCH_LEADS_PATH}?${params.toString()}`;
-  const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { raw: text };
+
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await datacrazyCrmLimiter.acquire();
+    const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+
+    if (response.status === 429 && attempt < maxAttempts) {
+      await sleep(Math.min(800 * attempt, 3000));
+      continue;
+    }
+
+    if (!response.ok) {
+      const message =
+        data?.error?.message || data?.message || `DataCrazy respondeu com status ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    return { data: list, count: data?.count ?? list.length };
   }
-  if (!response.ok) {
-    const message =
-      data?.error?.message || data?.message || `DataCrazy respondeu com status ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-  return { data: list, count: data?.count ?? list.length };
+
+  return { data: [], count: 0 };
 }
 
 export function normalizeEmailForMatch(v) {
-  const s = String(v ?? '').trim().toLowerCase();
-  if (s.length < 6 || !s.includes('@')) return '';
-  const [local, domain] = s.split('@');
-  return local && domain && domain.includes('.') ? s : '';
+  return sanitizeContactEmail(v);
 }
 
 function normalizePhoneDigits(v) {
-  let d = String(v ?? '').replace(/\D/g, '');
-  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
-  return d.length >= 10 && d.length <= 11 ? d : '';
+  return sanitizeContactPhone(v);
 }
 
 export function leadPhoneDigits(lead) {
@@ -314,6 +333,11 @@ export function leadPhoneDigits(lead) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitErrorMessage(msg) {
+  const s = String(msg ?? '').toLowerCase();
+  return s.includes('too many requests') || s.includes('rate limit') || s.includes('429');
 }
 
 const SHARED_INDEX_TTL_MS = 20 * 60 * 1000;
@@ -337,32 +361,32 @@ async function buildLeadsLookupIndex(needed = {}) {
   const contacts = Array.isArray(needed.contacts) ? needed.contacts : null;
   const remainingEmails = new Set();
   const remainingPhones = new Set();
-  /** @type {Array<{ email: string, phone: string }>} */
+  /** @type {Array<{ email: string, phone: string, cpf: string }>} */
   const personList = [];
   if (contacts) {
     const seenKey = new Set();
     for (const c of contacts) {
-      const e = normalizeEmailForMatch(c?.email);
-      const p = normalizePhoneDigits(c?.phone);
-      if (!e && !p) continue;
-      // Dedup pessoa por (email|phone) — evita reconsultar mesma pessoa quando
-      // a base local tem duplicatas.
-      const key = `${e}::${p}`;
+      const e = sanitizeContactEmail(c?.email);
+      const p = sanitizeContactPhone(c?.phone);
+      const cpfDigits = String(c?.cpf ?? '').replace(/\D/g, '');
+      const cpf = cpfDigits.length === 11 ? cpfDigits : '';
+      if (!e && !p && !cpf) continue;
+      const key = `${e}::${p}::${cpf}`;
       if (seenKey.has(key)) continue;
       seenKey.add(key);
       if (e && !byEmail.has(e)) remainingEmails.add(e);
       if (p && !byPhone.has(p)) remainingPhones.add(p);
-      // Se nenhum dos termos ainda precisa busca, pula a pessoa.
-      const needsEmail = e && remainingEmails.has(e);
-      const needsPhone = p && remainingPhones.has(p);
-      if (needsEmail || needsPhone) personList.push({ email: e || '', phone: p || '' });
+      if ((e && byEmail.has(e)) || (p && byPhone.has(p))) continue;
+      personList.push({ email: e || '', phone: p || '', cpf: cpf || '' });
     }
   } else {
     for (const e of needed.emails || []) {
-      if (!byEmail.has(e)) remainingEmails.add(e);
+      const norm = sanitizeContactEmail(e);
+      if (norm && !byEmail.has(norm)) remainingEmails.add(norm);
     }
     for (const p of needed.phones || []) {
-      if (!byPhone.has(p)) remainingPhones.add(p);
+      const norm = sanitizeContactPhone(p);
+      if (norm && !byPhone.has(norm)) remainingPhones.add(norm);
     }
   }
 
@@ -438,7 +462,7 @@ async function buildLeadsLookupIndex(needed = {}) {
   // Concorrência paralela das buscas diretas. DataCrazy não publica limite oficial;
   // 10 simultâneas mantém pipeline cheio sem estressar o CRM.
   const directConcurrency = Math.max(
-    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 10, 20),
+    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 5, 15),
     1
   );
   // Métrica do threshold calculada APÓS FASE 0 — personList já está filtrado
@@ -448,6 +472,7 @@ async function buildLeadsLookupIndex(needed = {}) {
     : Math.max(remainingEmails.size, remainingPhones.size);
   let directHits = 0;
   let directQueries = 0;
+  let directSkippedInvalid = 0;
   if (totalRemaining > 0 && totalRemaining <= directThreshold) {
     // Estratégia: 1ª passada consulta 1 termo por pessoa (telefone preferido,
     // email só se sem telefone). 2ª passada cobre quem não foi encontrado,
@@ -456,8 +481,13 @@ async function buildLeadsLookupIndex(needed = {}) {
     // base e o CRM.
     const queriedTerms = new Set();
     const runDirectBatch = async (terms) => {
-      for (let i = 0; i < terms.length; i += directConcurrency) {
-        const slice = terms.slice(i, i + directConcurrency);
+      const validTerms = terms.filter((term) => {
+        if (isValidDatacrazySearchTerm(term)) return true;
+        directSkippedInvalid += 1;
+        return false;
+      });
+      for (let i = 0; i < validTerms.length; i += directConcurrency) {
+        const slice = validTerms.slice(i, i + directConcurrency);
         const results = await Promise.all(
           slice.map(async (term) => {
             try {
@@ -488,7 +518,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       // 1ª passada: 1 termo por pessoa (prefere telefone)
       const firstPass = [];
       for (const person of personList) {
-        const term = person.phone || person.email;
+        const term = person.phone || person.email || person.cpf;
         if (term && !queriedTerms.has(term)) {
           queriedTerms.add(term);
           firstPass.push(term);
@@ -496,22 +526,23 @@ async function buildLeadsLookupIndex(needed = {}) {
       }
       await runDirectBatch(firstPass);
 
-      // 2ª passada: pessoas ainda não encontradas tentam termo alternativo (email)
+      // 2ª passada: pessoas ainda não encontradas tentam termo alternativo (email, depois cpf)
       const secondPass = [];
       for (const person of personList) {
         const found =
           (person.email && byEmail.has(person.email)) ||
           (person.phone && byPhone.has(person.phone));
         if (found) continue;
-        const term = person.email && !queriedTerms.has(person.email) ? person.email : '';
-        if (term) {
-          queriedTerms.add(term);
-          secondPass.push(term);
+        for (const term of [person.email, person.cpf]) {
+          if (term && !queriedTerms.has(term)) {
+            queriedTerms.add(term);
+            secondPass.push(term);
+            break;
+          }
         }
       }
       if (secondPass.length > 0) await runDirectBatch(secondPass);
     } else {
-      // Formato antigo: sem vínculo email↔telefone, consulta todos os termos
       // remanescentes sem dedupe por pessoa.
       const terms = [...remainingPhones, ...remainingEmails];
       await runDirectBatch(terms);
@@ -539,6 +570,12 @@ async function buildLeadsLookupIndex(needed = {}) {
       }
     }
 
+    if (directSkippedInvalid > 0) {
+      console.warn(
+        `[datacrazy] ${directSkippedInvalid} busca(s) ignorada(s) — termo inválido (ex.: placeholder "não encontrado")`
+      );
+    }
+
     return {
       byEmail,
       byPhone,
@@ -546,6 +583,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       leadsScanned: directHits,
       direct_search: true,
       direct_queries: directQueries,
+      direct_skipped_invalid: directSkippedInvalid,
       direct_concurrency: directConcurrency,
       direct_persons: personList.length,
       early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
@@ -763,11 +801,15 @@ async function verifyOrigemAtivacaoForCategory(leadId, category, opts = {}) {
     // PUT 200 OK mas API pública nao retorna o campo (ou nem retornou o lead).
     // A automacao do CRM le internamente, entao seguimos com ok=true.
     const warnReason = readErrMsg
-      ? `nao foi possivel ler o lead (${readErrMsg})`
+      ? isRateLimitErrorMessage(readErrMsg)
+        ? 'rate-limit na leitura (PUT já aplicado)'
+        : `nao foi possivel ler o lead (${readErrMsg})`
       : 'API pública não retornou campos adicionais (campo provavelmente sem flag "expor na API")';
-    console.warn(
-      `[origem-ativacao] PUT OK mas verify-by-read falhou lead=${leadId}: ${warnReason}`
-    );
+    if (!isRateLimitErrorMessage(readErrMsg)) {
+      console.warn(
+        `[origem-ativacao] PUT OK mas verify-by-read falhou lead=${leadId}: ${warnReason}`
+      );
+    }
     return {
       ok: true,
       verified: false,
@@ -833,9 +875,11 @@ async function clearOrigemAtivacaoForLead(leadId, opts = {}) {
     }
 
     if (readErrMsg) {
-      console.warn(
-        `[origem-ativacao] CLEAR PUT OK mas sem leitura lead=${leadId}: ${readErrMsg}`
-      );
+      if (!isRateLimitErrorMessage(readErrMsg)) {
+        console.warn(
+          `[origem-ativacao] CLEAR PUT OK mas sem leitura lead=${leadId}: ${readErrMsg}`
+        );
+      }
     }
     return { ok: true, verified: read != null };
   } catch (err) {

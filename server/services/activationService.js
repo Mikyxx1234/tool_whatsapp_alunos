@@ -28,6 +28,10 @@ import { pickDisplayRgm, displayRgmFromRematriculaRow, displayRgmFromMatriculado
 import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
+  sanitizeContactEmail,
+  sanitizeContactPhone,
+} from '../utils/datacrazySearchTerm.js';
+import {
   buildMatriculadosRgmMaps,
   rgmFromMatriculadosMaps,
 } from '../utils/matriculadosRgmLookup.js';
@@ -379,17 +383,17 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
   const nome = String(
     otherRow?.Aluno ?? otherRow?.Nome ?? matRow.Nome ?? matRow.Aluno ?? matRow.nome ?? ''
   ).trim();
-  const email = String(
+  const email = sanitizeContactEmail(
     otherRow?.Email ?? otherRow?.['E-mail'] ?? matRow.Email ?? matRow['E-mail'] ?? ''
-  ).trim();
-  const telefone = String(
+  );
+  const telefone = sanitizeContactPhone(
     otherRow?.Celular ??
       otherRow?.['Fone celular'] ??
       matRow['Fone celular'] ??
       matRow.Celular ??
       matRow.Telefone ??
       ''
-  ).trim();
+  );
   const rgm = pickDisplayRgm(matRow, otherRow, otherCategory);
 
   const src = otherRow || matRow;
@@ -436,10 +440,10 @@ function rowToRematriculaItem(row, matFallback = null) {
   if (!rgm && matLookup) rgm = rgmFromMatriculadosLookup(repaired, matLookup);
   if (!rgm && matMaps) rgm = rgmFromMatriculadosMaps(repaired, matMaps);
   const nome = String(repaired.NOME ?? repaired.Nome ?? repaired.Aluno ?? repaired.nome ?? '').trim();
-  const email = String(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '').trim();
-  const telefone = String(
+  const email = sanitizeContactEmail(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '');
+  const telefone = sanitizeContactPhone(
     repaired.FONE_CEL ?? repaired.Celular ?? repaired['Fone celular'] ?? repaired.Telefone ?? ''
-  ).trim();
+  );
   const cpfDigits = cpfDigitsFromExcelCell(repaired.CPF_ALUN ?? repaired.CPF ?? '');
   return {
     nome,

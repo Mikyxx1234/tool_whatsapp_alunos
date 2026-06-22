@@ -66,8 +66,11 @@ export async function cleanStaleOrigemAtivacao({ dryRun = false } = {}) {
     if (dryRun) continue;
     try {
       await datacrazyCrmLimiter.acquire();
+      // skipRead: 1 PUT/lead (não PUT+GET). GET após cada CLEAR estourava
+      // rate-limit do DataCrazy ("Too many requests") com backlog grande.
       const res = await datacrazyClient.clearOrigemAtivacaoForLead(
-        entry.datacrazy_lead_id
+        entry.datacrazy_lead_id,
+        { skipRead: true }
       );
       if (res?.ok) {
         await origemRepo.recordOrigemAtivacaoLog({
