@@ -35,6 +35,7 @@ const RGM_KEYS = [
 const CPF_KEYS = [
   'CPF',
   'CPF_ALUN',
+  'CPF_ALUNO',
   'Cpf Aluno',
   'Cpf',
   'cpf',
@@ -64,6 +65,8 @@ const TEL_KEYS = [
   'telefone',
   'Fone',
   'FONE_CEL',
+  'TELEFONE_CEL',
+  'DDD_CEL',
   'Celular Aluno',
   'Telefone Aluno',
   'Fone Celular',

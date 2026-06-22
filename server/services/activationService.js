@@ -25,7 +25,7 @@ import { compareCicloSets, normalizeCiclo, cicloFromRow } from '../utils/cicloFr
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import { isWindowOpen, calcJanela } from '../utils/caaWindow.js';
 import { pickDisplayRgm, displayRgmFromRematriculaRow, displayRgmFromMatriculadosRow, isValidRematriculaRgm } from '../utils/rgmDisplay.js';
-import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
+import { repairSiaaRematriculaRow, buildSiaaCelularFromDddAndFone, cpfDigitsFromSiaaRow } from '../utils/siaaRematriculaRepair.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
   sanitizeContactEmail,
@@ -378,23 +378,43 @@ function findAlignedOtherEntry(matEntry, otherByCanon, otherLookup) {
   return null;
 }
 
+/** Primeiro valor bruto que passa no sanitize (ex.: placeholder financeiro → fallback matriculados). */
+function coalesceContact(sanitizeFn, ...candidates) {
+  for (const raw of candidates) {
+    if (raw == null || raw === '') continue;
+    const v = sanitizeFn(raw);
+    if (v) return v;
+  }
+  return '';
+}
+
 /** @param {Record<string, unknown>} matRow @param {Record<string, unknown>} [otherRow] @param {string} [otherCategory] */
 function rowToActivationItem(matRow, otherRow, otherCategory) {
   const nome = String(
     otherRow?.Aluno ?? otherRow?.Nome ?? matRow.Nome ?? matRow.Aluno ?? matRow.nome ?? ''
   ).trim();
-  const email = sanitizeContactEmail(
-    otherRow?.Email ?? otherRow?.['E-mail'] ?? matRow.Email ?? matRow['E-mail'] ?? ''
+  const email = coalesceContact(
+    sanitizeContactEmail,
+    otherRow?.Email,
+    otherRow?.['E-mail'],
+    matRow.Email,
+    matRow['E-mail']
   );
-  const telefone = sanitizeContactPhone(
-    otherRow?.Celular ??
-      otherRow?.['Fone celular'] ??
-      matRow['Fone celular'] ??
-      matRow.Celular ??
-      matRow.Telefone ??
-      ''
+  const telefone = coalesceContact(
+    sanitizeContactPhone,
+    otherRow?.Whatsapp,
+    otherRow?.Celular,
+    otherRow?.['Fone celular'],
+    matRow.Whatsapp,
+    matRow['Fone celular'],
+    matRow.Celular,
+    matRow.Telefone
   );
   const rgm = pickDisplayRgm(matRow, otherRow, otherCategory);
+
+  const cpf =
+    cpfDigitsFromExcelCell(otherRow?.CPF ?? otherRow?.Cpf ?? '') ||
+    cpfDigitsFromExcelCell(matRow.CPF ?? matRow.Cpf ?? '');
 
   const src = otherRow || matRow;
   return {
@@ -402,7 +422,7 @@ function rowToActivationItem(matRow, otherRow, otherCategory) {
     email,
     telefone,
     rgm,
-    cpf: String(src.CPF ?? matRow.CPF ?? '').trim(),
+    cpf,
     polo: String(src.Polo ?? matRow.Polo ?? '').trim(),
     curso: String(src.Curso ?? matRow.Curso ?? '').trim(),
     ciclo: String(src.Ciclo ?? matRow.Ciclo ?? '').trim(),
@@ -430,27 +450,61 @@ function cicloFromRematriculaRow(row) {
   return String(process.env.REMAT_CICLO_ORIGEM || '2026/1').trim();
 }
 
+/**
+ * @param {Record<string, unknown>} rematRow
+ * @param {{ lookup?: Map<string, object[]>|null, maps?: object|null }|null} matFallback
+ * @returns {Record<string, unknown>|null}
+ */
+function findMatriculadosRowForRemat(rematRow, matFallback) {
+  if (!matFallback?.lookup || !rematRow) return null;
+  const ids = collectRowIdentities(rematRow, { category: 'rematricula' });
+  for (const id of ids) {
+    if (id.startsWith('RGM:')) continue;
+    const matches = matFallback.lookup.get(id);
+    if (matches?.length && matches[0].row) return matches[0].row;
+  }
+  return null;
+}
+
 /** Linha da base Rematrícula (SIAA / Portal de Polos). */
 function rowToRematriculaItem(row, matFallback = null) {
   const matLookup = matFallback?.lookup ?? null;
   const matMaps = matFallback?.maps ?? null;
   const repaired = repairSiaaRematriculaRow(row);
+  const matRow = findMatriculadosRowForRemat(repaired, matFallback);
   let rgm = displayRgmFromRematriculaRow(row) || displayRgmFromRematriculaRow(repaired);
   if (!rgm) rgm = pickDisplayRgm(repaired, null, 'rematricula');
   if (!rgm && matLookup) rgm = rgmFromMatriculadosLookup(repaired, matLookup);
   if (!rgm && matMaps) rgm = rgmFromMatriculadosMaps(repaired, matMaps);
   const nome = String(repaired.NOME ?? repaired.Nome ?? repaired.Aluno ?? repaired.nome ?? '').trim();
-  const email = sanitizeContactEmail(repaired.E_MAIL ?? repaired.Email ?? repaired['E-mail'] ?? '');
-  const telefone = sanitizeContactPhone(
-    repaired.FONE_CEL ?? repaired.Celular ?? repaired['Fone celular'] ?? repaired.Telefone ?? ''
+  const email = coalesceContact(
+    sanitizeContactEmail,
+    repaired.E_MAIL,
+    repaired.Email,
+    repaired['E-mail'],
+    matRow?.Email,
+    matRow?.['E-mail'],
+    matRow?.E_MAIL
   );
-  const cpfDigits = cpfDigitsFromExcelCell(repaired.CPF_ALUN ?? repaired.CPF ?? '');
+  const telefone = coalesceContact(
+    sanitizeContactPhone,
+    repaired.FONE_CEL,
+    repaired.TELEFONE_CEL,
+    buildSiaaCelularFromDddAndFone(repaired),
+    matRow?.Whatsapp,
+    matRow?.['Fone celular'],
+    matRow?.Celular,
+    matRow?.Telefone
+  );
+  const cpfDigits =
+    cpfDigitsFromSiaaRow(repaired) ||
+    cpfDigitsFromExcelCell(matRow?.CPF ?? matRow?.Cpf ?? matRow?.cpf ?? '');
   return {
     nome,
     email,
     telefone,
     rgm,
-    cpf: cpfDigits || String(repaired.CPF_ALUN ?? repaired.CPF ?? '').trim(),
+    cpf: cpfDigits,
     polo: String(repaired.NOME_POLO ?? repaired.Polo ?? '').trim(),
     curso: String(repaired.DES_CURS ?? repaired.Curso ?? '').trim(),
     ciclo: cicloFromRematriculaRow(repaired),
@@ -1511,13 +1565,14 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   }));
 
   const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
-  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
+  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
 
   // Pré-voo: confirma que origem_ativacao grava no CRM antes de enviar qualquer template.
   for (const item of toProcess) {
     const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
       email: item.email,
       phone: item.telefone,
+      cpf: item.cpf,
     });
     if (!lead?.id) continue;
     const preflight = await datacrazyClient.verifyOrigemAtivacaoForCategory(
@@ -1610,6 +1665,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
     const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
       email: item.email,
       phone: item.telefone,
+      cpf: item.cpf,
     });
 
     if (!lead) {
@@ -1935,13 +1991,14 @@ export async function enrichActivationWithDatacrazy(category, opts = {}) {
 
   const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
 
-  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone };
+  const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
   let found = 0;
   let notFound = 0;
   const results = items.map((item) => {
     const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
       email: item.email,
       phone: item.telefone,
+      cpf: item.cpf,
     });
     if (lead) {
       found += 1;

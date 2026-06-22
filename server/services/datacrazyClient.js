@@ -341,19 +341,41 @@ function isRateLimitErrorMessage(msg) {
 }
 
 const SHARED_INDEX_TTL_MS = 20 * 60 * 1000;
-const sharedLeadsIndex = { expires: 0, byEmail: new Map(), byPhone: new Map() };
+const sharedLeadsIndex = {
+  expires: 0,
+  byEmail: new Map(),
+  byPhone: new Map(),
+  byCpf: new Map(),
+};
 
-function mergeLeadIntoMaps(lead, byEmail, byPhone) {
+function cpfDigitsFromLead(lead) {
+  const raw = lead?.taxId ?? lead?.tax_id ?? lead?.cpf ?? '';
+  const d = String(raw).replace(/\D/g, '');
+  return d.length === 11 ? d : '';
+}
+
+function personFoundInIndex(person, byEmail, byPhone, byCpf) {
+  return (
+    (person.email && byEmail.has(person.email)) ||
+    (person.phone && byPhone.has(person.phone)) ||
+    (person.cpf && byCpf.has(person.cpf))
+  );
+}
+
+function mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf) {
   const e = normalizeEmailForMatch(lead.email);
   const p = leadPhoneDigits(lead);
+  const c = cpfDigitsFromLead(lead);
   if (e && !byEmail.has(e)) byEmail.set(e, lead);
   if (p && !byPhone.has(p)) byPhone.set(p, lead);
+  if (c && !byCpf.has(c)) byCpf.set(c, lead);
 }
 
 async function buildLeadsLookupIndex(needed = {}) {
   const useShared = sharedLeadsIndex.expires > Date.now();
   const byEmail = useShared ? new Map(sharedLeadsIndex.byEmail) : new Map();
   const byPhone = useShared ? new Map(sharedLeadsIndex.byPhone) : new Map();
+  const byCpf = useShared ? new Map(sharedLeadsIndex.byCpf) : new Map();
 
   // Normaliza entrada: aceita formato novo `{contacts: [{email, phone}]}` (preferido,
   // permite dedupe por pessoa) e o antigo `{emails, phones}` (sem vínculo).
@@ -376,7 +398,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       seenKey.add(key);
       if (e && !byEmail.has(e)) remainingEmails.add(e);
       if (p && !byPhone.has(p)) remainingPhones.add(p);
-      if ((e && byEmail.has(e)) || (p && byPhone.has(p))) continue;
+      if ((e && byEmail.has(e)) || (p && byPhone.has(p)) || (cpf && byCpf.has(cpf))) continue;
       personList.push({ email: e || '', phone: p || '', cpf: cpf || '' });
     }
   } else {
@@ -422,9 +444,10 @@ async function buildLeadsLookupIndex(needed = {}) {
             rawPhone: row.phone_norm,
             name: row.nome,
           };
-          mergeLeadIntoMaps(lead, byEmail, byPhone);
+          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
           if (row.email_norm) remainingEmails.delete(row.email_norm);
           if (row.phone_norm) remainingPhones.delete(row.phone_norm);
+          if (cpf.length === 11 && !byCpf.has(cpf)) byCpf.set(cpf, lead);
           touchList.push(cpf);
           cacheHits += 1;
         }
@@ -436,10 +459,7 @@ async function buildLeadsLookupIndex(needed = {}) {
         // Remove pessoas já resolvidas pelo cache de personList
         for (let i = personList.length - 1; i >= 0; i--) {
           const person = personList[i];
-          if (
-            (person.email && byEmail.has(person.email)) ||
-            (person.phone && byPhone.has(person.phone))
-          ) {
+          if (personFoundInIndex(person, byEmail, byPhone, byCpf)) {
             personList.splice(i, 1);
           }
         }
@@ -465,6 +485,53 @@ async function buildLeadsLookupIndex(needed = {}) {
     Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 5, 15),
     1
   );
+
+  /** Busca direta por CPF — funciona em lotes grandes onde paginação ignora CPF. */
+  const runCpfDirectPass = async () => {
+    if (!personList.length) return { queries: 0, hits: 0 };
+    const terms = [];
+    const seen = new Set();
+    for (const person of personList) {
+      if (personFoundInIndex(person, byEmail, byPhone, byCpf)) continue;
+      if (person.cpf && isValidDatacrazySearchTerm(person.cpf) && !seen.has(person.cpf)) {
+        seen.add(person.cpf);
+        terms.push(person.cpf);
+      }
+    }
+    let queries = 0;
+    let hits = 0;
+    for (let i = 0; i < terms.length; i += directConcurrency) {
+      const slice = terms.slice(i, i + directConcurrency);
+      const pages = await Promise.all(
+        slice.map(async (term) => {
+          try {
+            return await searchLeads({ search: term, take: 5 });
+          } catch (err) {
+            console.warn(`[datacrazy] cpf search "${term}" falhou: ${err.message}`);
+            return null;
+          }
+        })
+      );
+      for (const page of pages) {
+        queries += 1;
+        if (!page) continue;
+        for (const lead of page.data) {
+          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
+          hits += 1;
+        }
+      }
+    }
+    return { queries, hits };
+  };
+
+  let cpfDirectQueries = 0;
+  let cpfDirectHits = 0;
+  if (personList.length > 0) {
+    const cpfPass = await runCpfDirectPass();
+    cpfDirectQueries = cpfPass.queries;
+    cpfDirectHits = cpfPass.hits;
+  }
+
   // Métrica do threshold calculada APÓS FASE 0 — personList já está filtrado
   // pelos hits do cache, representando apenas quem precisa de consulta à API.
   const totalRemaining = personList.length > 0
@@ -503,7 +570,7 @@ async function buildLeadsLookupIndex(needed = {}) {
           directQueries += 1;
           if (!page) continue;
           for (const lead of page.data) {
-            mergeLeadIntoMaps(lead, byEmail, byPhone);
+            mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
             const e = normalizeEmailForMatch(lead.email);
             const p = leadPhoneDigits(lead);
             if (e) remainingEmails.delete(e);
@@ -529,10 +596,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       // 2ª passada: pessoas ainda não encontradas tentam termo alternativo (email, depois cpf)
       const secondPass = [];
       for (const person of personList) {
-        const found =
-          (person.email && byEmail.has(person.email)) ||
-          (person.phone && byPhone.has(person.phone));
-        if (found) continue;
+        if (personFoundInIndex(person, byEmail, byPhone, byCpf)) continue;
         for (const term of [person.email, person.cpf]) {
           if (term && !queriedTerms.has(term)) {
             queriedTerms.add(term);
@@ -550,6 +614,7 @@ async function buildLeadsLookupIndex(needed = {}) {
 
     sharedLeadsIndex.byEmail = byEmail;
     sharedLeadsIndex.byPhone = byPhone;
+    sharedLeadsIndex.byCpf = byCpf;
     sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
 
     // FASE 2 (Onda 2): upsert oportunista de leads resolvidos via API no cache
@@ -557,7 +622,7 @@ async function buildLeadsLookupIndex(needed = {}) {
     if (cacheEnabled) {
       const upsertList = [];
       const seenId = new Set();
-      for (const lead of [...byEmail.values(), ...byPhone.values()]) {
+      for (const lead of [...byEmail.values(), ...byPhone.values(), ...byCpf.values()]) {
         if (!lead?.taxId) continue;
         if (seenId.has(lead.id)) continue;
         seenId.add(lead.id);
@@ -579,10 +644,13 @@ async function buildLeadsLookupIndex(needed = {}) {
     return {
       byEmail,
       byPhone,
+      byCpf,
       pages: 0,
-      leadsScanned: directHits,
+      leadsScanned: directHits + cpfDirectHits,
       direct_search: true,
-      direct_queries: directQueries,
+      direct_queries: directQueries + cpfDirectQueries,
+      cpf_direct_queries: cpfDirectQueries,
+      cpf_direct_hits: cpfDirectHits,
       direct_skipped_invalid: directSkippedInvalid,
       direct_concurrency: directConcurrency,
       direct_persons: personList.length,
@@ -611,13 +679,19 @@ async function buildLeadsLookupIndex(needed = {}) {
     if (!batch.length) break;
     leadsScanned += batch.length;
     for (const lead of batch) {
-      mergeLeadIntoMaps(lead, byEmail, byPhone);
+      mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
       const e = normalizeEmailForMatch(lead.email);
       const p = leadPhoneDigits(lead);
       if (e) remainingEmails.delete(e);
       if (p) remainingPhones.delete(p);
     }
-    if (remainingEmails.size === 0 && remainingPhones.size === 0) break;
+    if (
+      remainingEmails.size === 0 &&
+      remainingPhones.size === 0 &&
+      personList.every((person) => personFoundInIndex(person, byEmail, byPhone, byCpf))
+    ) {
+      break;
+    }
     if (batch.length < take) break;
     if (totalCount != null && skip + batch.length >= totalCount) break;
     skip += batch.length;
@@ -626,14 +700,22 @@ async function buildLeadsLookupIndex(needed = {}) {
 
   sharedLeadsIndex.byEmail = byEmail;
   sharedLeadsIndex.byPhone = byPhone;
+  sharedLeadsIndex.byCpf = byCpf;
   sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+
+  // CPF pass final — quem sobrou após paginação (email/phone no CRM ≠ base).
+  if (personList.length > 0) {
+    const cpfPass = await runCpfDirectPass();
+    cpfDirectQueries += cpfPass.queries;
+    cpfDirectHits += cpfPass.hits;
+  }
 
   // FASE 2 (Onda 2): upsert oportunista de leads resolvidos via paginação.
   // Fire-and-forget — não bloqueia o caller.
   if (cacheEnabled) {
     const upsertList = [];
     const seenId = new Set();
-    for (const lead of [...byEmail.values(), ...byPhone.values()]) {
+    for (const lead of [...byEmail.values(), ...byPhone.values(), ...byCpf.values()]) {
       if (!lead?.taxId) continue;
       if (seenId.has(lead.id)) continue;
       seenId.add(lead.id);
@@ -649,10 +731,16 @@ async function buildLeadsLookupIndex(needed = {}) {
   return {
     byEmail,
     byPhone,
+    byCpf,
     pages,
-    leadsScanned,
+    leadsScanned: leadsScanned + cpfDirectHits,
     direct_search: false,
-    early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
+    cpf_direct_queries: cpfDirectQueries,
+    cpf_direct_hits: cpfDirectHits,
+    early_stop:
+      remainingEmails.size === 0 &&
+      remainingPhones.size === 0 &&
+      personList.every((person) => personFoundInIndex(person, byEmail, byPhone, byCpf)),
     remaining_emails: remainingEmails.size,
     remaining_phones: remainingPhones.size,
     index_reused: useShared,
@@ -662,6 +750,8 @@ async function buildLeadsLookupIndex(needed = {}) {
 }
 
 function lookupLeadInIndex(index, contact) {
+  const cpf = String(contact.cpf ?? '').replace(/\D/g, '');
+  if (cpf.length === 11 && index.byCpf?.has(cpf)) return index.byCpf.get(cpf);
   const email = normalizeEmailForMatch(contact.email);
   if (email && index.byEmail.has(email)) return index.byEmail.get(email);
   const phone = normalizePhoneDigits(contact.phone);
@@ -678,6 +768,7 @@ export function invalidateSharedLeadsIndex() {
   sharedLeadsIndex.expires = 0;
   sharedLeadsIndex.byEmail.clear();
   sharedLeadsIndex.byPhone.clear();
+  sharedLeadsIndex.byCpf.clear();
 }
 
 /**

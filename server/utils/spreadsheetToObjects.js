@@ -10,16 +10,21 @@ import { isRgmColumnKey, importRgmCellValue } from './rgmDisplay.js';
 function cellToString(v, opts = {}) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'object' && v !== null) {
-    if (opts.preferFormatted && 'w' in v && v.w != null) {
-      const w = String(v.w).trim();
-      if (w) return w;
+    const formatted = 'w' in v && v.w != null ? String(v.w).trim() : '';
+    // Coluna estreita no Excel mostra 9,43E+08 / 4,58E+10 — o valor real está em .v
+    const sciDisplay = /[eE][+-]?\d+/i.test(formatted);
+    if ('v' in v && (sciDisplay || opts.preferRawNumeric)) {
+      return cellToString(v.v, opts);
+    }
+    if (opts.preferFormatted && formatted) {
+      return formatted;
     }
     if (opts.preferFormatted && v.t === 'd' && 'v' in v) {
-      const formatted = XLSX.utils.format_cell(v);
-      if (formatted && formatted.trim()) return formatted.trim();
+      const fmt = XLSX.utils.format_cell(v);
+      if (fmt && fmt.trim()) return fmt.trim();
     }
-    if ('w' in v && v.w != null && String(v.w).trim() !== '') {
-      return String(v.w).trim();
+    if (formatted) {
+      return formatted;
     }
     if ('v' in v) return cellToString(v.v, opts);
   }
@@ -134,7 +139,11 @@ export function xlsxBufferToRowObjects(buffer, fileName) {
     for (let c = 0; c < headers.length; c += 1) {
       const key = headers[c] || `col_${c}`;
       const isRgm = isRgmColumnKey(key);
-      const val = cellToString(row[c], { preferFormatted: isRgm }).trim();
+      const preferRawNumeric = /cpf|fone|ddd|tel|cel|e_mail|email/i.test(key);
+      const val = cellToString(row[c], {
+        preferFormatted: isRgm,
+        preferRawNumeric,
+      }).trim();
       if (val) empty = false;
       if (isRgm) {
         o[key] = importRgmCellValue(val);

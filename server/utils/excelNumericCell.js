@@ -6,8 +6,13 @@
  * @returns {string}
  */
 export function parseExcelNumericCell(raw, opts = {}) {
-  const s = String(raw ?? '').trim();
+  let s = String(raw ?? '').trim();
   if (!s) return '';
+
+  // Excel pt-BR: "9,43E+08" / "4,58E+10"
+  if (/[eE]/.test(s) && s.includes(',')) {
+    s = s.replace(',', '.');
+  }
 
   if (/^\d+$/.test(s)) {
     if (opts.pad && s.length < opts.pad) return s.padStart(opts.pad, '0');
