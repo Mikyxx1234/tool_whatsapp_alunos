@@ -4,7 +4,7 @@ import {
   type OutcomeKind,
   type MeuPainelItem,
   OUTCOME_LABEL,
-  CATEGORY_LABEL,
+  getMeuPainelBaseLabel,
   createOutcome,
 } from '../services/meuPainelApi';
 
@@ -109,7 +109,7 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500">
-              Marcar desfecho · {CATEGORY_LABEL[item.category] || item.category}
+              Marcar desfecho · {getMeuPainelBaseLabel(item.category, item.origem_ativacao)}
             </p>
             <h2 className="text-lg font-semibold text-gray-900 truncate" title={item.nome || ''}>
               {item.nome || '(sem nome)'}

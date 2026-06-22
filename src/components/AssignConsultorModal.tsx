@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, UserPlus, Trash2 } from 'lucide-react';
 import {
   type MeuPainelItem,
-  CATEGORY_LABEL,
+  getMeuPainelBaseLabel,
   assignConsultorToResponse,
   fetchConsultoresDistintos,
   getConsultoresAcademicos,
@@ -86,7 +86,7 @@ export function AssignConsultorModal({ open, item, role, categoria, onClose, onS
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500">
-              Atribuir consultor · {CATEGORY_LABEL[item.category] || item.category}
+              Atribuir consultor · {getMeuPainelBaseLabel(item.category, item.origem_ativacao)}
             </p>
             <h2 className="text-lg font-semibold text-gray-900 truncate" title={item.nome || ''}>
               {item.nome || '(sem nome)'}

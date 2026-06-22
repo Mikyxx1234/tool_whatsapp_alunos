@@ -32,6 +32,7 @@ export interface MeuPainelItem {
   rgm: string | null;
   telefone: string | null;
   consultor_responsavel_nome: string | null;
+  origem_ativacao: string | null;
   response_kind: string;
   message_text: string | null;
   button_payload: string | null;
@@ -382,3 +383,18 @@ export const CATEGORY_LABEL: Record<string, string> = {
   'provavel-evasao': 'Provável Evasão',
   rematricula: 'Rematrícula',
 };
+
+/** Rótulo da coluna BASE no Meu Painel; diferencia sub-origens de processos CAA. */
+export function getMeuPainelBaseLabel(
+  category: string,
+  origemAtivacao?: string | null
+): string {
+  if (category === 'processos-caa') {
+    const origem = (origemAtivacao || '').trim().toLowerCase();
+    if (!origem) return 'processos Caa';
+    if (origem === 'caa') return 'processos CAA';
+    if (origem === 'caa_ia') return 'Processos CAA_IA';
+    if (origem === 'caa_atm') return 'processos CAA_ATM';
+  }
+  return CATEGORY_LABEL[category] || category;
+}

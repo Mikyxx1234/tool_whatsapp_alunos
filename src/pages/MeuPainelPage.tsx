@@ -16,6 +16,7 @@ import { OutcomeMarkerModal } from '../components/OutcomeMarkerModal';
 import { AssignConsultorModal } from '../components/AssignConsultorModal';
 import {
   CATEGORY_LABEL,
+  getMeuPainelBaseLabel,
   MEU_PAINEL_CATEGORIES,
   OUTCOME_LABEL,
   OUTCOME_SHORT_LABEL,
@@ -357,7 +358,7 @@ export default function MeuPainelPage() {
                         {fmtDateTime(it.received_at)}
                       </td>
                       <td className="px-3 py-2 text-gray-700 whitespace-nowrap">
-                        {CATEGORY_LABEL[it.category] || it.category}
+                        {getMeuPainelBaseLabel(it.category, it.origem_ativacao)}
                       </td>
                       <td className="px-3 py-2 max-w-[220px]">
                         <p className="font-medium text-gray-900 truncate" title={it.nome || ''}>

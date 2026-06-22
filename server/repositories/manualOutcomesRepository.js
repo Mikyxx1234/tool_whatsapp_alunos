@@ -274,18 +274,22 @@ export async function listMeuPainel(filters = {}) {
       ar.id                            as response_id,
       ar.category                      as category,
       ar.master_key                    as master_key,
-      ar.rgm                           as rgm,
+      coalesce(
+        nullif(trim(ar.rgm), ''),
+        nullif(trim(mat.rgm), '')
+      )                                as rgm,
       ar.telefone                      as telefone,
       ar.consultor_responsavel_nome    as consultor_responsavel_nome,
+      ar.origem_ativacao               as origem_ativacao,
       ar.response_kind                 as response_kind,
       ar.message_text                  as message_text,
       ar.button_payload                as button_payload,
       ar.received_at                   as received_at,
       cp.protocolo                     as protocolo,
-      cp.nome                          as nome,
-      cp.cpf                           as cpf,
-      cp.curso                         as curso,
-      cp.polo                          as polo,
+      coalesce(cp.nome, dlc.nome, mat.nome) as nome,
+      coalesce(cp.cpf, dlc.cpf)        as cpf,
+      coalesce(cp.curso, mat.curso)    as curso,
+      coalesce(cp.polo, mat.polo)      as polo,
       cp.status                        as caa_status,
       cp.last_status_change_at         as caa_last_change_at,
       amo.id                           as outcome_id,
@@ -296,15 +300,44 @@ export async function listMeuPainel(filters = {}) {
       amo.consultor_nome               as outcome_consultor_nome,
       amo.proof_path is not null       as outcome_has_proof
     from activation_responses ar
-    left join caa_protocols cp
-      on cp.rgm = ar.rgm
-     and ar.rgm is not null
+    left join datacrazy_lead_cache dlc
+      on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
+    left join lateral (
+      select
+        mr.data->>'RGM'   as rgm,
+        mr.data->>'Nome'  as nome,
+        mr.data->>'Curso' as curso,
+        mr.data->>'Polo'  as polo
+      from matriculados_rows mr
+      where mr.snapshot_id = (
+        select id from matriculados_snapshots order by created_at desc limit 1
+      )
+        and dlc.cpf is not null
+        and regexp_replace(coalesce(mr.data->>'CPF', ''), '[^0-9]', '', 'g')
+            = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+      limit 1
+    ) mat on true
+    left join lateral (
+      select protocolo, nome, cpf, curso, polo, status, last_status_change_at
+      from caa_protocols c
+      where (
+        nullif(trim(coalesce(ar.rgm, mat.rgm)), '') is not null
+        and c.rgm = nullif(trim(coalesce(ar.rgm, mat.rgm)), '')
+      )
+         or (
+        dlc.cpf is not null
+        and c.cpf is not null
+        and regexp_replace(c.cpf, '[^0-9]', '', 'g') = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+      )
+      order by c.last_status_change_at desc nulls last
+      limit 1
+    ) cp on true
     left join lateral (
       select id, outcome, motivo, notes, occurred_at, consultor_nome, proof_path
         from activation_manual_outcomes
-       where rgm = ar.rgm
-         and category = ar.category
-         and ar.rgm is not null
+       where category = ar.category
+         and nullif(trim(coalesce(ar.rgm, mat.rgm)), '') is not null
+         and rgm = nullif(trim(coalesce(ar.rgm, mat.rgm)), '')
        order by occurred_at desc
        limit 1
     ) amo on true
