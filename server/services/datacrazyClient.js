@@ -371,11 +371,11 @@ function isRateLimitErrorMessage(msg) {
 function directSearchSettings() {
   return {
     concurrency: Math.max(
-      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 4, 15),
+      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 12, 20),
       1
     ),
     delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 0, 0),
-    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 1500, 300),
+    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 800, 200),
   };
 }
 

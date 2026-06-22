@@ -217,7 +217,13 @@ export function ActivationListActions({
     }
   }, [category, eligible, onFilaChanged]);
 
-  const estMinutes = Math.max(Math.ceil(eligible / 80), 3);
+  const batchEstimate = hasSelection
+    ? selectedCount
+    : running && progress?.total
+      ? progress.total
+      : eligible;
+  // ~100 leads/min com defaults agressivos (20 req/s CRM + 10 envios paralelos).
+  const estMinutes = Math.min(Math.max(Math.ceil(batchEstimate / 100), 2), 15);
 
   return (
     <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">

@@ -1602,11 +1602,10 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   // controla o ritmo. Manter > 0 só pra forçar espaçamento extra.
   const sendDelay = Math.max(Number(process.env.ACTIVATION_SEND_DELAY_MS) || 0, 0);
   // Concorrência: até N envios em paralelo. Rate limiters (WhatsApp 60/s e
-  // DataCrazy CRM 10/s) protegem contra burst — concorrência só preenche o
-  // pipeline enquanto cada chamada está esperando resposta da rede.
+  // DataCrazy CRM 20/s) protegem contra burst.
   const batchConcurrency = Math.max(
     1,
-    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 2, 10)
+    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 10, 15)
   );
   const createDispatchNotes = shouldCreateDispatchNote(toProcess.length);
   const sendChannel = messagingProvider.getName();
