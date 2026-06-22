@@ -286,7 +286,7 @@ async function searchLeads(opts = {}) {
   }
   const url = `${baseUrl}${SEARCH_LEADS_PATH}?${params.toString()}`;
 
-  const maxAttempts = 3;
+  const maxAttempts = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await datacrazyCrmLimiter.acquire();
     const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
@@ -299,7 +299,7 @@ async function searchLeads(opts = {}) {
     }
 
     if (response.status === 429 && attempt < maxAttempts) {
-      await sleep(Math.min(800 * attempt, 3000));
+      await sleep(Math.min(1200 * attempt, 8000));
       continue;
     }
 
@@ -338,6 +338,59 @@ function sleep(ms) {
 function isRateLimitErrorMessage(msg) {
   const s = String(msg ?? '').toLowerCase();
   return s.includes('too many requests') || s.includes('rate limit') || s.includes('429');
+}
+
+function directSearchSettings() {
+  return {
+    concurrency: Math.max(
+      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 2, 15),
+      1
+    ),
+    delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 500, 0),
+    maxAttempts: Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1),
+  };
+}
+
+/** Busca direta com retry/backoff extra — evita falso "não encontrado" por 429. */
+async function searchLeadsDirect(term) {
+  const { maxAttempts } = directSearchSettings();
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await searchLeads({ search: term, take: 5 });
+    } catch (err) {
+      lastErr = err;
+      const rateLimited = err.status === 429 || isRateLimitErrorMessage(err.message);
+      if (rateLimited && attempt < maxAttempts) {
+        await sleep(Math.min(1500 * attempt, 10000));
+        continue;
+      }
+      break;
+    }
+  }
+  console.warn(
+    `[datacrazy] direct search "${term}" falhou: ${lastErr?.message ?? 'erro desconhecido'}`
+  );
+  return null;
+}
+
+/**
+ * Executa buscas diretas com concorrência baixa + pausa entre lotes.
+ * @param {string[]} terms
+ * @param {(term: string, page: { data: object[] }|null) => void} onResult
+ */
+async function runDirectSearchTerms(terms, onResult) {
+  const { concurrency, delayMs } = directSearchSettings();
+  for (let i = 0; i < terms.length; i += concurrency) {
+    const slice = terms.slice(i, i + concurrency);
+    const pages = await Promise.all(slice.map((term) => searchLeadsDirect(term)));
+    for (let j = 0; j < slice.length; j++) {
+      onResult(slice[j], pages[j]);
+    }
+    if (i + concurrency < terms.length && delayMs > 0) {
+      await sleep(delayMs);
+    }
+  }
 }
 
 const SHARED_INDEX_TTL_MS = 20 * 60 * 1000;
@@ -479,12 +532,8 @@ async function buildLeadsLookupIndex(needed = {}) {
     Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 250,
     0
   );
-  // Concorrência paralela das buscas diretas. DataCrazy não publica limite oficial;
-  // 10 simultâneas mantém pipeline cheio sem estressar o CRM.
-  const directConcurrency = Math.max(
-    Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 5, 15),
-    1
-  );
+  const { concurrency: directConcurrency, delayMs: directSearchDelayMs } =
+    directSearchSettings();
 
   /** Busca direta por CPF — funciona em lotes grandes onde paginação ignora CPF. */
   const runCpfDirectPass = async () => {
@@ -500,27 +549,14 @@ async function buildLeadsLookupIndex(needed = {}) {
     }
     let queries = 0;
     let hits = 0;
-    for (let i = 0; i < terms.length; i += directConcurrency) {
-      const slice = terms.slice(i, i + directConcurrency);
-      const pages = await Promise.all(
-        slice.map(async (term) => {
-          try {
-            return await searchLeads({ search: term, take: 5 });
-          } catch (err) {
-            console.warn(`[datacrazy] cpf search "${term}" falhou: ${err.message}`);
-            return null;
-          }
-        })
-      );
-      for (const page of pages) {
-        queries += 1;
-        if (!page) continue;
-        for (const lead of page.data) {
-          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
-          hits += 1;
-        }
+    await runDirectSearchTerms(terms, (_term, page) => {
+      queries += 1;
+      if (!page) return;
+      for (const lead of page.data) {
+        mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
+        hits += 1;
       }
-    }
+    });
     return { queries, hits };
   };
 
@@ -553,32 +589,18 @@ async function buildLeadsLookupIndex(needed = {}) {
         directSkippedInvalid += 1;
         return false;
       });
-      for (let i = 0; i < validTerms.length; i += directConcurrency) {
-        const slice = validTerms.slice(i, i + directConcurrency);
-        const results = await Promise.all(
-          slice.map(async (term) => {
-            try {
-              const page = await searchLeads({ search: term, take: 5 });
-              return { term, page };
-            } catch (err) {
-              console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
-              return { term, page: null };
-            }
-          })
-        );
-        for (const { page } of results) {
-          directQueries += 1;
-          if (!page) continue;
-          for (const lead of page.data) {
-            mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
-            const e = normalizeEmailForMatch(lead.email);
-            const p = leadPhoneDigits(lead);
-            if (e) remainingEmails.delete(e);
-            if (p) remainingPhones.delete(p);
-            directHits += 1;
-          }
+      await runDirectSearchTerms(validTerms, (_term, page) => {
+        directQueries += 1;
+        if (!page) return;
+        for (const lead of page.data) {
+          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
+          const e = normalizeEmailForMatch(lead.email);
+          const p = leadPhoneDigits(lead);
+          if (e) remainingEmails.delete(e);
+          if (p) remainingPhones.delete(p);
+          directHits += 1;
         }
-      }
+      });
     };
 
     if (personList.length > 0) {
@@ -653,6 +675,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       cpf_direct_hits: cpfDirectHits,
       direct_skipped_invalid: directSkippedInvalid,
       direct_concurrency: directConcurrency,
+      direct_search_delay_ms: directSearchDelayMs,
       direct_persons: personList.length,
       early_stop: remainingEmails.size === 0 && remainingPhones.size === 0,
       remaining_emails: remainingEmails.size,
