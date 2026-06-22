@@ -7,6 +7,15 @@ export function datacrazyDispatchNoteEnabled() {
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
+/** Em lotes grandes, anotações sobrecarregam a API — padrão desliga acima de 250. */
+export function shouldCreateDispatchNote(batchSize) {
+  if (!datacrazyDispatchNoteEnabled()) return false;
+  const max = Number(process.env.DATACRAZY_DISPATCH_NOTE_MAX_BATCH);
+  const limit = Number.isFinite(max) ? max : 250;
+  if (limit <= 0) return true;
+  return batchSize <= limit;
+}
+
 const CATEGORY_LABELS = {
   'processos-caa':      'Processos CAA',
   'docs-pendentes':     'Docs Pendentes',

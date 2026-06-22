@@ -251,7 +251,7 @@ async function getLeadById(leadId) {
   const params = new URLSearchParams();
   params.set('complete[additionalFields]', 'true');
   const url = `${baseUrl}/api/v1/leads/${encodeURIComponent(id)}?${params.toString()}`;
-  const response = await fetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
+  const response = await datacrazyApiFetch(url, { method: 'GET', headers: buildHeaders(apiKey) });
   const text = await response.text();
   let data = null;
   try {
@@ -333,6 +333,34 @@ export function leadPhoneDigits(lead) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** GET/PUT/POST na API/CRM DataCrazy com rate limit + retry em 429. */
+async function datacrazyApiFetch(url, init = {}) {
+  const maxAttempts = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 3, 1);
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await datacrazyCrmLimiter.acquire();
+    let response;
+    try {
+      response = await fetch(url, init);
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        await sleep(Math.min(800 * attempt, 4000));
+        continue;
+      }
+      const e = new Error(`Falha de rede DataCrazy: ${err.message}`);
+      e.cause = err;
+      throw e;
+    }
+    if (response.status === 429 && attempt < maxAttempts) {
+      await sleep(Math.min(1200 * attempt, 6000));
+      continue;
+    }
+    return response;
+  }
+  throw lastError || new Error('DataCrazy: tentativas esgotadas');
 }
 
 function isRateLimitErrorMessage(msg) {
@@ -535,7 +563,7 @@ async function buildLeadsLookupIndex(needed = {}) {
   // a maior parte dos disparos manuais; acima disso a paginação completa
   // (1 página resolve ~100 pessoas) fica mais eficiente em volume.
   const directThreshold = Math.max(
-    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 250,
+    Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 5000,
     0
   );
   const { concurrency: directConcurrency, delayMs: directSearchDelayMs } =
@@ -817,7 +845,7 @@ async function updateLeadAdditionalField(leadId, fieldDefinitionId, value) {
   if (!fieldId) throw new Error('fieldDefinitionId obrigatório');
 
   const url = `${getCrmBaseUrl()}/api/crm/additional-fields/lead/${encodeURIComponent(lead)}/${encodeURIComponent(fieldId)}`;
-  const response = await fetch(url, {
+  const response = await datacrazyApiFetch(url, {
     method: 'PUT',
     headers: buildHeaders(apiKey),
     body: JSON.stringify({ value: String(value ?? '') }),
@@ -1029,55 +1057,62 @@ async function addLeadNote(leadId, note) {
   const url = `${baseUrl}/api/v1/leads/${encodeURIComponent(String(leadId))}/notes`;
   const body = JSON.stringify({ note: String(note ?? '') });
 
-  async function attempt() {
-    let response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: buildHeaders(apiKey),
-        body,
-      });
-    } catch (err) {
-      const e = new Error(`Falha de rede ao criar anotação no DataCrazy: ${err.message}`);
-      e.cause = err;
-      e.isNetworkError = true;
-      throw e;
-    }
+  const response = await datacrazyApiFetch(url, {
+    method: 'POST',
+    headers: buildHeaders(apiKey),
+    body,
+  });
 
-    const text = await response.text();
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = { raw: text };
-    }
-
-    if (!response.ok) {
-      const message =
-        data?.message ||
-        data?.error?.message ||
-        data?.raw ||
-        `DataCrazy respondeu com status ${response.status} ao criar anotação`;
-      const err = new Error(message);
-      err.status = response.status;
-      throw err;
-    }
-
-    const id =
-      (data && typeof data === 'object' && 'id' in data && data.id != null)
-        ? String(data.id)
-        : null;
-    return { id };
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { raw: text };
   }
 
-  try {
-    return await attempt();
-  } catch (err) {
-    if (err.isNetworkError) {
-      return await attempt();
-    }
+  if (!response.ok) {
+    const message =
+      data?.message ||
+      data?.error?.message ||
+      data?.raw ||
+      `DataCrazy respondeu com status ${response.status} ao criar anotação`;
+    const err = new Error(message);
+    err.status = response.status;
     throw err;
   }
+
+  const id =
+    data && typeof data === 'object' && 'id' in data && data.id != null ? String(data.id) : null;
+  return { id };
+}
+
+/** @type {Array<{ leadId: string, note: string, meta: object }>} */
+const noteQueue = [];
+let noteWorkerActive = false;
+
+async function drainNoteQueue() {
+  if (noteWorkerActive) return;
+  noteWorkerActive = true;
+  while (noteQueue.length > 0) {
+    const { leadId, note, meta } = noteQueue.shift();
+    try {
+      await addLeadNote(leadId, note);
+    } catch (err) {
+      console.warn('[datacrazy-note] falhou ao criar anotação', {
+        leadId,
+        ...meta,
+        error: err?.message,
+      });
+    }
+  }
+  noteWorkerActive = false;
+}
+
+/** Enfileira anotação — não bloqueia o loop de envio. */
+export function enqueueLeadNote(leadId, note, meta = {}) {
+  noteQueue.push({ leadId: String(leadId), note: String(note ?? ''), meta });
+  void drainNoteQueue();
 }
 
 /**
@@ -1144,6 +1179,7 @@ export const datacrazyClient = {
   updateLeadAdditionalField,
   getLeadAdditionalFieldValue,
   addLeadNote,
+  enqueueLeadNote,
   verifyOrigemAtivacaoForCategory,
   setOrigemAtivacaoForCategory,
   clearOrigemAtivacaoForLead,

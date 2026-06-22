@@ -41,7 +41,7 @@ import {
 } from './datacrazyClient.js';
 import { messagingProvider } from './messagingProvider.js';
 import { whatsappClient, renderTemplateText } from './whatsappClient.js';
-import { datacrazyDispatchNoteEnabled, buildDispatchNote } from './datacrazyDispatchNote.js';
+import { buildDispatchNote, shouldCreateDispatchNote } from './datacrazyDispatchNote.js';
 import {
   caaCancelamentoSqlWhere,
   isCaaCancelamentoSolicitacao,
@@ -1606,8 +1606,9 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   // pipeline enquanto cada chamada está esperando resposta da rede.
   const batchConcurrency = Math.max(
     1,
-    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 5, 10)
+    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 2, 10)
   );
+  const createDispatchNotes = shouldCreateDispatchNote(toProcess.length);
   const sendChannel = messagingProvider.getName();
   /** @type {Map<string, object[]>} */
   const templateComponentsByName = new Map();
@@ -1779,30 +1780,22 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
       });
       let datacrazyNoteFailed = false;
       let datacrazyNoteId = null;
-      if (datacrazyDispatchNoteEnabled() && lead?.id) {
-        try {
-          const renderedText = renderTemplateText(
-            templateComponentsByName.get(template_name) || [],
-            variables
-          );
-          const noteText = buildDispatchNote({
-            category,
-            templateName: template_name,
-            renderedText,
-            operatorNome: opts.operatorNome,
-            timestamp: new Date(),
-          });
-          const noteRes = await datacrazyClient.addLeadNote(lead.id, noteText);
-          datacrazyNoteId = noteRes?.id || null;
-        } catch (noteErr) {
-          datacrazyNoteFailed = true;
-          console.warn('[datacrazy-note] falhou ao criar anotação', {
-            leadId: lead.id,
-            category,
-            template: template_name,
-            error: noteErr?.message,
-          });
-        }
+      if (createDispatchNotes && lead?.id) {
+        const renderedText = renderTemplateText(
+          templateComponentsByName.get(template_name) || [],
+          variables
+        );
+        const noteText = buildDispatchNote({
+          category,
+          templateName: template_name,
+          renderedText,
+          operatorNome: opts.operatorNome,
+          timestamp: new Date(),
+        });
+        datacrazyClient.enqueueLeadNote(lead.id, noteText, {
+          category,
+          template: template_name,
+        });
       }
       await activationDispatchRepo.recordDispatchEvent({
         category,
