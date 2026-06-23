@@ -372,6 +372,10 @@ function getActivationLookupMode() {
   return String(process.env.DATACRAZY_ACTIVATION_LOOKUP_MODE ?? 'hybrid').toLowerCase();
 }
 
+function isCacheOnlyLookupMode() {
+  return getActivationLookupMode() === 'cache_only';
+}
+
 function isCacheFirstLookupMode() {
   return getActivationLookupMode() === 'cache_first';
 }
@@ -380,7 +384,7 @@ function isCacheFirstLookupMode() {
 function shouldSkipBulkPreflight(personCount) {
   const mode = getActivationLookupMode();
   if (mode === 'bulk_search') return false;
-  if (mode === 'cache_first' || mode === 'hybrid') return true;
+  if (mode === 'cache_first' || mode === 'hybrid' || mode === 'cache_only') return true;
   const threshold = Math.max(Number(process.env.DATACRAZY_HYBRID_AUTO_THRESHOLD) || 150, 1);
   return personCount >= threshold;
 }
@@ -389,6 +393,7 @@ function resolveLookupModeLabel() {
   const mode = getActivationLookupMode();
   if (mode === 'bulk_search') return 'bulk_search';
   if (mode === 'cache_first') return 'cache_first';
+  if (mode === 'cache_only') return 'cache_only';
   return 'hybrid';
 }
 
@@ -663,7 +668,14 @@ async function buildLeadsLookupIndex(needed = {}) {
     const touchList = [];
     const applyCached = (row) => {
       const lastSyncedMs = row.last_synced_at ? new Date(row.last_synced_at).getTime() : 0;
-      if (lastSyncedMs && Date.now() - lastSyncedMs > ttlMs) {
+      const allowStale =
+        needed.allowStaleCache === true ||
+        String(process.env.DATACRAZY_ACTIVATION_USE_STALE_CACHE ?? '1') === '1';
+      if (
+        !allowStale &&
+        lastSyncedMs &&
+        Date.now() - lastSyncedMs > ttlMs
+      ) {
         cacheStaleSkipped += 1;
         return;
       }
@@ -992,17 +1004,20 @@ function lookupLeadInIndex(index, contact) {
  * Resolve lead: índice (cache) → busca API serial (CPF → email → tel).
  * @returns {Promise<{ lead: object|null, status: 'found'|'not_found'|'rate_limited' }>}
  */
-async function resolveLeadForContact(contact, index) {
+async function resolveLeadForContact(contact, index, opts = {}) {
   const hit = lookupLeadInIndex(index, contact);
   if (hit) return { lead: hit, status: 'found' };
 
+  const cpfOnly = Boolean(opts.cpfOnly);
   const cpf =
     String(contact.cpf ?? '').replace(/\D/g, '').length === 11
       ? String(contact.cpf ?? '').replace(/\D/g, '')
       : '';
   const email = normalizeEmailForMatch(contact.email);
   const phone = normalizePhoneDigits(contact.phone);
-  const terms = [cpf, email, phone].filter((t) => t && isValidDatacrazySearchTerm(t));
+  const terms = cpfOnly
+    ? [cpf].filter((t) => t && isValidDatacrazySearchTerm(t))
+    : [cpf, email, phone].filter((t) => t && isValidDatacrazySearchTerm(t));
   const seen = new Set();
 
   const cacheEnabled = String(process.env.DATACRAZY_CACHE_ENABLED ?? '1') !== '0';

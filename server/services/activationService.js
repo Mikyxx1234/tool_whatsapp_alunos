@@ -1728,7 +1728,10 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     status_message: 'Consultando cache Postgres…',
   });
 
-  const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
+  const built = await datacrazyClient.buildLeadsLookupIndex({
+    contacts,
+    allowStaleCache: true,
+  });
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
   let lazyResolve =
     built.lookup_mode === 'cache_first' || built.lookup_mode === 'hybrid';
@@ -1758,12 +1761,12 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   );
 
   /** @returns {Promise<{ lead: object|null, status: 'found'|'not_found'|'rate_limited' }>} */
-  const resolveLeadWithRetry = async (contact) => {
+  const resolveLeadWithRetry = async (contact, opts = {}) => {
     for (let attempt = 1; attempt <= resolveRateRetryMax; attempt++) {
       const cached = datacrazyClient.lookupLeadInIndex(lookupIndex, contact);
       if (cached) return { lead: cached, status: 'found' };
       if (!lazyResolve) return { lead: null, status: 'not_found' };
-      const resolved = await datacrazyClient.resolveLeadForContact(contact, lookupIndex);
+      const resolved = await datacrazyClient.resolveLeadForContact(contact, lookupIndex, opts);
       if (resolved.status === 'found') return resolved;
       if (resolved.status === 'not_found') return resolved;
       if (attempt < resolveRateRetryMax) {
@@ -1774,8 +1777,16 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   };
 
   // Hybrid: prefetch controlado ANTES do envio (3 paralelos, ~6 req/s).
-  // Evita 10 workers de WhatsApp disparando buscas API ao mesmo tempo → 429 em massa.
-  if (built.lookup_mode === 'hybrid') {
+  // cache_only: só snapshot Postgres — zero busca API no disparo.
+  if (built.lookup_mode === 'cache_only') {
+    const inCache = toProcess.length - (built.remaining_persons ?? 0);
+    onProgress({
+      processed: 0,
+      status_message: `Snapshot local: ${inCache}/${toProcess.length} no cache · enviando sem consultar API…`,
+      cache_hits: built.cache_hits ?? null,
+    });
+    lazyResolve = false;
+  } else if (built.lookup_mode === 'hybrid') {
     const missingContacts = [];
     for (const item of toProcess) {
       const c = contactFromItem(item);
@@ -1804,7 +1815,11 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
       for (let pi = 0; pi < missingContacts.length; pi += prefetchConcurrency) {
         throwIfCancelled();
         const slice = missingContacts.slice(pi, pi + prefetchConcurrency);
-        const results = await Promise.all(slice.map((c) => resolveLeadWithRetry(c)));
+        const results = await Promise.all(
+          slice.map((c) =>
+            resolveLeadWithRetry(c, { cpfOnly: true })
+          )
+        );
         for (const r of results) {
           prefetchDone += 1;
           if (r.status === 'found') prefetchFound += 1;
