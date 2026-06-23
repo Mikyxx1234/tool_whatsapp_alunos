@@ -1610,9 +1610,16 @@ async function runDatacrazyActivationMultiChunk(category, toProcess, opts, callb
     const part = await runDatacrazyActivationBatchForItems(category, slice, opts, {
       onTotal: () => {},
       onProgress: (patch) => {
+        const chunkPrefetching =
+          (patch.prefetch_total ?? 0) > 0 &&
+          (patch.prefetch_done ?? 0) < (patch.prefetch_total ?? 0);
+        const chunkLookup = patch.phase === 'lookup' || patch.phase === 'prefetch';
         onProgress({
           ...patch,
-          processed: completedProcessed + (patch.processed ?? 0),
+          processed:
+            chunkPrefetching || chunkLookup
+              ? completedProcessed
+              : completedProcessed + (patch.processed ?? 0),
           sent: aggregated.sent + (patch.sent ?? 0),
           failed: aggregated.failed + (patch.failed ?? 0),
           not_found: aggregated.not_found + (patch.not_found ?? 0),
@@ -1727,6 +1734,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
 
   onProgress({
     processed: 0,
+    phase: 'lookup',
     status_message: 'Consultando cache Postgres…',
   });
 
@@ -1738,11 +1746,26 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   let lazyResolve =
     built.lookup_mode === 'cache_first' || built.lookup_mode === 'hybrid';
 
+  const localResolved = toProcess.length - (built.remaining_persons ?? 0);
+  const apiPending = built.remaining_persons ?? 0;
+  const lookupMsg = (() => {
+    const cacheN = built.cache_hits ?? 0;
+    const histN = built.dispatch_history_hits ?? 0;
+    if (built.lookup_mode === 'cache_only') {
+      return `Índice local: ${localResolved}/${toProcess.length} (cache ${cacheN} + histórico ${histN}) · modo cache_only — sem API`;
+    }
+    if (apiPending === 0) {
+      return `Índice local: ${localResolved}/${toProcess.length} (cache ${cacheN} + histórico ${histN}) · todos resolvidos sem API`;
+    }
+    return `Índice local: ${localResolved}/${toProcess.length} (cache ${cacheN} + histórico ${histN}) · faltam ${apiPending} na API`;
+  })();
+
   onProgress({
     processed: 0,
-    status_message: lazyResolve
-      ? `Cache: ${built.cache_hits ?? 0} · histórico: ${built.dispatch_history_hits ?? 0} · preparando…`
-      : `Preflight API concluído · enviando…`,
+    phase: 'lookup',
+    lookup_local: localResolved,
+    lookup_api_pending: apiPending,
+    status_message: lookupMsg,
     cache_hits: built.cache_hits ?? null,
     lookup_mode: built.lookup_mode ?? null,
   });
@@ -1781,10 +1804,14 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   // Hybrid: prefetch controlado ANTES do envio (3 paralelos, ~6 req/s).
   // cache_only: só snapshot Postgres — zero busca API no disparo.
   if (built.lookup_mode === 'cache_only') {
-    const inCache = toProcess.length - (built.remaining_persons ?? 0);
     onProgress({
       processed: 0,
-      status_message: `Snapshot local: ${inCache}/${toProcess.length} no cache · enviando sem consultar API…`,
+      phase: 'sending',
+      prefetch_total: 0,
+      prefetch_done: 0,
+      lookup_local: localResolved,
+      lookup_api_pending: 0,
+      status_message: lookupMsg,
       cache_hits: built.cache_hits ?? null,
     });
     lazyResolve = false;
@@ -1810,9 +1837,12 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
       let prefetchFound = 0;
       onProgress({
         processed: 0,
+        phase: 'prefetch',
         prefetch_total: prefetchTotal,
         prefetch_done: 0,
-        status_message: `Consultando DataCrazy: 0/${prefetchTotal} (ritmo seguro, ~6/s)…`,
+        lookup_local: localResolved,
+        lookup_api_pending: prefetchTotal,
+        status_message: `API DataCrazy: 0/${prefetchTotal} (só quem não estava no índice local)…`,
       });
       for (let pi = 0; pi < missingContacts.length; pi += prefetchConcurrency) {
         throwIfCancelled();
@@ -1828,9 +1858,12 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
         }
         onProgress({
           processed: 0,
+          phase: 'prefetch',
           prefetch_total: prefetchTotal,
           prefetch_done: prefetchDone,
-          status_message: `Consultando DataCrazy: ${prefetchDone}/${prefetchTotal} (${prefetchFound} encontrados)…`,
+          lookup_local: localResolved,
+          lookup_api_pending: prefetchTotal - prefetchDone,
+          status_message: `API DataCrazy: ${prefetchDone}/${prefetchTotal} (${prefetchFound} encontrados) · local já tinha ${localResolved}`,
         });
         if (prefetchGapMs > 0 && pi + prefetchConcurrency < missingContacts.length) {
           await sleep(prefetchGapMs);
@@ -1839,13 +1872,24 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
       console.log(
         `[ativacao] prefetch hybrid: ${prefetchFound}/${prefetchTotal} encontrados no DataCrazy`
       );
+    } else {
+      onProgress({
+        processed: 0,
+        phase: 'sending',
+        prefetch_total: 0,
+        prefetch_done: 0,
+        status_message: `Todos ${toProcess.length} no índice local — enviando sem consultar API`,
+      });
     }
     lazyResolve = false;
   }
 
   onProgress({
     processed: 0,
-    status_message: `Enviando WhatsApp (índice pronto)…`,
+    phase: 'sending',
+    prefetch_total: 0,
+    prefetch_done: 0,
+    status_message: `Enviando WhatsApp…`,
     cache_hits: built.cache_hits ?? null,
     lookup_mode: built.lookup_mode ?? null,
   });
@@ -2215,6 +2259,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     }
     onProgress({
       processed: results.length,
+      phase: 'sending',
       sent,
       failed,
       not_found,

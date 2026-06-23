@@ -51,6 +51,7 @@ export function ActivationListActions({
     percent: number;
     stats?: string;
     inPrefetch?: boolean;
+    phase?: string;
   } | null>(null);
   const pollingRef = useRef<number | null>(null);
   const jobIdRef = useRef<string | null>(null);
@@ -119,8 +120,10 @@ export function ActivationListActions({
           consecutiveErrorsRef.current = 0;
           const inPrefetch =
             (job.prefetch_total ?? 0) > 0 &&
-            (job.prefetch_done ?? 0) < (job.prefetch_total ?? 0) &&
-            job.processed === 0;
+            (job.prefetch_done ?? 0) < (job.prefetch_total ?? 0);
+          const phase =
+            job.phase ??
+            (inPrefetch ? 'prefetch' : job.processed > 0 ? 'sending' : 'lookup');
           const percent = inPrefetch
             ? Math.min(
                 100,
@@ -142,6 +145,7 @@ export function ActivationListActions({
             percent,
             stats: statsLine,
             inPrefetch,
+            phase,
           });
 
           if (job.status === 'completed' && job.result) {
@@ -379,21 +383,21 @@ export function ActivationListActions({
       <LoadingOverlay
         open={running && !overlayMinimized}
         title={`Disparando campanha — ${CATEGORY_LABEL[category]}`}
-        subtitle="Sincronizando com o DataCrazy, enviando templates do WhatsApp e gravando histórico no banco."
+        subtitle="Índice local (cache + histórico) → API só para faltantes → envio WhatsApp."
         hint={`Pode levar até ${estMinutes} min em filas grandes. Você pode minimizar — a operação continua em segundo plano.`}
         stages={[
-          'Buscando alunos no DataCrazy',
+          'Índice local (cache + histórico)',
+          'API DataCrazy (só faltantes)',
           'Enviando templates via WhatsApp',
-          'Registrando histórico',
         ]}
         currentStageIndex={
-          progress?.inPrefetch
+          progress?.phase === 'lookup'
             ? 0
-            : !progress || progress.total === 0
-              ? 0
-              : progress.processed < progress.total
-                ? 1
-                : 2
+            : progress?.phase === 'prefetch' || progress?.inPrefetch
+              ? 1
+              : progress?.phase === 'sending' || (progress && progress.processed > 0)
+                ? 2
+                : 0
         }
         onClose={() => setOverlayMinimized(true)}
         onCancel={running ? () => void cancelRunningJob() : undefined}

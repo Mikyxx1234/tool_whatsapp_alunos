@@ -1,4 +1,4 @@
-/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed'|'cancelled', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, chunk_index: number|null, chunk_total: number|null, chunk_size: number|null, status_message: string|null, prefetch_done: number|null, prefetch_total: number|null, cancel_requested: boolean, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
+/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed'|'cancelled', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, chunk_index: number|null, chunk_total: number|null, chunk_size: number|null, status_message: string|null, phase: string|null, lookup_local: number|null, lookup_api_pending: number|null, prefetch_done: number|null, prefetch_total: number|null, cancel_requested: boolean, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
 
 /** @type {Map<string, JobEntry>} */
 const jobs = new Map();
@@ -45,6 +45,9 @@ export function createJob({ category, total }) {
     chunk_total: null,
     chunk_size: null,
     status_message: null,
+    phase: null,
+    lookup_local: null,
+    lookup_api_pending: null,
     prefetch_done: null,
     prefetch_total: null,
     cancel_requested: false,
@@ -59,7 +62,7 @@ export function createJob({ category, total }) {
 
 /**
  * @param {string} jobId
- * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null, chunk_index?: number|null, chunk_total?: number|null, chunk_size?: number|null, status_message?: string|null, prefetch_done?: number|null, prefetch_total?: number|null }} patch
+ * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null, chunk_index?: number|null, chunk_total?: number|null, chunk_size?: number|null, status_message?: string|null, phase?: string|null, lookup_local?: number|null, lookup_api_pending?: number|null, prefetch_done?: number|null, prefetch_total?: number|null }} patch
  */
 export function updateProgress(jobId, patch) {
   const entry = jobs.get(jobId);
@@ -76,6 +79,9 @@ export function updateProgress(jobId, patch) {
   if (patch.chunk_total != null) entry.chunk_total = patch.chunk_total;
   if (patch.chunk_size != null) entry.chunk_size = patch.chunk_size;
   if (patch.status_message != null) entry.status_message = patch.status_message;
+  if (patch.phase != null) entry.phase = patch.phase;
+  if (patch.lookup_local != null) entry.lookup_local = patch.lookup_local;
+  if (patch.lookup_api_pending != null) entry.lookup_api_pending = patch.lookup_api_pending;
   if (patch.prefetch_done != null) entry.prefetch_done = patch.prefetch_done;
   if (patch.prefetch_total != null) entry.prefetch_total = patch.prefetch_total;
 }
@@ -161,6 +167,9 @@ export function getJob(jobId) {
     chunk_total: entry.chunk_total,
     chunk_size: entry.chunk_size,
     status_message: entry.status_message,
+    phase: entry.phase,
+    lookup_local: entry.lookup_local,
+    lookup_api_pending: entry.lookup_api_pending,
     prefetch_done: entry.prefetch_done,
     prefetch_total: entry.prefetch_total,
     cancel_requested: entry.cancel_requested,
