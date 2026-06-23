@@ -5,6 +5,29 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-22 — Ativação: volta default bulk_search (preflight rápido) + filtro 55n
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** `cache_first` (default de 22/06) resolvia lead a lead na fila serial — correto contra 429, mas **muito lento** em lotes de 100–1000. Usuário pediu retomar a regra da época em que a ativação funcionava bem.
+- **Decisão:** Default `DATACRAZY_ACTIVATION_LOOKUP_MODE=bulk_search` de novo:
+  1. **Preflight** = cache Postgres (FASE 0) + busca direta paralela `?search=` (telefone → CPF → e-mail, 2 passadas) para lotes ≤ `DATACRAZY_DIRECT_SEARCH_THRESHOLD` (5000).
+  2. **Envio** = só `lookupLeadInIndex` no índice já montado (sem API por lead).
+  3. **Placeholders SIAA** (`55n encontrado`, `55 não encontrado`) continuam ignorados via `sanitizeContactPhone` / `isValidDatacrazySearchTerm` — import corrigido não deve mais gerar, mas filtro permanece.
+  4. `cache_first` permanece opt-in via env para quem preferir serial + retry em 429.
+  5. Defaults bulk: CRM **15/s**, direct search concurrency **10**.
+- **Easypanel:** remover `DATACRAZY_ACTIVATION_LOOKUP_MODE=cache_first` se estiver setado manualmente.
+- **Alternativas descartadas:** manter cache_first como default (lento); remover cache_first do código (útil como fallback anti-429).
+
+### 2026-06-22 — Ativação DataCrazy: modo cache_first (fim dos 429 no preflight)
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** Lotes de 100–1000 leads no preflight disparavam centenas de `GET ?search=` em paralelo (até 12–20/s). A API DataCrazy retornava `Too many requests` (429); leads existentes eram marcados como **não encontrados** (falso negativo) e os logs ficavam cheios de erro.
+- **Decisão:** Novo modo default `DATACRAZY_ACTIVATION_LOOKUP_MODE=cache_first`:
+  1. **Preflight** = só cache Postgres (`datacrazy_lead_cache` por CPF + e-mail batch) + índice em memória — **zero** rajada de API.
+  2. **Resolução por lead** na fila de envio: `resolveLeadForContact` enfileira buscas API **1 por vez** (`enqueueLeadResolve`), ordem CPF → e-mail → telefone.
+  3. **429 ≠ not_found** — status `rate_limited` com até 8 retentativas (`DATACRAZY_RESOLVE_RATE_RETRY_*`); falha final grava `failed`/`rate_limited`, não `not_found`.
+  4. Rate CRM default volta para **10/s**; cooldown 429 default **1200 ms**.
+  5. Modo legado `bulk_search` preservado via env (comportamento anterior).
+- **Alternativas descartadas:** Só baixar concurrency do bulk (ainda gera rajada no início); paginação CRM inteira (minutos em “Buscando…”); ignorar 429 e marcar not_found (causa raiz dos falsos negativos).
+
 ### 2026-06-19 — Rematrícula SIAA: RGM/CPF em notação científica + lookup matriculados quebrado
 - **Modelo usado:** Opus 4.8 (principal). Bugfix operacional.
 - **Problema:** Após upload SIAA (`excel__19062026-122501.zip`, 20.163 linhas), ~67% dos alunos apareciam sem RGM no Disparador (`-`). Export ERP grava RGM/CPF/celular como número Excel → XML devolve `"4.8982197E7"`, `"3.240816687E10"`. O parser descartava ( `normalizeRgmCanonical` extraía dígitos errados; `isPlausibleInstitutionalRgm` falhava) e gravava `RGM`/`RGM_ALUN` vazios. Coluna **Ciclo** mostrava `EM CURSO` porque `rowToRematriculaItem` lia `SIT_2026_1` (situação acadêmica, não ciclo). Fallback `rgmFromMatriculadosLookup` nunca funcionou: passava `PersonIndexEntry` para `institutionalRgmFromAnyRow` em vez de usar `matEntry.ids` (`RGM:…`) ou `matEntry.row`.

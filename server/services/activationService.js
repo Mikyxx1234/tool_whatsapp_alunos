@@ -1560,20 +1560,50 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   // cpf habilita a Onda 2: lookup no cache persistente antes da API DataCrazy.
   const contacts = toProcess.map((item) => ({
     cpf: item.cpf,
-    email: item.email,
-    phone: item.telefone,
+    email: sanitizeContactEmail(item.email),
+    phone: sanitizeContactPhone(item.telefone),
   }));
 
   const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
+  const cacheFirstLookup = built.lookup_mode === 'cache_first';
+
+  const contactFromItem = (item) => ({
+    email: sanitizeContactEmail(item.email),
+    phone: sanitizeContactPhone(item.telefone),
+    cpf: item.cpf,
+  });
+
+  const resolveRateRetryMax = Math.max(
+    Number(process.env.DATACRAZY_RESOLVE_RATE_RETRY_MAX) || 8,
+    1
+  );
+  const resolveRateRetryMs = Math.max(
+    Number(process.env.DATACRAZY_RESOLVE_RATE_RETRY_MS) || 1500,
+    500
+  );
+
+  /** @returns {Promise<{ lead: object|null, status: 'found'|'not_found'|'rate_limited' }>} */
+  const resolveLeadWithRetry = async (contact) => {
+    for (let attempt = 1; attempt <= resolveRateRetryMax; attempt++) {
+      const cached = datacrazyClient.lookupLeadInIndex(lookupIndex, contact);
+      if (cached) return { lead: cached, status: 'found' };
+      if (!cacheFirstLookup) return { lead: null, status: 'not_found' };
+      const resolved = await datacrazyClient.resolveLeadForContact(contact, lookupIndex);
+      if (resolved.status === 'found') return resolved;
+      if (resolved.status === 'not_found') return resolved;
+      if (attempt < resolveRateRetryMax) {
+        await sleep(resolveRateRetryMs * attempt);
+      }
+    }
+    return { lead: null, status: 'rate_limited' };
+  };
 
   // Pré-voo: confirma que origem_ativacao grava no CRM antes de enviar qualquer template.
   for (const item of toProcess) {
-    const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
-      email: item.email,
-      phone: item.telefone,
-      cpf: item.cpf,
-    });
+    const lead = cacheFirstLookup
+      ? (await resolveLeadWithRetry(contactFromItem(item))).lead
+      : datacrazyClient.lookupLeadInIndex(lookupIndex, contactFromItem(item));
     if (!lead?.id) continue;
     const preflight = await datacrazyClient.verifyOrigemAtivacaoForCategory(
       lead.id,
@@ -1624,6 +1654,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   let sent = 0;
   let not_found = 0;
   let failed = 0;
+  let rate_limited = 0;
   let skipped = 0;
   /** @type {object[]} */
   const not_found_items = [];
@@ -1662,11 +1693,36 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
       };
     }
 
-    const lead = datacrazyClient.lookupLeadInIndex(lookupIndex, {
-      email: item.email,
-      phone: item.telefone,
-      cpf: item.cpf,
-    });
+    let lead = null;
+    let rateLimited = false;
+
+    if (cacheFirstLookup) {
+      const resolved = await resolveLeadWithRetry(contactFromItem(item));
+      lead = resolved.lead;
+      rateLimited = resolved.status === 'rate_limited';
+    } else {
+      lead = datacrazyClient.lookupLeadInIndex(lookupIndex, contactFromItem(item));
+    }
+
+    if (rateLimited) {
+      await activationDispatchRepo.recordDispatchEvent({
+        category,
+        masterKey: master_key,
+        status: 'failed',
+        messageTier: message_tier,
+        templateName: template_name,
+        nome: item.nome,
+        telefone: item.telefone,
+        email: item.email,
+        rgm: item.rgm,
+        errorMessage: 'DataCrazy rate limit — tente novamente em alguns minutos',
+      });
+      return {
+        status: 'failed',
+        rateLimited: true,
+        result: { ...item, status: 'failed', error: 'rate_limited' },
+      };
+    }
 
     if (!lead) {
       await activationDispatchRepo.recordDispatchEvent({
@@ -1856,7 +1912,10 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
       else if (o.status === 'not_found') {
         not_found += 1;
         if (o.notFoundItem) not_found_items.push(o.notFoundItem);
-      } else if (o.status === 'failed') failed += 1;
+      } else if (o.status === 'failed') {
+        failed += 1;
+        if (o.rateLimited) rate_limited += 1;
+      }
       results.push(o.result);
       if (o.blocked) {
         origem_ativacao_blocked = true;
@@ -1868,9 +1927,12 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
       sent,
       failed,
       not_found,
+      rate_limited,
       skipped,
       scanned: built.leadsScanned ?? null,
       pages: built.pages ?? null,
+      lookup_mode: built.lookup_mode ?? null,
+      cache_hits: built.cache_hits ?? null,
     });
     if (sendDelay > 0 && i + batchConcurrency < toProcess.length) {
       await sleep(sendDelay);
@@ -1885,6 +1947,7 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
     sent,
     not_found,
     failed,
+    rate_limited,
     skipped,
     not_found_items,
     results,

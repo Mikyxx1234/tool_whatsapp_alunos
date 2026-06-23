@@ -368,44 +368,112 @@ function isRateLimitErrorMessage(msg) {
   return s.includes('too many requests') || s.includes('rate limit') || s.includes('429');
 }
 
+function isCacheFirstLookupMode() {
+  const v = String(process.env.DATACRAZY_ACTIVATION_LOOKUP_MODE ?? 'bulk_search').toLowerCase();
+  return v === 'cache_first';
+}
+
+function leadFromCacheRow(row) {
+  return (
+    row.raw_lead || {
+      id: row.datacrazy_lead_id,
+      email: row.email_norm,
+      rawPhone: row.phone_norm,
+      phone: row.phone_norm,
+      name: row.nome,
+      taxId: row.cpf,
+    }
+  );
+}
+
+function applyCacheRowToIndex(row, byEmail, byPhone, byCpf, remainingEmails, remainingPhones) {
+  const lead = leadFromCacheRow(row);
+  mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
+  if (row.email_norm) remainingEmails.delete(row.email_norm);
+  if (row.phone_norm) remainingPhones.delete(row.phone_norm);
+  const cpf = normalizeCpfFromString(row.cpf);
+  if (cpf && !byCpf.has(cpf)) byCpf.set(cpf, lead);
+}
+
+function normalizeCpfFromString(v) {
+  const d = String(v ?? '').replace(/\D/g, '');
+  return d.length === 11 ? d : '';
+}
+
+/** Fila serial — 1 busca API por vez no modo cache_first (evita rajada de 429). */
+let resolveQueue = Promise.resolve();
+
+function enqueueLeadResolve(task) {
+  const run = resolveQueue.then(task, task);
+  resolveQueue = run.catch(() => {});
+  return run;
+}
+
+function pickLeadFromSearchPage(page, contact) {
+  const list = page?.data || [];
+  if (!list.length) return null;
+  const cpf = String(contact.cpf ?? '').replace(/\D/g, '');
+  const email = normalizeEmailForMatch(contact.email);
+  const phone = normalizePhoneDigits(contact.phone);
+  for (const lead of list) {
+    if (cpf.length === 11 && cpfDigitsFromLead(lead) === cpf) return lead;
+  }
+  if (email) {
+    for (const lead of list) {
+      if (normalizeEmailForMatch(lead.email) === email) return lead;
+    }
+  }
+  if (phone) {
+    for (const lead of list) {
+      const p = leadPhoneDigits(lead);
+      if (p === phone || p.endsWith(phone) || phone.endsWith(p)) return lead;
+    }
+  }
+  return list[0];
+}
+
 function directSearchSettings() {
   return {
     concurrency: Math.max(
-      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 12, 20),
+      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 10, 20),
       1
     ),
     delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 0, 0),
-    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 800, 200),
+    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 1200, 200),
   };
 }
 
 /** Pausa compartilhada só quando a API retorna 429 (não entre todo lote). */
 let directSearchCooldownUntil = 0;
 
-/** Busca direta — retry único após cooldown adaptativo em 429. */
+/** Busca direta com retries; distingue 429 de “não achou”. */
 async function searchLeadsDirect(term) {
   const { cooldownMs } = directSearchSettings();
-  const now = Date.now();
-  if (now < directSearchCooldownUntil) {
-    await sleep(directSearchCooldownUntil - now);
-  }
-  try {
-    return await searchLeads({ search: term, take: 5 });
-  } catch (err) {
-    const rateLimited = err.status === 429 || isRateLimitErrorMessage(err.message);
-    if (rateLimited) {
-      directSearchCooldownUntil = Date.now() + cooldownMs;
-      await sleep(cooldownMs);
-      try {
-        return await searchLeads({ search: term, take: 5 });
-      } catch (retryErr) {
-        console.warn(`[datacrazy] direct search "${term}" falhou: ${retryErr.message}`);
-        return null;
-      }
+  const maxOuter = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1);
+  for (let outer = 1; outer <= maxOuter; outer++) {
+    const now = Date.now();
+    if (now < directSearchCooldownUntil) {
+      await sleep(directSearchCooldownUntil - now);
     }
-    console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
-    return null;
+    try {
+      const page = await searchLeads({ search: term, take: 5 });
+      return { page, rateLimited: false };
+    } catch (err) {
+      const rateLimited = err.status === 429 || isRateLimitErrorMessage(err.message);
+      if (rateLimited && outer < maxOuter) {
+        directSearchCooldownUntil = Date.now() + cooldownMs * outer;
+        await sleep(cooldownMs * outer);
+        continue;
+      }
+      if (rateLimited) {
+        console.warn(`[datacrazy] direct search "${term}" rate limit após ${maxOuter} tentativas`);
+        return { page: null, rateLimited: true };
+      }
+      console.warn(`[datacrazy] direct search "${term}" falhou: ${err.message}`);
+      return { page: null, rateLimited: false };
+    }
   }
+  return { page: null, rateLimited: true };
 }
 
 /**
@@ -419,7 +487,7 @@ async function runDirectSearchTerms(terms, onResult) {
     const slice = terms.slice(i, i + concurrency);
     const pages = await Promise.all(slice.map((term) => searchLeadsDirect(term)));
     for (let j = 0; j < slice.length; j++) {
-      onResult(slice[j], pages[j]);
+      onResult(slice[j], pages[j]?.page ?? null, pages[j]?.rateLimited ?? false);
     }
     if (i + concurrency < terms.length && delayMs > 0) {
       await sleep(delayMs);
@@ -509,59 +577,75 @@ async function buildLeadsLookupIndex(needed = {}) {
   let cacheStaleSkipped = 0;
   if (cacheEnabled && contacts) {
     const cpfList = [];
+    const emailList = [];
     for (const c of contacts) {
       const cpf = String(c?.cpf ?? '').replace(/\D/g, '');
       if (cpf.length === 11) cpfList.push(cpf);
+      const em = sanitizeContactEmail(c?.email);
+      if (em) emailList.push(em);
     }
-    if (cpfList.length > 0) {
-      try {
-        const cached = await datacrazyLeadCacheRepo.getByCpfBatch(cpfList);
-        const touchList = [];
-        for (const [cpf, row] of cached) {
-          const lastSyncedMs = row.last_synced_at
-            ? new Date(row.last_synced_at).getTime()
-            : 0;
-          if (lastSyncedMs && Date.now() - lastSyncedMs > ttlMs) {
-            cacheStaleSkipped += 1;
-            continue;
-          }
-          const lead = row.raw_lead || {
-            id: row.datacrazy_lead_id,
-            email: row.email_norm,
-            rawPhone: row.phone_norm,
-            name: row.nome,
-          };
-          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
-          if (row.email_norm) remainingEmails.delete(row.email_norm);
-          if (row.phone_norm) remainingPhones.delete(row.phone_norm);
-          if (cpf.length === 11 && !byCpf.has(cpf)) byCpf.set(cpf, lead);
-          touchList.push(cpf);
-          cacheHits += 1;
-        }
-        if (touchList.length > 0) {
-          datacrazyLeadCacheRepo
-            .touchLastSeen(touchList)
-            .catch((e) => console.warn('[datacrazy-cache] touchLastSeen falhou:', e.message));
-        }
-        // Remove pessoas já resolvidas pelo cache de personList
-        for (let i = personList.length - 1; i >= 0; i--) {
-          const person = personList[i];
-          if (personFoundInIndex(person, byEmail, byPhone, byCpf)) {
-            personList.splice(i, 1);
-          }
-        }
-      } catch (e) {
-        console.warn('[datacrazy-cache] consulta cache falhou:', e.message);
+    const touchList = [];
+    const applyCached = (row) => {
+      const lastSyncedMs = row.last_synced_at ? new Date(row.last_synced_at).getTime() : 0;
+      if (lastSyncedMs && Date.now() - lastSyncedMs > ttlMs) {
+        cacheStaleSkipped += 1;
+        return;
       }
+      applyCacheRowToIndex(row, byEmail, byPhone, byCpf, remainingEmails, remainingPhones);
+      if (row.cpf) touchList.push(row.cpf);
+      cacheHits += 1;
+    };
+    try {
+      if (cpfList.length > 0) {
+        const cached = await datacrazyLeadCacheRepo.getByCpfBatch(cpfList);
+        for (const [, row] of cached) applyCached(row);
+      }
+      if (emailList.length > 0) {
+        const cachedByEmail = await datacrazyLeadCacheRepo.getByEmailBatch(emailList);
+        for (const [, row] of cachedByEmail) applyCached(row);
+      }
+      if (touchList.length > 0) {
+        datacrazyLeadCacheRepo
+          .touchLastSeen([...new Set(touchList)])
+          .catch((e) => console.warn('[datacrazy-cache] touchLastSeen falhou:', e.message));
+      }
+      for (let i = personList.length - 1; i >= 0; i--) {
+        if (personFoundInIndex(personList[i], byEmail, byPhone, byCpf)) {
+          personList.splice(i, 1);
+        }
+      }
+    } catch (e) {
+      console.warn('[datacrazy-cache] consulta cache falhou:', e.message);
     }
   }
 
-  // Atalho: para lotes pequenos (<= threshold), usa busca direta da API
-  // (`?search=<termo>`) em vez de varrer centenas de páginas. Reduz de minutos
-  // pra segundos quando o disparo é de poucas pessoas.
-  // Threshold passou a representar "pessoas" (não "termos"). Default 250 cobre
-  // a maior parte dos disparos manuais; acima disso a paginação completa
-  // (1 página resolve ~100 pessoas) fica mais eficiente em volume.
+  if (isCacheFirstLookupMode()) {
+    sharedLeadsIndex.byEmail = byEmail;
+    sharedLeadsIndex.byPhone = byPhone;
+    sharedLeadsIndex.byCpf = byCpf;
+    sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+    return {
+      byEmail,
+      byPhone,
+      byCpf,
+      pages: 0,
+      leadsScanned: cacheHits,
+      direct_search: false,
+      lookup_mode: 'cache_first',
+      direct_queries: 0,
+      cpf_direct_queries: 0,
+      cpf_direct_hits: 0,
+      early_stop: personList.length === 0,
+      remaining_emails: remainingEmails.size,
+      remaining_phones: remainingPhones.size,
+      remaining_persons: personList.length,
+      index_reused: useShared,
+      cache_hits: cacheHits,
+      cache_stale_skipped: cacheStaleSkipped,
+    };
+  }
+
+  // Modo legado bulk_search — varre API em lote (pode gerar 429 em filas grandes).
   const directThreshold = Math.max(
     Number(process.env.DATACRAZY_DIRECT_SEARCH_THRESHOLD) || 5000,
     0
@@ -707,6 +791,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       byCpf,
       pages: 0,
       leadsScanned: directHits + cpfDirectHits,
+      lookup_mode: 'bulk_search',
       direct_search: true,
       direct_queries: directQueries + cpfDirectQueries,
       cpf_direct_queries: cpfDirectQueries,
@@ -795,6 +880,7 @@ async function buildLeadsLookupIndex(needed = {}) {
     byCpf,
     pages,
     leadsScanned: leadsScanned + cpfDirectHits,
+    lookup_mode: 'bulk_search',
     direct_search: false,
     cpf_direct_queries: cpfDirectQueries,
     cpf_direct_hits: cpfDirectHits,
@@ -823,6 +909,46 @@ function lookupLeadInIndex(index, contact) {
     }
   }
   return null;
+}
+
+/**
+ * Resolve lead: índice (cache) → busca API serial (CPF → email → tel).
+ * @returns {Promise<{ lead: object|null, status: 'found'|'not_found'|'rate_limited' }>}
+ */
+async function resolveLeadForContact(contact, index) {
+  const hit = lookupLeadInIndex(index, contact);
+  if (hit) return { lead: hit, status: 'found' };
+
+  const cpf =
+    String(contact.cpf ?? '').replace(/\D/g, '').length === 11
+      ? String(contact.cpf ?? '').replace(/\D/g, '')
+      : '';
+  const email = normalizeEmailForMatch(contact.email);
+  const phone = normalizePhoneDigits(contact.phone);
+  const terms = [cpf, email, phone].filter((t) => t && isValidDatacrazySearchTerm(t));
+  const seen = new Set();
+
+  const cacheEnabled = String(process.env.DATACRAZY_CACHE_ENABLED ?? '1') !== '0';
+
+  return enqueueLeadResolve(async () => {
+    for (const term of terms) {
+      if (seen.has(term)) continue;
+      seen.add(term);
+      const { page, rateLimited } = await searchLeadsDirect(term);
+      if (rateLimited) return { lead: null, status: 'rate_limited' };
+      const lead = pickLeadFromSearchPage(page, contact);
+      if (lead) {
+        mergeLeadIntoMaps(lead, index.byEmail, index.byPhone, index.byCpf);
+        if (cacheEnabled && lead?.taxId) {
+          datacrazyLeadCacheRepo
+            .upsertLeadFromCrm(lead, 'resolve')
+            .catch((e) => console.warn('[datacrazy-cache] upsert resolve falhou:', e.message));
+        }
+        return { lead, status: 'found' };
+      }
+    }
+    return { lead: null, status: 'not_found' };
+  });
 }
 
 export function invalidateSharedLeadsIndex() {
@@ -1172,6 +1298,7 @@ export const datacrazyClient = {
   getLeadById,
   buildLeadsLookupIndex,
   lookupLeadInIndex,
+  resolveLeadForContact,
   invalidateSharedLeadsIndex,
   normalizeEmailForMatch,
   normalizePhoneDigits,

@@ -5,6 +5,12 @@ import {
   displayRgmFromRematriculaRow,
 } from './rgmDisplay.js';
 import { cpfDigitsFromExcelCell, phoneDigitsFromExcelCell } from './excelNumericCell.js';
+import { isPlaceholderContact } from './datacrazySearchTerm.js';
+
+function siaaPhoneFieldDigits(raw) {
+  if (isPlaceholderContact(raw)) return '';
+  return phoneDigitsFromExcelCell(raw);
+}
 
 /**
  * Corrige CPF/telefone em notação científica no export SIAA (antes do sanitize).
@@ -23,6 +29,10 @@ export function repairRematriculaNumericFields(row) {
       continue;
     }
     if (/ddd/i.test(key)) {
+      if (isPlaceholderContact(s)) {
+        out[key] = '';
+        continue;
+      }
       let ddd = phoneDigitsFromExcelCell(s);
       if (ddd.length > 2) ddd = ddd.slice(-2);
       if (ddd.length === 1) ddd = ddd.padStart(2, '0');
@@ -30,6 +40,10 @@ export function repairRematriculaNumericFields(row) {
       continue;
     }
     if (/fone|cel|tel/i.test(key) && !/^ddd/i.test(key)) {
+      if (isPlaceholderContact(s)) {
+        out[key] = '';
+        continue;
+      }
       const fone = phoneDigitsFromExcelCell(s);
       if (fone) out[key] = fone;
     }
@@ -45,8 +59,8 @@ export function repairRematriculaNumericFields(row) {
 export function buildSiaaCelularFromDddAndFone(row) {
   if (!row || typeof row !== 'object') return '';
 
-  let ddd = phoneDigitsFromExcelCell(row.DDD_CEL ?? row.DDD ?? '');
-  let fone = phoneDigitsFromExcelCell(row.FONE_CEL ?? row.FONE ?? row.Celular ?? '');
+  let ddd = siaaPhoneFieldDigits(row.DDD_CEL ?? row.DDD ?? '');
+  let fone = siaaPhoneFieldDigits(row.FONE_CEL ?? row.FONE ?? row.Celular ?? '');
 
   if (ddd.length > 2) ddd = ddd.slice(-2);
   if (ddd.length === 1) ddd = ddd.padStart(2, '0');
@@ -84,9 +98,12 @@ export function normalizeSiaaRematriculaContactFields(row) {
   if (email) out.E_MAIL = email;
 
   const celular = buildSiaaCelularFromDddAndFone(out);
-  if (celular) {
+  if (celular && celular.length >= 10 && celular.length <= 11) {
     out.FONE_CEL = celular;
     out.TELEFONE_CEL = celular;
+  } else {
+    out.FONE_CEL = '';
+    out.TELEFONE_CEL = '';
   }
 
   return out;
@@ -130,7 +147,8 @@ export function siaaRematriculaRowQuality(row) {
   if (rgm) score += 1000 + parseInt(rgm.slice(0, 2), 10);
   if (String(row.NOME ?? row.Nome ?? '').trim()) score += 10;
   if (cpfDigitsFromSiaaRow(row)) score += 5;
-  if (buildSiaaCelularFromDddAndFone(row)) score += 3;
+  const celular = buildSiaaCelularFromDddAndFone(row);
+  if (celular.length >= 10 && celular.length <= 11) score += 3;
   if (String(row.E_MAIL ?? '').includes('@')) score += 2;
   if (String(row.SIT_FINAN ?? '').trim()) score += 2;
   if (String(row.SIT_ATUAL ?? '').trim()) score += 2;

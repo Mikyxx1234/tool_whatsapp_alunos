@@ -12,6 +12,7 @@ export function isPlaceholderContact(value) {
   if (!s) return true;
   if (PLACEHOLDER_TEXT.test(s)) return true;
   // Ex.: "55 não encontrado", "55n encontrado" (telefone ausente no SIAA)
+  if (/55\s*n/i.test(s) && !s.includes('@')) return true;
   if (/encontrado|not\s*found/i.test(s) && !s.includes('@')) return true;
   return false;
 }

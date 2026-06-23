@@ -61,6 +61,23 @@ export async function getByCpfBatch(cpfs) {
 }
 
 /**
+ * Busca múltiplos e-mails normalizados em uma query.
+ * @param {string[]} emails
+ * @returns {Promise<Map<string, object>>} chave = email_norm
+ */
+export async function getByEmailBatch(emails) {
+  const normalized = [...new Set(emails.map(_normalizeEmail).filter(Boolean))];
+  if (!normalized.length) return new Map();
+  const { rows } = await query(
+    `select cpf, datacrazy_lead_id, email_norm, phone_norm, nome, raw_lead, last_synced_at, last_seen_at
+       from datacrazy_lead_cache
+      where email_norm = any($1::text[])`,
+    [normalized]
+  );
+  return new Map(rows.map((r) => [r.email_norm, r]));
+}
+
+/**
  * Fallback: busca por e-mail normalizado (quando não há CPF).
  * @param {string} email
  * @returns {Promise<object|null>}
