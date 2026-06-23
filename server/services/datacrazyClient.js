@@ -435,11 +435,11 @@ function pickLeadFromSearchPage(page, contact) {
 function directSearchSettings() {
   return {
     concurrency: Math.max(
-      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 10, 20),
+      Math.min(Number(process.env.DATACRAZY_DIRECT_SEARCH_CONCURRENCY) || 4, 12),
       1
     ),
-    delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 0, 0),
-    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 1200, 200),
+    delayMs: Math.max(Number(process.env.DATACRAZY_DIRECT_SEARCH_DELAY_MS) || 250, 0),
+    cooldownMs: Math.max(Number(process.env.DATACRAZY_RATE_LIMIT_COOLDOWN_MS) || 2000, 500),
   };
 }
 
@@ -447,9 +447,12 @@ function directSearchSettings() {
 let directSearchCooldownUntil = 0;
 
 /** Busca direta com retries; distingue 429 de “não achou”. */
-async function searchLeadsDirect(term) {
+async function searchLeadsDirect(term, opts = {}) {
   const { cooldownMs } = directSearchSettings();
-  const maxOuter = Math.max(Number(process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5, 1);
+  const maxOuter = Math.max(
+    Number(opts.maxAttempts ?? process.env.DATACRAZY_SEARCH_MAX_ATTEMPTS) || 5,
+    1
+  );
   for (let outer = 1; outer <= maxOuter; outer++) {
     const now = Date.now();
     if (now < directSearchCooldownUntil) {
@@ -477,22 +480,51 @@ async function searchLeadsDirect(term) {
 }
 
 /**
- * Executa buscas diretas com concorrência baixa + pausa entre lotes.
+ * Executa buscas diretas: lote paralelo (baixa concorrência) + retry serial em 429.
  * @param {string[]} terms
- * @param {(term: string, page: { data: object[] }|null) => void} onResult
+ * @param {(term: string, page: { data: object[] }|null, rateLimited: boolean) => void} onResult
  */
 async function runDirectSearchTerms(terms, onResult) {
   const { concurrency, delayMs } = directSearchSettings();
+  const rateLimitedTerms = [];
+
   for (let i = 0; i < terms.length; i += concurrency) {
     const slice = terms.slice(i, i + concurrency);
     const pages = await Promise.all(slice.map((term) => searchLeadsDirect(term)));
     for (let j = 0; j < slice.length; j++) {
-      onResult(slice[j], pages[j]?.page ?? null, pages[j]?.rateLimited ?? false);
+      const res = pages[j];
+      if (res?.rateLimited) {
+        rateLimitedTerms.push(slice[j]);
+        continue;
+      }
+      onResult(slice[j], res?.page ?? null, false);
     }
-    if (i + concurrency < terms.length && delayMs > 0) {
-      await sleep(delayMs);
+    if (i + concurrency < terms.length) {
+      await sleep(delayMs > 0 ? delayMs : 200);
     }
   }
+
+  if (!rateLimitedTerms.length) return;
+
+  const serialMax = Math.max(Number(process.env.DATACRAZY_SERIAL_RETRY_MAX_ATTEMPTS) || 8, 1);
+  const serialGap = Math.max(Number(process.env.DATACRAZY_SERIAL_RETRY_GAP_MS) || 500, 200);
+  console.warn(
+    `[datacrazy] ${rateLimitedTerms.length} busca(s) com 429 no lote paralelo — retry serial (${serialMax} tentativas/termo)...`
+  );
+  let recovered = 0;
+  for (const term of rateLimitedTerms) {
+    await sleep(serialGap);
+    const res = await searchLeadsDirect(term, { maxAttempts: serialMax });
+    if (res.rateLimited) {
+      onResult(term, null, true);
+      continue;
+    }
+    onResult(term, res.page ?? null, false);
+    if (res.page?.data?.length) recovered += 1;
+  }
+  console.warn(
+    `[datacrazy] retry serial: ${recovered}/${rateLimitedTerms.length} termo(s) com resultado`
+  );
 }
 
 const SHARED_INDEX_TTL_MS = 20 * 60 * 1000;
@@ -667,9 +699,9 @@ async function buildLeadsLookupIndex(needed = {}) {
     }
     let queries = 0;
     let hits = 0;
-    await runDirectSearchTerms(terms, (_term, page) => {
+    await runDirectSearchTerms(terms, (_term, page, rateLimited) => {
       queries += 1;
-      if (!page) return;
+      if (rateLimited || !page) return;
       for (const lead of page.data) {
         mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
         hits += 1;
@@ -711,9 +743,9 @@ async function buildLeadsLookupIndex(needed = {}) {
         directSkippedInvalid += 1;
         return false;
       });
-      await runDirectSearchTerms(validTerms, (_term, page) => {
+      await runDirectSearchTerms(validTerms, (_term, page, rateLimited) => {
         directQueries += 1;
-        if (!page) return;
+        if (rateLimited || !page) return;
         for (const lead of page.data) {
           mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
           const e = normalizeEmailForMatch(lead.email);
@@ -726,10 +758,10 @@ async function buildLeadsLookupIndex(needed = {}) {
     };
 
     if (personList.length > 0) {
-      // 1ª passada: telefone → CPF → e-mail (CPF costuma bater melhor no SIAA/Kommo)
+      // 1ª passada: CPF → telefone → e-mail (rematrícula SIAA: CPF bate melhor no CRM)
       const firstPass = [];
       for (const person of personList) {
-        const term = person.phone || person.cpf || person.email;
+        const term = person.cpf || person.phone || person.email;
         if (term && !queriedTerms.has(term)) {
           queriedTerms.add(term);
           firstPass.push(term);
@@ -741,7 +773,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       const secondPass = [];
       for (const person of personList) {
         if (personFoundInIndex(person, byEmail, byPhone, byCpf)) continue;
-        for (const term of [person.phone, person.cpf, person.email]) {
+        for (const term of [person.cpf, person.phone, person.email]) {
           if (term && !queriedTerms.has(term)) {
             queriedTerms.add(term);
             secondPass.push(term);

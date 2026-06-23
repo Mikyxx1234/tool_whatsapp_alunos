@@ -1702,6 +1702,14 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
       rateLimited = resolved.status === 'rate_limited';
     } else {
       lead = datacrazyClient.lookupLeadInIndex(lookupIndex, contactFromItem(item));
+      if (!lead) {
+        const resolved = await datacrazyClient.resolveLeadForContact(
+          contactFromItem(item),
+          lookupIndex
+        );
+        if (resolved.status === 'found') lead = resolved.lead;
+        else if (resolved.status === 'rate_limited') rateLimited = true;
+      }
     }
 
     if (rateLimited) {
