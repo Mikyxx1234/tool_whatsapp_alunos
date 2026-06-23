@@ -84,9 +84,13 @@ export function ActivationListActions({
     const targetCount = hasSelection ? selectedCount : eligible;
     if (!targetCount) return;
     const confirmMsg = hasSelection
-      ? `Disparar template para ${selectedCount} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nEsta ação envia mensagens WhatsApp reais.`
-      : `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
-        'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
+      ? selectedCount > 500
+        ? `Disparar template para ${selectedCount.toLocaleString('pt-BR')} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nO sistema divide automaticamente em blocos de 500 e processa um após o outro (pode levar horas em bases grandes).\n\nEsta ação envia mensagens WhatsApp reais.`
+        : `Disparar template para ${selectedCount} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nEsta ação envia mensagens WhatsApp reais.`
+      : eligible > 500
+        ? `Buscar no DataCrazy e enviar mensagem para ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\nSerão processados em blocos automáticos de 500 (com pausa entre blocos). Você pode acompanhar o progresso no overlay — não precisa ficar disparando manualmente a cada 10 min.\n\nQuem não for encontrado entra na lista para CSV.`
+        : `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
+          'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
     const ok = window.confirm(confirmMsg);
     if (!ok) return;
 
@@ -112,11 +116,15 @@ export function ActivationListActions({
           consecutiveErrorsRef.current = 0;
           const percent =
             job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
+          const chunkLabel =
+            job.chunk_total && job.chunk_total > 1
+              ? ` · bloco ${job.chunk_index ?? '?'}/${job.chunk_total}`
+              : '';
           setProgress({
             processed: job.processed,
             total: job.total,
             percent,
-            stats: `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas`,
+            stats: `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`,
           });
 
           if (job.status === 'completed' && job.result) {
@@ -222,8 +230,12 @@ export function ActivationListActions({
     : running && progress?.total
       ? progress.total
       : eligible;
-  // ~100 leads/min com defaults agressivos (20 req/s CRM + 10 envios paralelos).
-  const estMinutes = Math.min(Math.max(Math.ceil(batchEstimate / 100), 2), 15);
+  // ~100 leads/min; lotes >500 rodam em blocos automáticos no servidor.
+  const chunkSize = 500;
+  const estMinutes =
+    batchEstimate > chunkSize
+      ? Math.ceil(batchEstimate / 80)
+      : Math.min(Math.max(Math.ceil(batchEstimate / 100), 2), 15);
 
   return (
     <div className="mt-3 pt-3 border-t border-gray-200 space-y-2">
@@ -241,7 +253,8 @@ export function ActivationListActions({
       </p>
       <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
         Escolha os templates na seção acima (mesma lista do Disparo manual). «Buscar e ativar» localiza
-        no DataCrazy e dispara o template na hora (estimativa ~{estMinutes} min para filas grandes).
+        no DataCrazy e dispara o template na hora. Acima de 500 pessoas, o sistema divide em blocos
+        automáticos (estimativa ~{estMinutes} min para filas grandes).
       </p>
       <div className="flex flex-wrap gap-2">
         <button

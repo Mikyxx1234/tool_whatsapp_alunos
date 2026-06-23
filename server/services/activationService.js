@@ -1504,19 +1504,23 @@ export async function getActivationRosterKeys(category, opts = {}) {
   };
 }
 
-/**
- * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
- */
-export async function runDatacrazyActivationBatch(category, opts = {}, callbacks = {}) {
-  const onProgress = typeof callbacks.onProgress === 'function' ? callbacks.onProgress : () => {};
-  const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
-  if (!process.env.DATACRAZY_API_KEY) {
-    const err = new Error('DATACRAZY_API_KEY não configurada no .env');
-    err.status = 503;
-    throw err;
+function getActivationAutoChunkSize(opts = {}) {
+  if (Number(opts.chunkSize) > 0) {
+    return Math.max(Math.min(Number(opts.chunkSize), 5000), 50);
   }
+  return Math.max(Number(process.env.ACTIVATION_AUTO_CHUNK_SIZE) || 500, 50);
+}
 
-  const storedTemplates = await getActivationTemplateConfig();
+function getActivationChunkPauseMs() {
+  return Math.max(Number(process.env.ACTIVATION_CHUNK_PAUSE_MS) || 30000, 0);
+}
+
+/**
+ * Monta a fila de itens elegíveis (seleção manual ou interseção inteira).
+ * @param {string} category
+ * @param {object} opts
+ */
+async function resolveActivationBatchItems(category, opts = {}) {
   const roster = await getActivationRoster(category);
   const lastSentMap = await activationDispatchRepo.getLastSentAtByMasterKey(category);
   const cooldownHours = getCooldownHoursForCategory(category);
@@ -1527,21 +1531,22 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
   const selectedKeys = Array.isArray(opts.masterKeys)
     ? new Set(opts.masterKeys.filter((k) => typeof k === 'string' && k.length > 0))
     : null;
-  const filteredEligible = selectedKeys && selectedKeys.size > 0
-    ? eligibleItems.filter((it) => it.master_key && selectedKeys.has(it.master_key))
-    : eligibleItems;
+  const filteredEligible =
+    selectedKeys && selectedKeys.size > 0
+      ? eligibleItems.filter((it) => it.master_key && selectedKeys.has(it.master_key))
+      : eligibleItems;
 
-  // Se o usuário selecionou explicitamente itens mas todos caíram fora (cooldown
-  // ou já fora da fila por outro motivo), devolve erro claro em vez de
-  // disparar 0 silenciosamente.
   if (selectedKeys && selectedKeys.size > 0 && filteredEligible.length === 0) {
     const onCooldown = roster.items.filter(
-      (it) => it.master_key && selectedKeys.has(it.master_key)
-              && isOnCooldown(lastSentMap, it.master_key, cooldownHours, cooldownNow)
+      (it) =>
+        it.master_key &&
+        selectedKeys.has(it.master_key) &&
+        isOnCooldown(lastSentMap, it.master_key, cooldownHours, cooldownNow)
     );
-    const msg = onCooldown.length > 0
-      ? `Os ${onCooldown.length} item(s) selecionado(s) ainda estão em cooldown de ${cooldownHours}h (último disparo recente). Aguarde ou selecione outros.`
-      : 'Nenhum dos itens selecionados está elegível na fila atual.';
+    const msg =
+      onCooldown.length > 0
+        ? `Os ${onCooldown.length} item(s) selecionado(s) ainda estão em cooldown de ${cooldownHours}h (último disparo recente). Aguarde ou selecione outros.`
+        : 'Nenhum dos itens selecionados está elegível na fila atual.';
     const err = new Error(msg);
     err.status = 400;
     err.code = 'no_eligible_selected';
@@ -1552,7 +1557,144 @@ export async function runDatacrazyActivationBatch(category, opts = {}, callbacks
     Number(opts.limit) > 0
       ? Math.min(Number(opts.limit), filteredEligible.length)
       : filteredEligible.length;
-  const toProcess = filteredEligible.slice(0, maxProcess);
+  return filteredEligible.slice(0, maxProcess);
+}
+
+/**
+ * Dispara em blocos sequenciais (ex.: 20k → 40×500) com pausa entre blocos.
+ */
+async function runDatacrazyActivationMultiChunk(category, toProcess, opts, callbacks, chunkSize) {
+  const onProgress = typeof callbacks.onProgress === 'function' ? callbacks.onProgress : () => {};
+  const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
+  const chunkPauseMs = getActivationChunkPauseMs();
+  const chunkCount = Math.ceil(toProcess.length / chunkSize);
+
+  onTotal({
+    total: toProcess.length,
+    chunk_total: chunkCount,
+    chunk_size: chunkSize,
+  });
+
+  console.log(
+    `[ativacao] ${toProcess.length} lead(s) em ${chunkCount} bloco(s) de até ${chunkSize} (pausa ${chunkPauseMs}ms entre blocos)`
+  );
+
+  /** @type {object} */
+  const aggregated = {
+    category,
+    processed: 0,
+    sent: 0,
+    not_found: 0,
+    failed: 0,
+    rate_limited: 0,
+    skipped: 0,
+    not_found_items: [],
+    results: [],
+    datacrazy_pages: 0,
+    datacrazy_leads_scanned: 0,
+    origem_ativacao_blocked: false,
+    origem_ativacao_error: null,
+    message: null,
+    chunked: true,
+    chunk_total: chunkCount,
+    chunk_size: chunkSize,
+  };
+
+  let completedProcessed = 0;
+
+  for (let ci = 0; ci < chunkCount; ci++) {
+    const slice = toProcess.slice(ci * chunkSize, (ci + 1) * chunkSize);
+    const part = await runDatacrazyActivationBatchForItems(category, slice, opts, {
+      onTotal: () => {},
+      onProgress: (patch) => {
+        onProgress({
+          ...patch,
+          processed: completedProcessed + (patch.processed ?? 0),
+          sent: aggregated.sent + (patch.sent ?? 0),
+          failed: aggregated.failed + (patch.failed ?? 0),
+          not_found: aggregated.not_found + (patch.not_found ?? 0),
+          rate_limited: (aggregated.rate_limited ?? 0) + (patch.rate_limited ?? 0),
+          skipped: aggregated.skipped + (patch.skipped ?? 0),
+          chunk_index: ci + 1,
+          chunk_total: chunkCount,
+          chunk_size: chunkSize,
+        });
+      },
+    });
+
+    aggregated.processed += part.processed;
+    aggregated.sent += part.sent;
+    aggregated.not_found += part.not_found;
+    aggregated.failed += part.failed;
+    aggregated.rate_limited += part.rate_limited ?? 0;
+    aggregated.skipped += part.skipped;
+    aggregated.not_found_items.push(...(part.not_found_items ?? []));
+    aggregated.results.push(...(part.results ?? []));
+    aggregated.datacrazy_pages += part.datacrazy_pages ?? 0;
+    aggregated.datacrazy_leads_scanned += part.datacrazy_leads_scanned ?? 0;
+    completedProcessed += part.processed;
+
+    if (part.origem_ativacao_blocked) {
+      aggregated.origem_ativacao_blocked = true;
+      aggregated.origem_ativacao_error = part.origem_ativacao_error;
+      aggregated.message = part.message;
+      break;
+    }
+
+    onProgress({
+      processed: aggregated.processed,
+      sent: aggregated.sent,
+      failed: aggregated.failed,
+      not_found: aggregated.not_found,
+      rate_limited: aggregated.rate_limited,
+      skipped: aggregated.skipped,
+      chunk_index: ci + 1,
+      chunk_total: chunkCount,
+      chunk_size: chunkSize,
+    });
+
+    if (ci < chunkCount - 1 && chunkPauseMs > 0) {
+      console.log(
+        `[ativacao] bloco ${ci + 1}/${chunkCount} ok — pausa ${Math.round(chunkPauseMs / 1000)}s`
+      );
+      await sleep(chunkPauseMs);
+    }
+  }
+
+  return aggregated;
+}
+
+/**
+ * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
+ */
+export async function runDatacrazyActivationBatch(category, opts = {}, callbacks = {}) {
+  const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
+  const toProcess = await resolveActivationBatchItems(category, opts);
+  const chunkSize = getActivationAutoChunkSize(opts);
+  if (opts.autoChunk !== false && toProcess.length > chunkSize) {
+    return runDatacrazyActivationMultiChunk(category, toProcess, opts, callbacks, chunkSize);
+  }
+  onTotal({ total: toProcess.length });
+  return runDatacrazyActivationBatchForItems(category, toProcess, opts, callbacks);
+}
+
+/**
+ * Um único bloco de ativação (preflight + envios).
+ * @param {string} category
+ * @param {object[]} toProcess
+ * @param {object} opts
+ * @param {object} callbacks
+ */
+async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {}, callbacks = {}) {
+  const onProgress = typeof callbacks.onProgress === 'function' ? callbacks.onProgress : () => {};
+  const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
+  if (!process.env.DATACRAZY_API_KEY) {
+    const err = new Error('DATACRAZY_API_KEY não configurada no .env');
+    err.status = 503;
+    throw err;
+  }
+
+  const storedTemplates = await getActivationTemplateConfig();
   onTotal({ total: toProcess.length });
 
   // Passa vínculo email↔telefone↔cpf por pessoa pro client (formato `contacts`).

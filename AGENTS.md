@@ -5,6 +5,12 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-22 — Ativação em massa: blocos automáticos de 500
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** Operador precisava disparar 1000 a cada 10 min manualmente numa base de ~20k — inviável.
+- **Decisão:** `runDatacrazyActivationBatch` divide automaticamente quando `toProcess.length > ACTIVATION_AUTO_CHUNK_SIZE` (default **500**). Cada bloco = preflight + envio próprio; pausa `ACTIVATION_CHUNK_PAUSE_MS` (default **30s**) entre blocos. Um único job async mostra progresso global (`chunk_index/chunk_total`). Opt-out: `autoChunk: false` no body.
+- **UI:** confirmação avisa blocos automáticos; overlay mostra `bloco 3/40`.
+
 ### 2026-06-22 — Ativação: volta default bulk_search (preflight rápido) + filtro 55n
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** `cache_first` (default de 22/06) resolvia lead a lead na fila serial — correto contra 429, mas **muito lento** em lotes de 100–1000. Usuário pediu retomar a regra da época em que a ativação funcionava bem.

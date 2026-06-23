@@ -220,6 +220,9 @@ export interface ActivationJobProgress {
   skipped: number;
   scanned: number | null;
   pages: number | null;
+  chunk_index?: number | null;
+  chunk_total?: number | null;
+  chunk_size?: number | null;
   started_at: string;
   finished_at: string | null;
   result: DatacrazyBatchResponse | null;

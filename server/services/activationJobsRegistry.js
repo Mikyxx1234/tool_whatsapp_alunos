@@ -1,4 +1,4 @@
-/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
+/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, chunk_index: number|null, chunk_total: number|null, chunk_size: number|null, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
 
 /** @type {Map<string, JobEntry>} */
 const jobs = new Map();
@@ -41,6 +41,9 @@ export function createJob({ category, total }) {
     skipped: 0,
     scanned: null,
     pages: null,
+    chunk_index: null,
+    chunk_total: null,
+    chunk_size: null,
     started_at: new Date().toISOString(),
     finished_at: null,
     result: null,
@@ -52,7 +55,7 @@ export function createJob({ category, total }) {
 
 /**
  * @param {string} jobId
- * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null }} patch
+ * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null, chunk_index?: number|null, chunk_total?: number|null, chunk_size?: number|null }} patch
  */
 export function updateProgress(jobId, patch) {
   const entry = jobs.get(jobId);
@@ -65,6 +68,9 @@ export function updateProgress(jobId, patch) {
   if (patch.skipped != null) entry.skipped = patch.skipped;
   if (patch.scanned != null) entry.scanned = patch.scanned;
   if (patch.pages != null) entry.pages = patch.pages;
+  if (patch.chunk_index != null) entry.chunk_index = patch.chunk_index;
+  if (patch.chunk_total != null) entry.chunk_total = patch.chunk_total;
+  if (patch.chunk_size != null) entry.chunk_size = patch.chunk_size;
 }
 
 /**
@@ -110,6 +116,9 @@ export function getJob(jobId) {
     skipped: entry.skipped,
     scanned: entry.scanned,
     pages: entry.pages,
+    chunk_index: entry.chunk_index,
+    chunk_total: entry.chunk_total,
+    chunk_size: entry.chunk_size,
     started_at: entry.started_at,
     finished_at: entry.finished_at,
     result: entry.result,
