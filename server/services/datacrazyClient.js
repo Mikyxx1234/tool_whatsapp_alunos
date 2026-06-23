@@ -426,7 +426,7 @@ const resolveWaitQueue = [];
 
 function getResolveConcurrency() {
   return Math.max(
-    Math.min(Number(process.env.DATACRAZY_RESOLVE_CONCURRENCY) || 6, 12),
+    Math.min(Number(process.env.DATACRAZY_RESOLVE_CONCURRENCY) || 4, 8),
     1
   );
 }

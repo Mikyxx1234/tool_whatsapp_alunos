@@ -224,6 +224,8 @@ export interface ActivationJobProgress {
   chunk_total?: number | null;
   chunk_size?: number | null;
   status_message?: string | null;
+  prefetch_done?: number | null;
+  prefetch_total?: number | null;
   cancel_requested?: boolean;
   started_at: string;
   finished_at: string | null;

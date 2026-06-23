@@ -5,6 +5,16 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-23 — Hybrid v2: prefetch controlado antes do envio (fim do 429 em massa)
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** Modo hybrid v1 resolvia lead **durante** o envio com 10 workers WhatsApp paralelos → rajada de `?search=` + PUT origem no mesmo rate limiter (6–8/s) → 429, retries longos, 20 min até aparecer progresso; ~50% "não encontrado" por busca falha sob throttling.
+- **Decisão:** Separar fases:
+  1. Cache Postgres (segundos).
+  2. **Prefetch** dos faltantes: 3 paralelos, ~6 req/s, barra de progresso (`prefetch_done/total`).
+  3. Envio WhatsApp só com índice quente (`lazyResolve=false` após prefetch).
+- **Defaults:** `DATACRAZY_CRM_RATE_PER_SECOND=6`, `DATACRAZY_PREFETCH_CONCURRENCY=3`, `ACTIVATION_BATCH_CONCURRENCY=6` em hybrid.
+- **Easypanel:** remover envs agressivas (`CRM_RATE=15+`, `bulk_search`, `cache_first`).
+
 ### 2026-06-23 — Modo hybrid: fim do preflight 20min em 0%
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** `bulk_search` fazia centenas de `?search=` antes do 1º envio — 1000 leads ficavam 20+ min em 0% (429 + sem progresso). Insustentável.

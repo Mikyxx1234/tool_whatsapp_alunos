@@ -50,6 +50,7 @@ export function ActivationListActions({
     total: number;
     percent: number;
     stats?: string;
+    inPrefetch?: boolean;
   } | null>(null);
   const pollingRef = useRef<number | null>(null);
   const jobIdRef = useRef<string | null>(null);
@@ -116,8 +117,18 @@ export function ActivationListActions({
         try {
           const job = await activationApi.getJobProgress(jobId);
           consecutiveErrorsRef.current = 0;
-          const percent =
-            job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
+          const inPrefetch =
+            (job.prefetch_total ?? 0) > 0 &&
+            (job.prefetch_done ?? 0) < (job.prefetch_total ?? 0) &&
+            job.processed === 0;
+          const percent = inPrefetch
+            ? Math.min(
+                100,
+                Math.round(((job.prefetch_done ?? 0) / (job.prefetch_total ?? 1)) * 100)
+              )
+            : job.total > 0
+              ? Math.min(100, Math.round((job.processed / job.total) * 100))
+              : 0;
           const chunkLabel =
             job.chunk_total && job.chunk_total > 1
               ? ` · bloco ${job.chunk_index ?? '?'}/${job.chunk_total}`
@@ -126,10 +137,11 @@ export function ActivationListActions({
             ? job.status_message
             : `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`;
           setProgress({
-            processed: job.processed,
-            total: job.total,
+            processed: inPrefetch ? (job.prefetch_done ?? 0) : job.processed,
+            total: inPrefetch ? (job.prefetch_total ?? 0) : job.total,
             percent,
             stats: statsLine,
+            inPrefetch,
           });
 
           if (job.status === 'completed' && job.result) {
@@ -375,11 +387,13 @@ export function ActivationListActions({
           'Registrando histórico',
         ]}
         currentStageIndex={
-          !progress || progress.total === 0
+          progress?.inPrefetch
             ? 0
-            : progress.processed < progress.total
-              ? 1
-              : 2
+            : !progress || progress.total === 0
+              ? 0
+              : progress.processed < progress.total
+                ? 1
+                : 2
         }
         onClose={() => setOverlayMinimized(true)}
         onCancel={running ? () => void cancelRunningJob() : undefined}

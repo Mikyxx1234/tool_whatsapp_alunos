@@ -1730,13 +1730,13 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
 
   const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
-  const lazyResolve =
+  let lazyResolve =
     built.lookup_mode === 'cache_first' || built.lookup_mode === 'hybrid';
 
   onProgress({
     processed: 0,
     status_message: lazyResolve
-      ? `Cache: ${built.cache_hits ?? 0} no índice · resolvendo e enviando (${built.lookup_mode})…`
+      ? `Cache: ${built.cache_hits ?? 0} no índice · preparando consultas…`
       : `Preflight API concluído · enviando…`,
     cache_hits: built.cache_hits ?? null,
     lookup_mode: built.lookup_mode ?? null,
@@ -1772,6 +1772,66 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     }
     return { lead: null, status: 'rate_limited' };
   };
+
+  // Hybrid: prefetch controlado ANTES do envio (3 paralelos, ~6 req/s).
+  // Evita 10 workers de WhatsApp disparando buscas API ao mesmo tempo → 429 em massa.
+  if (built.lookup_mode === 'hybrid') {
+    const missingContacts = [];
+    for (const item of toProcess) {
+      const c = contactFromItem(item);
+      if (!datacrazyClient.lookupLeadInIndex(lookupIndex, c)) {
+        missingContacts.push(c);
+      }
+    }
+    const prefetchTotal = missingContacts.length;
+    if (prefetchTotal > 0) {
+      const prefetchConcurrency = Math.max(
+        Math.min(Number(process.env.DATACRAZY_PREFETCH_CONCURRENCY) || 3, 6),
+        1
+      );
+      const prefetchGapMs = Math.max(
+        Number(process.env.DATACRAZY_PREFETCH_GAP_MS) || 150,
+        0
+      );
+      let prefetchDone = 0;
+      let prefetchFound = 0;
+      onProgress({
+        processed: 0,
+        prefetch_total: prefetchTotal,
+        prefetch_done: 0,
+        status_message: `Consultando DataCrazy: 0/${prefetchTotal} (ritmo seguro, ~6/s)…`,
+      });
+      for (let pi = 0; pi < missingContacts.length; pi += prefetchConcurrency) {
+        throwIfCancelled();
+        const slice = missingContacts.slice(pi, pi + prefetchConcurrency);
+        const results = await Promise.all(slice.map((c) => resolveLeadWithRetry(c)));
+        for (const r of results) {
+          prefetchDone += 1;
+          if (r.status === 'found') prefetchFound += 1;
+        }
+        onProgress({
+          processed: 0,
+          prefetch_total: prefetchTotal,
+          prefetch_done: prefetchDone,
+          status_message: `Consultando DataCrazy: ${prefetchDone}/${prefetchTotal} (${prefetchFound} encontrados)…`,
+        });
+        if (prefetchGapMs > 0 && pi + prefetchConcurrency < missingContacts.length) {
+          await sleep(prefetchGapMs);
+        }
+      }
+      console.log(
+        `[ativacao] prefetch hybrid: ${prefetchFound}/${prefetchTotal} encontrados no DataCrazy`
+      );
+    }
+    lazyResolve = false;
+  }
+
+  onProgress({
+    processed: 0,
+    status_message: `Enviando WhatsApp (índice pronto)…`,
+    cache_hits: built.cache_hits ?? null,
+    lookup_mode: built.lookup_mode ?? null,
+  });
 
   // Pré-voo origem_ativacao: em modo hybrid só testa cache ou 1 busca API.
   let origemTestLead = null;
@@ -1830,7 +1890,11 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   // DataCrazy CRM 20/s) protegem contra burst.
   const batchConcurrency = Math.max(
     1,
-    Math.min(Number(process.env.ACTIVATION_BATCH_CONCURRENCY) || 10, 15)
+    Math.min(
+      Number(process.env.ACTIVATION_BATCH_CONCURRENCY) ||
+        (built.lookup_mode === 'hybrid' ? 6 : 10),
+      15
+    )
   );
   const createDispatchNotes = shouldCreateDispatchNote(toProcess.length);
   const sendChannel = messagingProvider.getName();
