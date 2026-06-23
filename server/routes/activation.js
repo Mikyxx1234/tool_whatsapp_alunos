@@ -22,6 +22,8 @@ import {
   completeJob,
   failJob,
   getJob,
+  requestCancelJob,
+  cancelJob,
 } from '../services/activationJobsRegistry.js';
 import {
   getActivationTemplateConfig,
@@ -492,15 +494,24 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
         try {
           const data = await runDatacrazyActivationBatch(
             category,
-            { limit, masterKeys, operatorNome },
+            { limit, masterKeys, operatorNome, jobId },
             {
               onTotal: ({ total }) => updateProgress(jobId, { total: total ?? 0 }),
               onProgress: (patch) => updateProgress(jobId, patch),
             }
           );
-          completeJob(jobId, { result: data });
+          const job = getJob(jobId);
+          if (job?.cancel_requested) {
+            cancelJob(jobId, { result: data });
+          } else {
+            completeJob(jobId, { result: data });
+          }
         } catch (err) {
-          failJob(jobId, { error: err?.message || String(err) });
+          if (err?.code === 'cancelled') {
+            cancelJob(jobId, { error: err.message });
+          } else {
+            failJob(jobId, { error: err?.message || String(err) });
+          }
         }
       })();
       return;
@@ -517,6 +528,12 @@ router.get('/jobs/:jobId/progress', requireApiKey, (req, res) => {
   const job = getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'job não encontrado' });
   res.json(job);
+});
+
+router.post('/jobs/:jobId/cancel', requireApiKey, (req, res) => {
+  const ok = requestCancelJob(req.params.jobId);
+  if (!ok) return res.status(404).json({ error: 'job não encontrado ou já finalizado' });
+  res.json({ ok: true, jobId: req.params.jobId });
 });
 
 router.post('/:category/not-found-export.csv', async (req, res) => {

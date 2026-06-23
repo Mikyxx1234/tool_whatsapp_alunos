@@ -1,4 +1,4 @@
-/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, chunk_index: number|null, chunk_total: number|null, chunk_size: number|null, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
+/** @typedef {{ jobId: string, category: string, status: 'running'|'completed'|'failed'|'cancelled', total: number, processed: number, sent: number, failed_count: number, not_found: number, skipped: number, scanned: number|null, pages: number|null, chunk_index: number|null, chunk_total: number|null, chunk_size: number|null, status_message: string|null, cancel_requested: boolean, started_at: string, finished_at: string|null, result: object|null, error: string|null }} JobEntry */
 
 /** @type {Map<string, JobEntry>} */
 const jobs = new Map();
@@ -44,6 +44,8 @@ export function createJob({ category, total }) {
     chunk_index: null,
     chunk_total: null,
     chunk_size: null,
+    status_message: null,
+    cancel_requested: false,
     started_at: new Date().toISOString(),
     finished_at: null,
     result: null,
@@ -55,7 +57,7 @@ export function createJob({ category, total }) {
 
 /**
  * @param {string} jobId
- * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null, chunk_index?: number|null, chunk_total?: number|null, chunk_size?: number|null }} patch
+ * @param {{ total?: number, processed?: number, sent?: number, failed?: number, not_found?: number, skipped?: number, scanned?: number|null, pages?: number|null, chunk_index?: number|null, chunk_total?: number|null, chunk_size?: number|null, status_message?: string|null }} patch
  */
 export function updateProgress(jobId, patch) {
   const entry = jobs.get(jobId);
@@ -71,6 +73,41 @@ export function updateProgress(jobId, patch) {
   if (patch.chunk_index != null) entry.chunk_index = patch.chunk_index;
   if (patch.chunk_total != null) entry.chunk_total = patch.chunk_total;
   if (patch.chunk_size != null) entry.chunk_size = patch.chunk_size;
+  if (patch.status_message != null) entry.status_message = patch.status_message;
+}
+
+/**
+ * @param {string} jobId
+ * @returns {boolean}
+ */
+export function requestCancelJob(jobId) {
+  const entry = jobs.get(jobId);
+  if (!entry || entry.status !== 'running') return false;
+  entry.cancel_requested = true;
+  return true;
+}
+
+/**
+ * @param {string} [jobId]
+ * @returns {boolean}
+ */
+export function isJobCancelled(jobId) {
+  if (!jobId) return false;
+  const entry = jobs.get(jobId);
+  return Boolean(entry?.cancel_requested);
+}
+
+/**
+ * @param {string} jobId
+ * @param {{ result?: object, error?: string }} [opts]
+ */
+export function cancelJob(jobId, opts = {}) {
+  const entry = jobs.get(jobId);
+  if (!entry) return;
+  entry.status = 'cancelled';
+  entry.finished_at = new Date().toISOString();
+  entry.error = opts.error ?? 'Cancelado pelo operador';
+  if (opts.result) entry.result = opts.result;
 }
 
 /**
@@ -119,6 +156,8 @@ export function getJob(jobId) {
     chunk_index: entry.chunk_index,
     chunk_total: entry.chunk_total,
     chunk_size: entry.chunk_size,
+    status_message: entry.status_message,
+    cancel_requested: entry.cancel_requested,
     started_at: entry.started_at,
     finished_at: entry.finished_at,
     result: entry.result,

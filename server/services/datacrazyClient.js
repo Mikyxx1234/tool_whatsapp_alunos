@@ -368,9 +368,28 @@ function isRateLimitErrorMessage(msg) {
   return s.includes('too many requests') || s.includes('rate limit') || s.includes('429');
 }
 
+function getActivationLookupMode() {
+  return String(process.env.DATACRAZY_ACTIVATION_LOOKUP_MODE ?? 'hybrid').toLowerCase();
+}
+
 function isCacheFirstLookupMode() {
-  const v = String(process.env.DATACRAZY_ACTIVATION_LOOKUP_MODE ?? 'bulk_search').toLowerCase();
-  return v === 'cache_first';
+  return getActivationLookupMode() === 'cache_first';
+}
+
+/** hybrid / cache_first / lotes grandes: pula rajada de ?search= no preflight. */
+function shouldSkipBulkPreflight(personCount) {
+  const mode = getActivationLookupMode();
+  if (mode === 'bulk_search') return false;
+  if (mode === 'cache_first' || mode === 'hybrid') return true;
+  const threshold = Math.max(Number(process.env.DATACRAZY_HYBRID_AUTO_THRESHOLD) || 150, 1);
+  return personCount >= threshold;
+}
+
+function resolveLookupModeLabel() {
+  const mode = getActivationLookupMode();
+  if (mode === 'bulk_search') return 'bulk_search';
+  if (mode === 'cache_first') return 'cache_first';
+  return 'hybrid';
 }
 
 function leadFromCacheRow(row) {
@@ -400,13 +419,38 @@ function normalizeCpfFromString(v) {
   return d.length === 11 ? d : '';
 }
 
-/** Fila serial — 1 busca API por vez no modo cache_first (evita rajada de 429). */
-let resolveQueue = Promise.resolve();
+/** Pool de resolução API — N buscas em paralelo (default 6), não serial. */
+let resolveActive = 0;
+/** @type {Array<{ task: () => Promise<unknown>, resolve: Function, reject: Function }>} */
+const resolveWaitQueue = [];
+
+function getResolveConcurrency() {
+  return Math.max(
+    Math.min(Number(process.env.DATACRAZY_RESOLVE_CONCURRENCY) || 6, 12),
+    1
+  );
+}
+
+function drainResolveQueue() {
+  while (resolveActive < getResolveConcurrency() && resolveWaitQueue.length > 0) {
+    const entry = resolveWaitQueue.shift();
+    if (!entry) break;
+    resolveActive += 1;
+    Promise.resolve()
+      .then(entry.task)
+      .then(entry.resolve, entry.reject)
+      .finally(() => {
+        resolveActive -= 1;
+        drainResolveQueue();
+      });
+  }
+}
 
 function enqueueLeadResolve(task) {
-  const run = resolveQueue.then(task, task);
-  resolveQueue = run.catch(() => {});
-  return run;
+  return new Promise((resolve, reject) => {
+    resolveWaitQueue.push({ task, resolve, reject });
+    drainResolveQueue();
+  });
 }
 
 function pickLeadFromSearchPage(page, contact) {
@@ -651,11 +695,12 @@ async function buildLeadsLookupIndex(needed = {}) {
     }
   }
 
-  if (isCacheFirstLookupMode()) {
+  if (shouldSkipBulkPreflight(personList.length)) {
     sharedLeadsIndex.byEmail = byEmail;
     sharedLeadsIndex.byPhone = byPhone;
     sharedLeadsIndex.byCpf = byCpf;
     sharedLeadsIndex.expires = Date.now() + SHARED_INDEX_TTL_MS;
+    const mode = resolveLookupModeLabel();
     return {
       byEmail,
       byPhone,
@@ -663,7 +708,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       pages: 0,
       leadsScanned: cacheHits,
       direct_search: false,
-      lookup_mode: 'cache_first',
+      lookup_mode: mode,
       direct_queries: 0,
       cpf_direct_queries: 0,
       cpf_direct_hits: 0,

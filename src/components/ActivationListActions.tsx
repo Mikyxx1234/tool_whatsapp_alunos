@@ -52,6 +52,7 @@ export function ActivationListActions({
     stats?: string;
   } | null>(null);
   const pollingRef = useRef<number | null>(null);
+  const jobIdRef = useRef<string | null>(null);
   const consecutiveErrorsRef = useRef(0);
 
   const stopPolling = useCallback(() => {
@@ -109,6 +110,7 @@ export function ActivationListActions({
           ? { masterKeys: selectedMasterKeys, operatorNome: consultorNome }
           : { operatorNome: consultorNome }
       );
+      jobIdRef.current = jobId;
 
       pollingRef.current = window.setInterval(async () => {
         try {
@@ -120,11 +122,14 @@ export function ActivationListActions({
             job.chunk_total && job.chunk_total > 1
               ? ` · bloco ${job.chunk_index ?? '?'}/${job.chunk_total}`
               : '';
+          const statsLine = job.status_message
+            ? job.status_message
+            : `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`;
           setProgress({
             processed: job.processed,
             total: job.total,
             percent,
-            stats: `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`,
+            stats: statsLine,
           });
 
           if (job.status === 'completed' && job.result) {
@@ -150,11 +155,29 @@ export function ActivationListActions({
             if (hasSelection) onClearSelection?.();
             setRunning(false);
             setProgress(null);
+            jobIdRef.current = null;
+          } else if (job.status === 'cancelled') {
+            stopPolling();
+            setError(job.error || 'Disparo cancelado');
+            if (job.result) {
+              const result = job.result;
+              setBatch({
+                sent: result.sent ?? 0,
+                not_found: result.not_found ?? 0,
+                failed: result.failed ?? 0,
+                skipped: result.skipped ?? 0,
+                processed: result.processed ?? 0,
+              });
+            }
+            setRunning(false);
+            setProgress(null);
+            jobIdRef.current = null;
           } else if (job.status === 'failed') {
             stopPolling();
             setError(job.error || 'Erro ao processar disparo');
             setRunning(false);
             setProgress(null);
+            jobIdRef.current = null;
           }
         } catch {
           consecutiveErrorsRef.current += 1;
@@ -173,7 +196,22 @@ export function ActivationListActions({
       setRunning(false);
       setProgress(null);
     }
-  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection, stopPolling]);
+  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection, stopPolling, consultorNome]);
+
+  const cancelRunningJob = useCallback(async () => {
+    const id = jobIdRef.current;
+    if (!id) return;
+    const ok = window.confirm('Interromper o disparo? O bloco atual termina; os próximos blocos não iniciam.');
+    if (!ok) return;
+    try {
+      await activationApi.cancelJob(id);
+      setProgress((p) =>
+        p ? { ...p, stats: 'Cancelando após o lote em andamento…' } : p
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Falha ao cancelar');
+    }
+  }, []);
 
   const downloadNotFoundCsv = useCallback(async () => {
     if (!notFoundItems.length) return;
@@ -336,8 +374,15 @@ export function ActivationListActions({
           'Enviando templates via WhatsApp',
           'Registrando histórico',
         ]}
-        currentStageIndex={0}
+        currentStageIndex={
+          !progress || progress.total === 0
+            ? 0
+            : progress.processed < progress.total
+              ? 1
+              : 2
+        }
         onClose={() => setOverlayMinimized(true)}
+        onCancel={running ? () => void cancelRunningJob() : undefined}
         progress={progress ?? undefined}
       />
       {batch && !running && (

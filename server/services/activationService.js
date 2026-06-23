@@ -35,6 +35,7 @@ import {
   buildMatriculadosRgmMaps,
   rgmFromMatriculadosMaps,
 } from '../utils/matriculadosRgmLookup.js';
+import { isJobCancelled } from './activationJobsRegistry.js';
 import {
   datacrazyClient,
   ORIGEM_ATIVACAO_BLOCK_MESSAGE,
@@ -1603,6 +1604,7 @@ async function runDatacrazyActivationMultiChunk(category, toProcess, opts, callb
   let completedProcessed = 0;
 
   for (let ci = 0; ci < chunkCount; ci++) {
+    if (isJobCancelled(opts.jobId)) break;
     const slice = toProcess.slice(ci * chunkSize, (ci + 1) * chunkSize);
     const part = await runDatacrazyActivationBatchForItems(category, slice, opts, {
       onTotal: () => {},
@@ -1659,6 +1661,12 @@ async function runDatacrazyActivationMultiChunk(category, toProcess, opts, callb
       );
       await sleep(chunkPauseMs);
     }
+    if (isJobCancelled(opts.jobId)) break;
+  }
+
+  if (isJobCancelled(opts.jobId)) {
+    aggregated.cancelled = true;
+    aggregated.message = 'Cancelado pelo operador';
   }
 
   return aggregated;
@@ -1706,9 +1714,33 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     phone: sanitizeContactPhone(item.telefone),
   }));
 
+  const jobId = opts.jobId;
+  const throwIfCancelled = () => {
+    if (isJobCancelled(jobId)) {
+      const err = new Error('Cancelado pelo operador');
+      err.code = 'cancelled';
+      throw err;
+    }
+  };
+
+  onProgress({
+    processed: 0,
+    status_message: 'Consultando cache Postgres…',
+  });
+
   const built = await datacrazyClient.buildLeadsLookupIndex({ contacts });
   const lookupIndex = { byEmail: built.byEmail, byPhone: built.byPhone, byCpf: built.byCpf };
-  const cacheFirstLookup = built.lookup_mode === 'cache_first';
+  const lazyResolve =
+    built.lookup_mode === 'cache_first' || built.lookup_mode === 'hybrid';
+
+  onProgress({
+    processed: 0,
+    status_message: lazyResolve
+      ? `Cache: ${built.cache_hits ?? 0} no índice · resolvendo e enviando (${built.lookup_mode})…`
+      : `Preflight API concluído · enviando…`,
+    cache_hits: built.cache_hits ?? null,
+    lookup_mode: built.lookup_mode ?? null,
+  });
 
   const contactFromItem = (item) => ({
     email: sanitizeContactEmail(item.email),
@@ -1730,7 +1762,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     for (let attempt = 1; attempt <= resolveRateRetryMax; attempt++) {
       const cached = datacrazyClient.lookupLeadInIndex(lookupIndex, contact);
       if (cached) return { lead: cached, status: 'found' };
-      if (!cacheFirstLookup) return { lead: null, status: 'not_found' };
+      if (!lazyResolve) return { lead: null, status: 'not_found' };
       const resolved = await datacrazyClient.resolveLeadForContact(contact, lookupIndex);
       if (resolved.status === 'found') return resolved;
       if (resolved.status === 'not_found') return resolved;
@@ -1741,14 +1773,36 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     return { lead: null, status: 'rate_limited' };
   };
 
-  // Pré-voo: confirma que origem_ativacao grava no CRM antes de enviar qualquer template.
-  for (const item of toProcess) {
-    const lead = cacheFirstLookup
-      ? (await resolveLeadWithRetry(contactFromItem(item))).lead
-      : datacrazyClient.lookupLeadInIndex(lookupIndex, contactFromItem(item));
-    if (!lead?.id) continue;
+  // Pré-voo origem_ativacao: em modo hybrid só testa cache ou 1 busca API.
+  let origemTestLead = null;
+  if (lazyResolve) {
+    for (const item of toProcess) {
+      origemTestLead = datacrazyClient.lookupLeadInIndex(
+        lookupIndex,
+        contactFromItem(item)
+      );
+      if (origemTestLead?.id) break;
+    }
+    if (!origemTestLead?.id && toProcess.length > 0) {
+      onProgress({ status_message: 'Validando gravação origem_ativacao…' });
+      const sample = await datacrazyClient.resolveLeadForContact(
+        contactFromItem(toProcess[0]),
+        lookupIndex
+      );
+      origemTestLead = sample.lead;
+    }
+  } else {
+    for (const item of toProcess) {
+      origemTestLead = datacrazyClient.lookupLeadInIndex(
+        lookupIndex,
+        contactFromItem(item)
+      );
+      if (origemTestLead?.id) break;
+    }
+  }
+  if (origemTestLead?.id) {
     const preflight = await datacrazyClient.verifyOrigemAtivacaoForCategory(
-      lead.id,
+      origemTestLead.id,
       category
     );
     if (preflight.skipped) {
@@ -1767,7 +1821,6 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
       err.code = 'origem_ativacao_unavailable';
       throw err;
     }
-    break;
   }
 
   // Delay redundante com whatsappSendLimiter (60/s). Default 0 = só o limiter
@@ -1838,7 +1891,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     let lead = null;
     let rateLimited = false;
 
-    if (cacheFirstLookup) {
+    if (lazyResolve) {
       const resolved = await resolveLeadWithRetry(contactFromItem(item));
       lead = resolved.lead;
       rateLimited = resolved.status === 'rate_limited';
@@ -2054,6 +2107,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   // origem_ativacao, sinaliza e os chunks seguintes não rodam — itens já
   // em voo nesse chunk completam normalmente.
   for (let i = 0; i < toProcess.length; i += batchConcurrency) {
+    throwIfCancelled();
     if (origem_ativacao_blocked) break;
     const chunk = toProcess.slice(i, i + batchConcurrency);
     const outcomes = await Promise.all(chunk.map(processItem));
@@ -2083,6 +2137,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
       pages: built.pages ?? null,
       lookup_mode: built.lookup_mode ?? null,
       cache_hits: built.cache_hits ?? null,
+      status_message: `Enviando… ${results.length}/${toProcess.length}`,
     });
     if (sendDelay > 0 && i + batchConcurrency < toProcess.length) {
       await sleep(sendDelay);

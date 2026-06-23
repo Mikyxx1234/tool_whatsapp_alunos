@@ -211,7 +211,7 @@ export interface DatacrazyBatchResponse {
 export interface ActivationJobProgress {
   jobId: string;
   category: ActivationCategory;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   total: number;
   processed: number;
   sent: number;
@@ -223,6 +223,8 @@ export interface ActivationJobProgress {
   chunk_index?: number | null;
   chunk_total?: number | null;
   chunk_size?: number | null;
+  status_message?: string | null;
+  cancel_requested?: boolean;
   started_at: string;
   finished_at: string | null;
   result: DatacrazyBatchResponse | null;
@@ -407,6 +409,12 @@ export const activationApi = {
 
   getJobProgress(jobId: string): Promise<ActivationJobProgress> {
     return jsonFetch<ActivationJobProgress>(`/api/activation/jobs/${jobId}/progress`);
+  },
+
+  cancelJob(jobId: string): Promise<{ ok: boolean; jobId: string }> {
+    return jsonFetch<{ ok: boolean; jobId: string }>(`/api/activation/jobs/${jobId}/cancel`, {
+      method: 'POST',
+    });
   },
 
   async downloadNotFoundCsv(category: ActivationCategory, items: DatacrazyBatchNotFoundItem[]) {

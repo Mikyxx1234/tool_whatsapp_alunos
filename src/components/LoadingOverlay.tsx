@@ -16,6 +16,7 @@ interface LoadingOverlayProps {
   stages?: string[];
   currentStageIndex?: number;
   onClose?: () => void;
+  onCancel?: () => void;
   progress?: ProgressInfo;
 }
 
@@ -27,6 +28,7 @@ export function LoadingOverlay({
   stages,
   currentStageIndex,
   onClose,
+  onCancel,
   progress,
 }: LoadingOverlayProps) {
   useEffect(() => {
@@ -152,6 +154,16 @@ export function LoadingOverlay({
 
           {hint && (
             <p className="text-[11px] text-gray-500 dark:text-slate-500 mt-1">{hint}</p>
+          )}
+
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="mt-2 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-950/60"
+            >
+              Interromper disparo
+            </button>
           )}
         </div>
       </div>

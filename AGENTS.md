@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-23 — Modo hybrid: fim do preflight 20min em 0%
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** `bulk_search` fazia centenas de `?search=` antes do 1º envio — 1000 leads ficavam 20+ min em 0% (429 + sem progresso). Insustentável.
+- **Decisão:** Default `DATACRAZY_ACTIVATION_LOOKUP_MODE=hybrid`:
+  1. **Preflight** = só cache Postgres (segundos).
+  2. **Envio** = resolve API **6 paralelos** (`DATACRAZY_RESOLVE_CONCURRENCY`) por lead sem cache.
+  3. Progresso visível (`status_message`, etapas avançam, contador sobe durante envio).
+  4. **Cancelar** job: `POST /api/activation/jobs/:id/cancel` + botão no overlay.
+  5. `bulk_search` permanece opt-in para lotes pequenos (<150).
+- **Easypanel:** remover `DATACRAZY_ACTIVATION_LOOKUP_MODE=bulk_search` se setado.
+
 ### 2026-06-22 — Ativação em massa: blocos automáticos de 500
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** Operador precisava disparar 1000 a cada 10 min manualmente numa base de ~20k — inviável.
