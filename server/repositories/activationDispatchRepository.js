@@ -155,3 +155,31 @@ export async function listRecentDispatchedLeadsForCategory(category, days) {
   );
   return rows;
 }
+
+/**
+ * Último disparo bem-sucedido por master_key (qualquer categoria).
+ * Usado no lookup local — evita API quando já ativamos a pessoa antes.
+ * @param {string[]} masterKeys
+ * @returns {Promise<Map<string, { master_key: string, datacrazy_lead_id: string, nome: string|null, telefone: string|null, email: string|null, rgm: string|null }>>}
+ */
+export async function getSentLeadsByMasterKeys(masterKeys) {
+  const keys = [...new Set(masterKeys.filter(Boolean))];
+  if (!keys.length) return new Map();
+  const { rows } = await query(
+    `select distinct on (master_key)
+            master_key,
+            datacrazy_lead_id,
+            nome,
+            telefone,
+            email,
+            rgm
+       from activation_dispatch_events
+      where status = 'sent'
+        and datacrazy_lead_id is not null
+        and trim(datacrazy_lead_id) <> ''
+        and master_key = any($1::text[])
+      order by master_key, created_at desc`,
+    [keys]
+  );
+  return new Map(rows.map((r) => [r.master_key, r]));
+}

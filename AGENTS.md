@@ -5,6 +5,11 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-23 — Lookup: histórico de disparos + cache pós-envio
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** `activation_dispatch_events` já gravava `datacrazy_lead_id` no 1º envio, mas o lookup ignorava — sempre reconsultava API.
+- **Decisão:** FASE 0.5 em `buildLeadsLookupIndex`: batch em `activation_dispatch_events` por `master_key` (RGM/CPF/tel/email). Após envio bem-sucedido, `upsert` em `datacrazy_lead_cache` com `source=activation`. Ordem: cache sync → histórico disparos → API (hybrid).
+
 ### 2026-06-23 — Hybrid v2: prefetch controlado antes do envio (fim do 429 em massa)
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** Modo hybrid v1 resolvia lead **durante** o envio com 10 workers WhatsApp paralelos → rajada de `?search=` + PUT origem no mesmo rate limiter (6–8/s) → 429, retries longos, 20 min até aparecer progresso; ~50% "não encontrado" por busca falha sob throttling.

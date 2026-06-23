@@ -57,3 +57,28 @@ export function masterKeyFromRow(row) {
 export function masterKeyFromActivationItem(item) {
   return masterKeyFromParts(item);
 }
+
+/**
+ * Todas as chaves possíveis para achar histórico de disparo (RGM, CPF, tel, e-mail).
+ * @param {{ rgm?: string, cpf?: string, email?: string, telefone?: string, phone?: string }} parts
+ * @returns {string[]}
+ */
+export function lookupMasterKeysFromParts(parts) {
+  const keys = new Set();
+  const primary = masterKeyFromParts({
+    rgm: parts.rgm,
+    cpf: parts.cpf,
+    email: parts.email,
+    telefone: parts.telefone ?? parts.phone,
+  });
+  if (primary) keys.add(primary);
+  const cpfD = digits(parts.cpf);
+  if (cpfD.length === 11) keys.add(`CPF:${cpfD}`);
+  const tel = normalizePhone(parts.telefone ?? parts.phone);
+  if (tel) keys.add(`TEL:${tel}`);
+  const email = normalizeEmail(parts.email);
+  if (email) keys.add(`EMAIL:${email}`);
+  const rgm = normalizeRgmCanonical(parts.rgm);
+  if (rgm) keys.add(`RGM:${rgm}`);
+  return [...keys];
+}

@@ -2,6 +2,7 @@ import { query } from '../db/client.js';
 import * as frozenCyclesRepo from '../repositories/frozenCyclesRepository.js';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import * as activationDispatchRepo from '../repositories/activationDispatchRepository.js';
+import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import * as activationOrigemRepo from '../repositories/activationOrigemRepository.js';
 import { loadTerms, findTermByMatriculaDate, resolveLimbo } from './termResolverService.js';
@@ -1712,6 +1713,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     cpf: item.cpf,
     email: sanitizeContactEmail(item.email),
     phone: sanitizeContactPhone(item.telefone),
+    rgm: item.rgm,
   }));
 
   const jobId = opts.jobId;
@@ -1739,7 +1741,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
   onProgress({
     processed: 0,
     status_message: lazyResolve
-      ? `Cache: ${built.cache_hits ?? 0} no índice · preparando consultas…`
+      ? `Cache: ${built.cache_hits ?? 0} · histórico: ${built.dispatch_history_hits ?? 0} · preparando…`
       : `Preflight API concluído · enviando…`,
     cache_hits: built.cache_hits ?? null,
     lookup_mode: built.lookup_mode ?? null,
@@ -2149,6 +2151,12 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
         datacrazyNoteFailed,
         datacrazyNoteId,
       });
+      const cpfForCache = String(item.cpf ?? lead.taxId ?? '').replace(/\D/g, '');
+      if (cpfForCache.length === 11) {
+        datacrazyLeadCacheRepo
+          .upsertLeadFromCrm({ ...lead, taxId: cpfForCache }, 'activation')
+          .catch((e) => console.warn('[ativacao] cache pós-envio:', e.message));
+      }
       return {
         status: 'sent',
         result: {

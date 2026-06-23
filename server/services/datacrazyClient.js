@@ -13,7 +13,9 @@
  */
 
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
+import * as activationDispatchRepo from '../repositories/activationDispatchRepository.js';
 import { datacrazyCrmLimiter } from '../utils/datacrazyCrmLimiter.js';
+import { lookupMasterKeysFromParts } from '../utils/activationIdentity.js';
 import {
   isValidDatacrazySearchTerm,
   sanitizeContactEmail,
@@ -619,23 +621,24 @@ async function buildLeadsLookupIndex(needed = {}) {
   const contacts = Array.isArray(needed.contacts) ? needed.contacts : null;
   const remainingEmails = new Set();
   const remainingPhones = new Set();
-  /** @type {Array<{ email: string, phone: string, cpf: string }>} */
+  /** @type {Array<{ email: string, phone: string, cpf: string, rgm?: string }>} */
   const personList = [];
   if (contacts) {
     const seenKey = new Set();
     for (const c of contacts) {
       const e = sanitizeContactEmail(c?.email);
-      const p = sanitizeContactPhone(c?.phone);
+      const p = sanitizeContactPhone(c?.phone ?? c?.telefone);
       const cpfDigits = String(c?.cpf ?? '').replace(/\D/g, '');
       const cpf = cpfDigits.length === 11 ? cpfDigits : '';
+      const rgm = String(c?.rgm ?? '').trim();
       if (!e && !p && !cpf) continue;
-      const key = `${e}::${p}::${cpf}`;
+      const key = `${e}::${p}::${cpf}::${rgm}`;
       if (seenKey.has(key)) continue;
       seenKey.add(key);
       if (e && !byEmail.has(e)) remainingEmails.add(e);
       if (p && !byPhone.has(p)) remainingPhones.add(p);
       if ((e && byEmail.has(e)) || (p && byPhone.has(p)) || (cpf && byCpf.has(cpf))) continue;
-      personList.push({ email: e || '', phone: p || '', cpf: cpf || '' });
+      personList.push({ email: e || '', phone: p || '', cpf: cpf || '', rgm: rgm || '' });
     }
   } else {
     for (const e of needed.emails || []) {
@@ -707,6 +710,61 @@ async function buildLeadsLookupIndex(needed = {}) {
     }
   }
 
+  // FASE 0.5: histórico de disparos — lead_id já resolvido em ativação anterior.
+  let dispatchHistoryHits = 0;
+  if (contacts && personList.length > 0) {
+    const allKeys = [];
+    for (const c of contacts) {
+      allKeys.push(
+        ...lookupMasterKeysFromParts({
+          rgm: c?.rgm,
+          cpf: c?.cpf,
+          email: c?.email,
+          telefone: c?.phone ?? c?.telefone,
+        })
+      );
+    }
+    const uniqueKeys = [...new Set(allKeys)];
+    if (uniqueKeys.length > 0) {
+      try {
+        const byKey = await activationDispatchRepo.getSentLeadsByMasterKeys(uniqueKeys);
+        const applyDispatchRow = (person, row) => {
+          const cpf =
+            person.cpf ||
+            (row.master_key?.startsWith('CPF:') ? row.master_key.slice(4) : '');
+          const lead = {
+            id: row.datacrazy_lead_id,
+            name: row.nome || person.email || '',
+            email: row.email || person.email || '',
+            phone: row.telefone || person.phone || '',
+            rawPhone: row.telefone || person.phone || '',
+            taxId: cpf || undefined,
+          };
+          mergeLeadIntoMaps(lead, byEmail, byPhone, byCpf);
+          dispatchHistoryHits += 1;
+        };
+        for (const person of personList) {
+          if (personFoundInIndex(person, byEmail, byPhone, byCpf)) continue;
+          const keys = lookupMasterKeysFromParts(person);
+          for (const key of keys) {
+            const row = byKey.get(key);
+            if (row) {
+              applyDispatchRow(person, row);
+              break;
+            }
+          }
+        }
+        for (let i = personList.length - 1; i >= 0; i--) {
+          if (personFoundInIndex(personList[i], byEmail, byPhone, byCpf)) {
+            personList.splice(i, 1);
+          }
+        }
+      } catch (e) {
+        console.warn('[datacrazy] histórico de disparos falhou:', e.message);
+      }
+    }
+  }
+
   if (shouldSkipBulkPreflight(personList.length)) {
     sharedLeadsIndex.byEmail = byEmail;
     sharedLeadsIndex.byPhone = byPhone;
@@ -731,6 +789,7 @@ async function buildLeadsLookupIndex(needed = {}) {
       index_reused: useShared,
       cache_hits: cacheHits,
       cache_stale_skipped: cacheStaleSkipped,
+      dispatch_history_hits: dispatchHistoryHits,
     };
   }
 
