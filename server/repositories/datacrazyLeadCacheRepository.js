@@ -259,3 +259,49 @@ export async function recordSyncFinish(
     [id, pages, leadsSeen, upserted, skipped, status, errorMessage ?? null]
   );
 }
+
+/**
+ * Estatísticas do cache + último sync (para UI e polling).
+ */
+export async function getCacheStats() {
+  const { rows: countRows } = await query(
+    `select count(*)::int as cache_count from datacrazy_lead_cache`
+  );
+  const { rows: lastRows } = await query(
+    `select id, started_at, finished_at, pages_scanned, leads_seen, leads_upserted,
+            leads_skipped, status, error_message
+       from datacrazy_lead_cache_sync_log
+      order by started_at desc
+      limit 1`
+  );
+  const { rows: runningRows } = await query(
+    `select id, started_at
+       from datacrazy_lead_cache_sync_log
+      where status = 'running'
+        and finished_at is null
+        and started_at > now() - interval '4 hours'
+      order by started_at desc
+      limit 1`
+  );
+  return {
+    cache_count: countRows[0]?.cache_count ?? 0,
+    last_sync: lastRows[0] ?? null,
+    running: runningRows[0] ?? null,
+  };
+}
+
+/**
+ * @returns {Promise<boolean>} true se havia sync órfão e foi fechado
+ */
+export async function closeStaleRunningSyncs() {
+  const { rowCount } = await query(
+    `update datacrazy_lead_cache_sync_log
+        set status = 'error',
+            finished_at = now(),
+            error_message = 'sync interrompido (timeout ou restart do servidor)'
+      where status = 'running'
+        and finished_at is null
+        and started_at < now() - interval '4 hours'`
+  );
+  return (rowCount ?? 0) > 0;
+}

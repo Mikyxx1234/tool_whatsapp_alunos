@@ -27,6 +27,42 @@ export interface SyncCrmDesfechosResponse {
   skipped_no_config?: boolean;
 }
 
+export interface DatacrazyCacheSyncLastRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  pages: number;
+  leads_seen: number;
+  leads_upserted: number;
+  leads_skipped: number;
+  status: string;
+  error_message: string | null;
+}
+
+export interface DatacrazyCacheStatusResponse {
+  ok: boolean;
+  cache_count: number;
+  running: boolean;
+  running_since: string | null;
+  last_sync: DatacrazyCacheSyncLastRun | null;
+}
+
+export interface SyncDatacrazyCacheResponse {
+  logId: string;
+  pages: number;
+  leadsSeen: number;
+  upserted: number;
+  skipped: number;
+  durationMs: number;
+  dry_run: boolean;
+}
+
+export interface StartDatacrazyCacheSyncResponse {
+  ok: boolean;
+  status: 'running';
+  dry_run: boolean;
+}
+
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     ...init,
@@ -67,6 +103,28 @@ export const maintenanceApi = {
     const qs = params.toString() ? `?${params.toString()}` : '';
     return jsonFetch<SyncCrmDesfechosResponse>(
       `/api/maintenance/sync-crm-desfechos${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getDatacrazyCacheStatus() {
+    return jsonFetch<DatacrazyCacheStatusResponse>('/api/maintenance/datacrazy-cache-status');
+  },
+
+  /** Sync em background — retorna 202; acompanhe com getDatacrazyCacheStatus(). */
+  startDatacrazyCacheSync(opts?: { dryRun?: boolean }) {
+    const qs = opts?.dryRun ? '?async=1&dryRun=1' : '?async=1';
+    return jsonFetch<StartDatacrazyCacheSyncResponse>(
+      `/api/maintenance/sync-datacrazy-cache${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Sync bloqueante (uso em scripts; pode levar vários minutos). */
+  syncDatacrazyCacheBlocking(opts?: { dryRun?: boolean }) {
+    const qs = opts?.dryRun ? '?dryRun=1' : '';
+    return jsonFetch<SyncDatacrazyCacheResponse>(
+      `/api/maintenance/sync-datacrazy-cache${qs}`,
       { method: 'POST', body: '{}' }
     );
   },

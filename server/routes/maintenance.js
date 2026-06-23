@@ -6,7 +6,8 @@ import { Router } from 'express';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 import { cleanStaleOrigemAtivacao } from '../services/activationOrigemCleanupService.js';
 import { syncCaaDesfechos } from '../services/crmDesfechoSyncService.js';
-import { runFullSync } from '../services/datacrazyLeadCacheSyncService.js';
+import { runFullSync, startFullSyncBackground } from '../services/datacrazyLeadCacheSyncService.js';
+import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -66,21 +67,69 @@ router.post('/sync-crm-desfechos', requireApiKey, async (req, res, next) => {
 });
 
 /**
+ * GET /api/maintenance/datacrazy-cache-status
+ *
+ * Contagem do cache + último sync + se há sync em andamento.
+ */
+router.get('/datacrazy-cache-status', requireApiKey, async (req, res) => {
+  try {
+    await datacrazyLeadCacheRepo.closeStaleRunningSyncs();
+    const stats = await datacrazyLeadCacheRepo.getCacheStats();
+    res.json({
+      ok: true,
+      cache_count: stats.cache_count,
+      running: Boolean(stats.running),
+      running_since: stats.running?.started_at ?? null,
+      last_sync: stats.last_sync
+        ? {
+            id: String(stats.last_sync.id),
+            started_at: stats.last_sync.started_at,
+            finished_at: stats.last_sync.finished_at,
+            pages: stats.last_sync.pages_scanned,
+            leads_seen: stats.last_sync.leads_seen,
+            leads_upserted: stats.last_sync.leads_upserted,
+            leads_skipped: stats.last_sync.leads_skipped,
+            status: stats.last_sync.status,
+            error_message: stats.last_sync.error_message,
+          }
+        : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/maintenance/sync-datacrazy-cache
  *
  * Dispara o sync completo do cache cpf → datacrazy_lead_id varrendo todas as
  * páginas da API DataCrazy. Idempotente — pode ser chamado a qualquer hora.
  *
  * Query: ?dryRun=1  → conta sem persistir.
+ *        ?async=1   → 202 imediato, sync em background (recomendado na UI).
  *
  * Response:
  *   { logId, pages, leadsSeen, upserted, skipped, durationMs, dry_run }
  */
 router.post('/sync-datacrazy-cache', requireApiKey, async (req, res) => {
   try {
-    const result = await runFullSync({
-      dryRun: req.query.dryRun === '1',
-    });
+    const dryRun = req.query.dryRun === '1';
+    const asyncMode = req.query.async === '1' || req.query.async === 'true';
+
+    if (asyncMode) {
+      await datacrazyLeadCacheRepo.closeStaleRunningSyncs();
+      const stats = await datacrazyLeadCacheRepo.getCacheStats();
+      if (stats.running) {
+        return res.status(409).json({ error: 'Sync já em andamento', running_since: stats.running.started_at });
+      }
+      const started = startFullSyncBackground({ dryRun });
+      if (!started) {
+        return res.status(409).json({ error: 'Sync já em andamento' });
+      }
+      return res.status(202).json({ ok: true, status: 'running', dry_run: dryRun });
+    }
+
+    const result = await runFullSync({ dryRun });
     res.json(result);
   } catch (err) {
     console.error('[sync-datacrazy-cache]', err);

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BarChart3 } from 'lucide-react';
 import { ActivationListActions } from './ActivationListActions';
+import { DatacrazyCacheSyncCard } from './DatacrazyCacheSyncCard';
 import { ActivationRosterTable } from './ActivationRosterTable';
 import { ActivationTemplateMapping } from './ActivationTemplateMapping';
 import type { ActivationCategory } from '../services/activationApi';
@@ -193,6 +194,10 @@ export function ActivationPanel() {
           categoryLabel={label}
           onSaved={() => setTemplateConfigVersion((v) => v + 1)}
         />
+
+        <div className="mt-4">
+          <DatacrazyCacheSyncCard />
+        </div>
 
         <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-3">
           <ActivationListActions

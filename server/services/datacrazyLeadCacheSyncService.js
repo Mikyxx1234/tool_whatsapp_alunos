@@ -28,7 +28,12 @@ import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepos
  */
 export async function runFullSync({ dryRun = false } = {}) {
   const take = Math.min(
-    Math.max(Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) || 100, 1),
+    Math.max(
+      Number(process.env.DATACRAZY_CACHE_SYNC_PAGE_SIZE) ||
+        Number(process.env.DATACRAZY_LEADS_PAGE_SIZE) ||
+        200,
+      1
+    ),
     500
   );
   const maxPages = Math.max(
@@ -36,7 +41,9 @@ export async function runFullSync({ dryRun = false } = {}) {
     1
   );
   const pageDelay = Math.max(
-    Number(process.env.DATACRAZY_PAGE_DELAY_MS) || 400,
+    Number(process.env.DATACRAZY_CACHE_SYNC_PAGE_DELAY_MS) ||
+      Number(process.env.DATACRAZY_PAGE_DELAY_MS) ||
+      200,
     0
   );
 
@@ -167,4 +174,23 @@ export function startDatacrazyCacheSyncCron() {
     if (typeof interval?.unref === 'function') interval.unref();
   }, delay);
   if (typeof t?.unref === 'function') t.unref();
+}
+
+/** @type {Promise<unknown>|null} */
+let activeSyncPromise = null;
+
+export function isCacheSyncRunning() {
+  return activeSyncPromise != null;
+}
+
+/**
+ * Dispara sync em background (não bloqueia HTTP).
+ * @returns {boolean} false se já havia sync rodando
+ */
+export function startFullSyncBackground(opts = {}) {
+  if (activeSyncPromise) return false;
+  activeSyncPromise = runFullSync(opts).finally(() => {
+    activeSyncPromise = null;
+  });
+  return true;
 }

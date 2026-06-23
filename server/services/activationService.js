@@ -1514,7 +1514,7 @@ function getActivationAutoChunkSize(opts = {}) {
 }
 
 function getActivationChunkPauseMs() {
-  return Math.max(Number(process.env.ACTIVATION_CHUNK_PAUSE_MS) || 30000, 0);
+  return Math.max(Number(process.env.ACTIVATION_CHUNK_PAUSE_MS) || 15000, 0);
 }
 
 /**
@@ -1799,11 +1799,11 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     const prefetchTotal = missingContacts.length;
     if (prefetchTotal > 0) {
       const prefetchConcurrency = Math.max(
-        Math.min(Number(process.env.DATACRAZY_PREFETCH_CONCURRENCY) || 3, 6),
+        Math.min(Number(process.env.DATACRAZY_PREFETCH_CONCURRENCY) || 4, 6),
         1
       );
       const prefetchGapMs = Math.max(
-        Number(process.env.DATACRAZY_PREFETCH_GAP_MS) || 150,
+        Number(process.env.DATACRAZY_PREFETCH_GAP_MS) || 80,
         0
       );
       let prefetchDone = 0;
@@ -1909,7 +1909,7 @@ async function runDatacrazyActivationBatchForItems(category, toProcess, opts = {
     1,
     Math.min(
       Number(process.env.ACTIVATION_BATCH_CONCURRENCY) ||
-        (built.lookup_mode === 'hybrid' ? 6 : 10),
+        (built.lookup_mode === 'hybrid' || built.lookup_mode === 'cache_only' ? 8 : 10),
       15
     )
   );
