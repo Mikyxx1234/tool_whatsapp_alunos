@@ -51,6 +51,7 @@ export interface MeuPainelItem {
   outcome_occurred_at: string | null;
   outcome_consultor_nome: string | null;
   outcome_has_proof: boolean | null;
+  is_manual?: boolean;
 }
 
 export interface MeuPainelListResponse {
@@ -167,6 +168,13 @@ export async function createManualLead(payload: CreateManualLeadPayload) {
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function deleteManualLead(responseId: string) {
+  return jsonFetch<{ ok: true; deleted_id: string }>(
+    `/api/activation/meu-painel/leads/${encodeURIComponent(responseId)}`,
+    { method: 'DELETE' }
+  );
 }
 
 /** Admin ou Supervisor Acadêmico: atribui consultor_responsavel_nome a uma resposta. */

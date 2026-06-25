@@ -304,6 +304,21 @@ router.post('/meu-painel/leads', async (req, res) => {
   }
 });
 
+/** DELETE /api/activation/meu-painel/leads/:responseId
+ *  Remove apenas leads criados manualmente (external_id manual:*).
+ */
+router.delete('/meu-painel/leads/:responseId', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const result = await manualOutcomesRepo.deleteManualMeuPainelLead(req.params.responseId);
+    res.json(result);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 /** POST /api/activation/meu-painel/outcomes
  *  Grava marcacao manual. Body:
  *    { category, rgm?, cpf?, nome?, protocolo?, master_key?,

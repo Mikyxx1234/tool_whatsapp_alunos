@@ -11,6 +11,7 @@ import {
   AlertCircle,
   UserPlus,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { Header } from '../components/Header';
 import { OutcomeMarkerModal } from '../components/OutcomeMarkerModal';
@@ -25,6 +26,7 @@ import {
   OUTCOME_TONE,
   fetchMeuPainelList,
   fetchMeuPainelStats,
+  deleteManualLead,
   hasFullAccess,
   readConsultorIdentity,
   type MeuPainelCategory,
@@ -109,6 +111,7 @@ export default function MeuPainelPage() {
   const [modalItem, setModalItem] = useState<MeuPainelItem | null>(null);
   const [assignItem, setAssignItem] = useState<MeuPainelItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Custom date range — input state (tracks what user typed, not yet applied)
   const [customFrom, setCustomFrom] = useState('');
@@ -170,6 +173,24 @@ export default function MeuPainelPage() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  async function handleDeleteManual(it: MeuPainelItem) {
+    if (!it.is_manual) return;
+    const label = it.nome || it.rgm || 'este lead';
+    if (!window.confirm(`Excluir "${label}"?\n\nSó leads criados manualmente podem ser removidos.`)) {
+      return;
+    }
+    setDeletingId(it.response_id);
+    try {
+      await deleteManualLead(it.response_id);
+      await reload();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao excluir';
+      window.alert(msg);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -422,6 +443,18 @@ export default function MeuPainelPage() {
                             <Edit3 className="w-3 h-3" />
                             {it.outcome ? 'Editar' : 'Marcar'}
                           </button>
+                          {it.is_manual && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteManual(it)}
+                              disabled={deletingId === it.response_id}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-md disabled:opacity-50"
+                              title="Excluir cadastro manual"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              Excluir
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

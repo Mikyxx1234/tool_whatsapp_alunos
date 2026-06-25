@@ -289,11 +289,31 @@ export async function listMeuPainel(filters = {}) {
       ar.message_text                  as message_text,
       ar.button_payload                as button_payload,
       ar.received_at                   as received_at,
-      cp.protocolo                     as protocolo,
-      coalesce(cp.nome, dlc.nome, mat.nome) as nome,
-      coalesce(cp.cpf, dlc.cpf)        as cpf,
-      coalesce(cp.curso, mat.curso)    as curso,
-      coalesce(cp.polo, mat.polo)      as polo,
+      coalesce(
+        cp.protocolo,
+        nullif(trim(ar.raw_payload->>'protocolo'), '')
+      )                                as protocolo,
+      coalesce(
+        cp.nome,
+        dlc.nome,
+        mat.nome,
+        nullif(trim(ar.raw_payload->>'nome'), '')
+      )                                as nome,
+      coalesce(
+        cp.cpf,
+        dlc.cpf,
+        nullif(trim(ar.raw_payload->>'cpf'), '')
+      )                                as cpf,
+      coalesce(
+        cp.curso,
+        mat.curso,
+        nullif(trim(ar.raw_payload->>'curso'), '')
+      )                                as curso,
+      coalesce(
+        cp.polo,
+        mat.polo,
+        nullif(trim(ar.raw_payload->>'polo'), '')
+      )                                as polo,
       cp.status                        as caa_status,
       cp.last_status_change_at         as caa_last_change_at,
       amo.id                           as outcome_id,
@@ -302,7 +322,11 @@ export async function listMeuPainel(filters = {}) {
       amo.notes                        as outcome_notes,
       amo.occurred_at                  as outcome_occurred_at,
       amo.consultor_nome               as outcome_consultor_nome,
-      amo.proof_path is not null       as outcome_has_proof
+      amo.proof_path is not null       as outcome_has_proof,
+      (
+        ar.external_id like 'manual:%'
+        or coalesce((ar.raw_payload->>'manual')::boolean, false)
+      )                                as is_manual
     from activation_responses ar
     left join datacrazy_lead_cache dlc
       on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
@@ -316,9 +340,18 @@ export async function listMeuPainel(filters = {}) {
       where mr.snapshot_id = (
         select id from matriculados_snapshots order by created_at desc limit 1
       )
-        and dlc.cpf is not null
-        and regexp_replace(coalesce(mr.data->>'CPF', ''), '[^0-9]', '', 'g')
-            = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+        and (
+          (
+            dlc.cpf is not null
+            and regexp_replace(coalesce(mr.data->>'CPF', ''), '[^0-9]', '', 'g')
+                = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+          )
+          or (
+            nullif(trim(coalesce(ar.rgm, '')), '') is not null
+            and regexp_replace(coalesce(mr.data->>'RGM', ''), '[^0-9]', '', 'g')
+                = regexp_replace(coalesce(ar.rgm, ''), '[^0-9]', '', 'g')
+          )
+        )
       limit 1
     ) mat on true
     left join lateral (
@@ -634,6 +667,77 @@ export async function createManualMeuPainelLead(input) {
         polo,
       },
     };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Exclui lead criado manualmente no Meu Painel (external_id manual:*).
+ * Nao remove leads gravados via webhook/disparo.
+ *
+ * @param {string} responseId
+ */
+export async function deleteManualMeuPainelLead(responseId) {
+  const id = String(responseId || '').trim();
+  if (!id) {
+    const err = new Error('response_id e obrigatorio.');
+    err.status = 400;
+    throw err;
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `select id, category, rgm, external_id, raw_payload
+         from activation_responses
+        where id = $1`,
+      [id]
+    );
+    if (!rows.length) {
+      const err = new Error('Lead nao encontrado.');
+      err.status = 404;
+      throw err;
+    }
+
+    const row = rows[0];
+    const payload =
+      row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
+    const isManual =
+      String(row.external_id || '').startsWith('manual:') || payload.manual === true;
+    if (!isManual) {
+      const err = new Error('So e possivel excluir leads criados manualmente no painel.');
+      err.status = 403;
+      throw err;
+    }
+
+    const protocolo = String(payload.protocolo || '').replace(/\D/g, '');
+    if (protocolo.length >= 9 && protocolo.length <= 12) {
+      await client.query(
+        `delete from caa_protocols
+          where protocolo = $1
+            and coalesce((data->>'manual')::boolean, false) = true`,
+        [protocolo]
+      );
+    }
+
+    if (row.rgm && row.category) {
+      await client.query(
+        `delete from activation_manual_outcomes
+          where category = $1 and rgm = $2`,
+        [row.category, row.rgm]
+      );
+    }
+
+    await client.query(`delete from activation_responses where id = $1`, [id]);
+    await client.query('COMMIT');
+    return { ok: true, deleted_id: id };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
