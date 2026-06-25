@@ -10,10 +10,12 @@ import {
   Edit3,
   AlertCircle,
   UserPlus,
+  Plus,
 } from 'lucide-react';
 import { Header } from '../components/Header';
 import { OutcomeMarkerModal } from '../components/OutcomeMarkerModal';
 import { AssignConsultorModal } from '../components/AssignConsultorModal';
+import { CreateManualLeadModal } from '../components/CreateManualLeadModal';
 import {
   CATEGORY_LABEL,
   getMeuPainelBaseLabel,
@@ -106,6 +108,7 @@ export default function MeuPainelPage() {
   const [error, setError] = useState<string | null>(null);
   const [modalItem, setModalItem] = useState<MeuPainelItem | null>(null);
   const [assignItem, setAssignItem] = useState<MeuPainelItem | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   // Custom date range — input state (tracks what user typed, not yet applied)
   const [customFrom, setCustomFrom] = useState('');
@@ -198,6 +201,16 @@ export default function MeuPainelPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {category === 'processos-caa' && (
+              <button
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-white bg-whatsapp-600 hover:bg-whatsapp-700 rounded-lg"
+              >
+                <Plus className="w-4 h-4" />
+                Criar pessoa
+              </button>
+            )}
             {isAdmin && (
               <button
                 type="button"
@@ -434,6 +447,14 @@ export default function MeuPainelPage() {
         role={identity.role || ''}
         categoria={identity.categoria}
         onClose={() => setAssignItem(null)}
+        onSaved={reload}
+      />
+
+      <CreateManualLeadModal
+        open={createOpen}
+        defaultConsultorNome={consultorNomeParaInsert}
+        isAdmin={isAdmin}
+        onClose={() => setCreateOpen(false)}
         onSaved={reload}
       />
     </div>

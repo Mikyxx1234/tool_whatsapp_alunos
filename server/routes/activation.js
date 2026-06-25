@@ -272,6 +272,38 @@ router.get('/consultores-distintos', async (_req, res) => {
   }
 });
 
+/** POST /api/activation/meu-painel/leads
+ *  Cadastro manual de pessoa em Processos CAA (protocolo + RGM + consultor).
+ */
+router.post('/meu-painel/leads', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const body = req.body ?? {};
+    const category = String(body.category || 'processos-caa').trim();
+    if (!VALID_MEU_PAINEL_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category invalida: ${category}` });
+    }
+    const result = await manualOutcomesRepo.createManualMeuPainelLead({
+      category,
+      origem_ativacao: body.origem_ativacao ?? body.origemAtivacao ?? null,
+      protocolo: body.protocolo ?? null,
+      rgm: body.rgm,
+      nome: body.nome ?? null,
+      cpf: body.cpf ?? null,
+      telefone: body.telefone ?? null,
+      curso: body.curso ?? null,
+      polo: body.polo ?? null,
+      consultor_nome:
+        String(body.consultor_nome || body.consultorNome || '').trim(),
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 /** POST /api/activation/meu-painel/outcomes
  *  Grava marcacao manual. Body:
  *    { category, rgm?, cpf?, nome?, protocolo?, master_key?,

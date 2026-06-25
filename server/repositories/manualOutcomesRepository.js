@@ -1,4 +1,8 @@
-import { query } from '../db/client.js';
+import { randomUUID } from 'crypto';
+import { query, getPool } from '../db/client.js';
+import { masterKeyFromParts } from '../utils/activationIdentity.js';
+import { normalizeBrazilianPhone } from '../utils/phoneNormalizer.js';
+import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
 
 /**
  * @typedef {Object} ManualOutcomeRow
@@ -452,4 +456,188 @@ export async function meuPainelStats(filters = {}) {
     total_outro: Number(r.total_outro || 0),
     taxa_reversao: taxaReversao,
   };
+}
+
+function normalizePhoneInput(input) {
+  if (!input) return null;
+  const n = normalizeBrazilianPhone(input);
+  return n.ok ? n.phone : String(input).replace(/\D+/g, '') || null;
+}
+
+function normalizeCpfInput(input) {
+  const d = String(input ?? '').replace(/\D/g, '');
+  return d.length === 11 ? d : null;
+}
+
+/**
+ * Cadastro manual de lead no Meu Painel (ex.: CAA que não entrou via webhook).
+ * Grava `activation_responses`; `caa_protocols` só quando há protocolo (relatório CAA).
+ *
+ * @param {{
+ *   category: string,
+ *   origem_ativacao?: string|null,
+ *   protocolo?: string|null,
+ *   rgm: string,
+ *   nome?: string|null,
+ *   cpf?: string|null,
+ *   telefone?: string|null,
+ *   curso?: string|null,
+ *   polo?: string|null,
+ *   consultor_nome: string,
+ * }} input
+ */
+export async function createManualMeuPainelLead(input) {
+  const category = String(input.category || '').trim();
+  const protocoloRaw = String(input.protocolo || '').replace(/\D/g, '');
+  const rgm = normalizeRgmCanonical(input.rgm);
+  const consultorNome = String(input.consultor_nome || '').trim().slice(0, 200);
+  const nome = input.nome ? String(input.nome).trim().slice(0, 200) : null;
+  const cpf = normalizeCpfInput(input.cpf);
+  const telefone = normalizePhoneInput(input.telefone);
+  const curso = input.curso ? String(input.curso).trim().slice(0, 200) : null;
+  const polo = input.polo ? String(input.polo).trim().slice(0, 200) : null;
+
+  const VALID_ORIGENS_CAA = new Set(['caa', 'caa_atm', 'caa_ia']);
+  let origemAtivacao = String(input.origem_ativacao || 'caa_atm').trim().toLowerCase();
+  if (!VALID_ORIGENS_CAA.has(origemAtivacao)) {
+    origemAtivacao = 'caa_atm';
+  }
+
+  if (category !== 'processos-caa') {
+    const err = new Error('Cadastro manual disponivel apenas para processos-caa.');
+    err.status = 400;
+    throw err;
+  }
+
+  const hasProtocol =
+    protocoloRaw.length >= 9 && protocoloRaw.length <= 12;
+
+  if (origemAtivacao === 'caa' && !hasProtocol) {
+    const err = new Error(
+      'Protocolo CAA obrigatorio para Processos CAA (9 a 12 digitos).'
+    );
+    err.status = 400;
+    throw err;
+  }
+  if (protocoloRaw && !hasProtocol) {
+    const err = new Error('Protocolo CAA invalido (9 a 12 digitos).');
+    err.status = 400;
+    throw err;
+  }
+
+  if (!rgm) {
+    const err = new Error('RGM e obrigatorio.');
+    err.status = 400;
+    throw err;
+  }
+  if (!consultorNome) {
+    const err = new Error('consultor_nome e obrigatorio.');
+    err.status = 400;
+    throw err;
+  }
+
+  const masterKey = masterKeyFromParts({ rgm, cpf, telefone });
+  if (!masterKey) {
+    const err = new Error('Nao foi possivel gerar master_key (informe RGM valido).');
+    err.status = 400;
+    throw err;
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: dup } = await client.query(
+      `select id from activation_responses
+        where category = $1 and rgm = $2
+        limit 1`,
+      [category, rgm]
+    );
+    if (dup.length) {
+      const err = new Error('Ja existe um lead com este RGM em Processos CAA.');
+      err.status = 409;
+      throw err;
+    }
+
+    const manualMeta = JSON.stringify({
+      manual: true,
+      source: 'meu_painel',
+      origem_ativacao: origemAtivacao,
+      created_by: consultorNome,
+    });
+
+    if (origemAtivacao === 'caa' && hasProtocol) {
+      await client.query(
+        `insert into caa_protocols (
+           protocolo, rgm, cpf, nome, telefone, polo, curso, status, data
+         ) values ($1, $2, $3, $4, $5, $6, $7, 'open', $8::jsonb)
+         on conflict (protocolo) do update set
+           rgm        = coalesce(excluded.rgm, caa_protocols.rgm),
+           cpf        = coalesce(excluded.cpf, caa_protocols.cpf),
+           nome       = coalesce(excluded.nome, caa_protocols.nome),
+           telefone   = coalesce(excluded.telefone, caa_protocols.telefone),
+           polo       = coalesce(excluded.polo, caa_protocols.polo),
+           curso      = coalesce(excluded.curso, caa_protocols.curso),
+           last_seen_at = now(),
+           data       = caa_protocols.data || excluded.data`,
+        [protocoloRaw, rgm, cpf, nome, telefone, polo, curso, manualMeta]
+      );
+    }
+
+    const messageLabel =
+      origemAtivacao === 'caa_atm'
+        ? 'Cadastro manual — CAA_ATM (conversa com atendente)'
+        : origemAtivacao === 'caa_ia'
+          ? 'Cadastro manual — CAA_IA'
+          : 'Cadastro manual — relatório CAA';
+
+    const externalId = `manual:${randomUUID()}`;
+    const { rows } = await client.query(
+      `insert into activation_responses (
+         category, master_key, telefone, rgm, origem_ativacao,
+         response_kind, message_text, external_id,
+         raw_payload, received_at, consultor_responsavel_nome
+       ) values ($1, $2, $3, $4, $5, 'other', $6, $7, $8::jsonb, now(), $9)
+       returning id, category, master_key, rgm, telefone, origem_ativacao,
+                 consultor_responsavel_nome, received_at`,
+      [
+        category,
+        masterKey,
+        telefone,
+        rgm,
+        origemAtivacao,
+        messageLabel,
+        externalId,
+        JSON.stringify({
+          manual: true,
+          origem_ativacao: origemAtivacao,
+          protocolo: hasProtocol ? protocoloRaw : null,
+          nome,
+          cpf,
+          curso,
+          polo,
+        }),
+        consultorNome,
+      ]
+    );
+
+    await client.query('COMMIT');
+    return {
+      ok: true,
+      row: {
+        ...rows[0],
+        protocolo: hasProtocol ? protocoloRaw : null,
+        nome,
+        cpf,
+        curso,
+        polo,
+      },
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }

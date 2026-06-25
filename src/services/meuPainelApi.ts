@@ -148,6 +148,27 @@ export async function createOutcome(payload: CreateOutcomePayload) {
   });
 }
 
+export interface CreateManualLeadPayload {
+  category?: MeuPainelCategory | 'processos-caa';
+  /** caa = relatório (protocolo obrigatório); caa_atm e caa_ia = conversa, sem protocolo */
+  origem_ativacao?: 'caa' | 'caa_atm' | 'caa_ia';
+  protocolo?: string | null;
+  rgm: string;
+  nome?: string | null;
+  cpf?: string | null;
+  telefone?: string | null;
+  curso?: string | null;
+  polo?: string | null;
+  consultor_nome: string;
+}
+
+export async function createManualLead(payload: CreateManualLeadPayload) {
+  return jsonFetch<{ ok: true; row: MeuPainelItem }>('/api/activation/meu-painel/leads', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 /** Admin ou Supervisor Acadêmico: atribui consultor_responsavel_nome a uma resposta. */
 export async function assignConsultorToResponse(
   responseId: string,
