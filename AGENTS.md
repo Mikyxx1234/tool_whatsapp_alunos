@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-25 — Meu Painel: join de outcome/CAA usa RGM efetivo (ar→mat→lk) + upsert por (category, rgm)
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** `listMeuPainel` exibia RGM via `coalesce(ar.rgm, mat.rgm, lk.rgm)` mas joins de `activation_manual_outcomes` e `caa_protocols` usavam só `ar.rgm`/`mat.rgm`. Leads com RGM resolvido por telefone (`mv_aluno_por_telefone`) gravavam outcome com RGM correto mas liam "não marcado" (ex.: Camila Rodrigues RGM 49340671). `meuPainelStats` tinha o mesmo gap. Múltiplos cliques geravam duplicatas em `activation_manual_outcomes` (16 linhas no caso Camila).
+- **Decisão:** (1) Constante SQL `MEU_PAINEL_EFFECTIVE_RGM_SQL` — mesma ordem do SELECT — nos joins de `cp` e `amo`; stats enriquecem respostas com `lk`+`mat` antes de cruzar outcomes. (2) Migration `039`: dedupe por `(category, rgm)` + `UNIQUE INDEX` parcial; `upsertOutcome()` com `ON CONFLICT (category, rgm) WHERE rgm IS NOT NULL DO UPDATE`; rota POST meu-painel/outcomes e `createFromCrm` usam upsert.
+- **Escopo local:** alterações no repo `tool_whatsapp_alunos` sem push/deploy até validação.
+- **Alternativas descartadas:** só upsert sem corrigir join (KPI/listagem continuariam errados); vínculo por `response_id` (mais robusto, escopo maior).
+
 ### 2026-06-29 — Meu Painel Parte 2 (Opção A): nome/rgm/cpf por telefone via MV `mv_aluno_por_telefone`
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** Após a Parte 1 (ler `nome do lead` do `raw_payload`), restavam leads em **Meu Painel** com "—" porque o nome não estava em nenhuma fonte ligada por ID/RGM/CPF — só existia nas **bases acadêmicas, alcançável por telefone**. Ex.: `5513996483329` (DAYLLANA, em `processos_caa_rows`) e `5511915145574` (RICARDO, em `matriculados_rows`). Cruzar telefone inline é caro (telefone dentro de JSONB, exigiria regexp por linha em tabelas de 100k+).

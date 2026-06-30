@@ -392,7 +392,7 @@ router.post('/meu-painel/outcomes', async (req, res) => {
     if (!rgm && !body.master_key) {
       return res.status(400).json({ error: 'rgm ou master_key e obrigatorio' });
     }
-    const row = await manualOutcomesRepo.insertOutcome({
+    const row = await manualOutcomesRepo.upsertOutcome({
       category,
       master_key: body.master_key ?? (rgm ? `RGM:${rgm}` : null),
       rgm,

@@ -42,26 +42,64 @@ import { aggregateMeuPainelOrigemCounts } from '../utils/meuPainelLabels.js';
  * @returns {Promise<ManualOutcomeRow>}
  */
 export async function insertOutcome(data) {
-  const rgmCanon = data.rgm ? normalizeRgmCanonical(data.rgm) || String(data.rgm).trim() : null;
   const { rows } = await query(
     `insert into activation_manual_outcomes
        (category, master_key, rgm, cpf, nome, protocolo, outcome,
         motivo, notes, consultor_nome, occurred_at)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      returning *`,
-    [
-      data.category,
-      data.master_key ?? (rgmCanon ? `RGM:${rgmCanon}` : null),
-      rgmCanon,
-      data.cpf ?? null,
-      data.nome ?? null,
-      data.protocolo ?? null,
-      data.outcome,
-      data.motivo ?? null,
-      data.notes ?? null,
-      data.consultor_nome,
-      data.occurred_at ? new Date(data.occurred_at) : new Date(),
-    ]
+    outcomeInsertParams(data)
+  );
+  return rows[0];
+}
+
+/** @param {Parameters<typeof insertOutcome>[0]} data */
+function outcomeInsertParams(data) {
+  const rgmCanon = data.rgm ? normalizeRgmCanonical(data.rgm) || String(data.rgm).trim() : null;
+  return [
+    data.category,
+    data.master_key ?? (rgmCanon ? `RGM:${rgmCanon}` : null),
+    rgmCanon,
+    data.cpf ?? null,
+    data.nome ?? null,
+    data.protocolo ?? null,
+    data.outcome,
+    data.motivo ?? null,
+    data.notes ?? null,
+    data.consultor_nome,
+    data.occurred_at ? new Date(data.occurred_at) : new Date(),
+  ];
+}
+
+/**
+ * Insere ou atualiza desfecho por (category, rgm). Sem RGM, cai em insert simples.
+ * @param {Parameters<typeof insertOutcome>[0]} data
+ * @returns {Promise<ManualOutcomeRow>}
+ */
+export async function upsertOutcome(data) {
+  const rgmCanon = data.rgm ? normalizeRgmCanonical(data.rgm) || String(data.rgm).trim() : null;
+  if (!rgmCanon) {
+    return insertOutcome(data);
+  }
+
+  const { rows } = await query(
+    `insert into activation_manual_outcomes
+       (category, master_key, rgm, cpf, nome, protocolo, outcome,
+        motivo, notes, consultor_nome, occurred_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     on conflict (category, rgm) where rgm is not null
+     do update set
+       outcome = excluded.outcome,
+       motivo = excluded.motivo,
+       notes = excluded.notes,
+       consultor_nome = excluded.consultor_nome,
+       occurred_at = excluded.occurred_at,
+       master_key = coalesce(excluded.master_key, activation_manual_outcomes.master_key),
+       nome = coalesce(excluded.nome, activation_manual_outcomes.nome),
+       cpf = coalesce(excluded.cpf, activation_manual_outcomes.cpf),
+       protocolo = coalesce(excluded.protocolo, activation_manual_outcomes.protocolo)
+     returning *`,
+    outcomeInsertParams({ ...data, rgm: rgmCanon })
   );
   return rows[0];
 }
@@ -239,7 +277,7 @@ export async function deleteByRgmAndCategory(rgm, category) {
  */
 export async function createFromCrm(data) {
   const masterKey = data.rgm ? `RGM:${data.rgm}` : null;
-  return insertOutcome({
+  return upsertOutcome({
     category: data.category,
     master_key: masterKey,
     rgm: data.rgm ?? null,
