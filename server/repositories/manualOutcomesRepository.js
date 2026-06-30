@@ -499,6 +499,62 @@ export async function meuPainelStats(filters = {}) {
   };
 }
 
+/**
+ * Contagem por categoria + origem_ativacao (mesmos filtros do Meu Painel).
+ * Usa `vw_meu_painel_origem_ativacao` (migration 038).
+ *
+ * @param {{
+ *   consultor?: string|null,
+ *   from?: string|Date|null,
+ *   to?: string|Date|null,
+ *   category?: string|null,
+ * }} filters
+ * @returns {Promise<Array<{ category: string, origem_ativacao: string, total: number }>>}
+ */
+export async function meuPainelOrigemCounts(filters = {}) {
+  const isAdmin = !filters.consultor || filters.consultor === '*';
+  const consultorTrim = isAdmin ? null : String(filters.consultor).trim();
+  const fromDate = filters.from ? new Date(filters.from) : null;
+  let toDate = null;
+  if (filters.to) {
+    const d = filters.to instanceof Date ? new Date(filters.to) : new Date(filters.to);
+    d.setUTCDate(d.getUTCDate() + 1);
+    toDate = d;
+  }
+  const category = filters.category ? String(filters.category).trim() : null;
+
+  const { rows } = await query(
+    `
+    select
+      v.category,
+      v.origem_ativacao,
+      count(*)::int as total
+    from vw_meu_painel_origem_ativacao v
+    where (
+      $1::text is null
+      or (
+        v.consultor_responsavel_nome is not null
+        and (
+          v.consultor_responsavel_nome ilike '%' || $1::text || '%'
+          or $1::text ilike '%' || v.consultor_responsavel_nome || '%'
+        )
+      )
+    )
+      and ($2::timestamptz is null or v.received_at >= $2)
+      and ($3::timestamptz is null or v.received_at < $3)
+      and ($4::text is null or v.category = $4)
+    group by v.category, v.origem_ativacao
+    order by total desc, v.category, v.origem_ativacao
+    `,
+    [consultorTrim, fromDate, toDate, category]
+  );
+  return rows.map((r) => ({
+    category: r.category,
+    origem_ativacao: r.origem_ativacao || '',
+    total: Number(r.total || 0),
+  }));
+}
+
 function normalizePhoneInput(input) {
   if (!input) return null;
   const n = normalizeBrazilianPhone(input);

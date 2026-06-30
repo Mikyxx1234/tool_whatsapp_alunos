@@ -226,6 +226,38 @@ router.get('/meu-painel/stats', async (req, res) => {
   }
 });
 
+/** GET /api/activation/meu-painel/origem-stats — contagem por origem_ativacao (coluna BASE) */
+router.get('/meu-painel/origem-stats', async (req, res) => {
+  try {
+    if (!isDbConfigured()) {
+      return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
+    }
+    const { consultor, isAdmin, missing } = resolveConsultor(req);
+    if (missing) {
+      return res.json({
+        consultor: null,
+        is_admin: false,
+        missing_consultor: true,
+        items: [],
+      });
+    }
+    const category = String(req.query.category || '').trim() || null;
+    if (category && !VALID_MEU_PAINEL_CATEGORIES.has(category)) {
+      return res.status(400).json({ error: `category invalida: ${category}` });
+    }
+    const { from: statsFrom, to: statsTo } = parseDateRange(req.query.from, req.query.to);
+    const items = await manualOutcomesRepo.meuPainelOrigemCounts({
+      consultor,
+      from: statsFrom,
+      to: statsTo,
+      category,
+    });
+    res.json({ consultor: consultor || null, is_admin: isAdmin, items });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 /** PATCH /api/activation/responses/:id/assign-consultor
  *  Admin (role=admin) ou Supervisor Acadêmico (categoria). Atualiza consultor_responsavel_nome.
  *  Body: { consultor_nome: string|null, role: string, categoria?: string }

@@ -69,6 +69,19 @@ export interface MeuPainelStatsResponse {
   stats: MeuPainelStats;
 }
 
+export interface MeuPainelOrigemCount {
+  category: string;
+  origem_ativacao: string;
+  total: number;
+}
+
+export interface MeuPainelOrigemStatsResponse {
+  consultor: string | null;
+  is_admin: boolean;
+  missing_consultor?: boolean;
+  items: MeuPainelOrigemCount[];
+}
+
 export interface MeuPainelFilters {
   consultor?: string | null;
   role?: string | null;
@@ -126,6 +139,12 @@ export async function fetchMeuPainelList(filters: MeuPainelFilters = {}) {
 
 export async function fetchMeuPainelStats(filters: MeuPainelFilters = {}) {
   return jsonFetch<MeuPainelStatsResponse>(`/api/activation/meu-painel/stats${buildQuery(filters)}`);
+}
+
+export async function fetchMeuPainelOrigemStats(filters: MeuPainelFilters = {}) {
+  return jsonFetch<MeuPainelOrigemStatsResponse>(
+    `/api/activation/meu-painel/origem-stats${buildQuery(filters)}`
+  );
 }
 
 export interface CreateOutcomePayload {

@@ -26,11 +26,13 @@ import {
   OUTCOME_TONE,
   fetchMeuPainelList,
   fetchMeuPainelStats,
+  fetchMeuPainelOrigemStats,
   deleteManualLead,
   hasFullAccess,
   readConsultorIdentity,
   type MeuPainelCategory,
   type MeuPainelItem,
+  type MeuPainelOrigemCount,
   type MeuPainelStats,
   type OutcomeKind,
 } from '../services/meuPainelApi';
@@ -105,6 +107,7 @@ export default function MeuPainelPage() {
   const [category, setCategory] = useState<MeuPainelCategory | ''>('processos-caa');
   const [search, setSearch] = useState('');
   const [stats, setStats] = useState<MeuPainelStats>(EMPTY_STATS);
+  const [origemCounts, setOrigemCounts] = useState<MeuPainelOrigemCount[]>([]);
   const [items, setItems] = useState<MeuPainelItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -156,12 +159,14 @@ export default function MeuPainelPage() {
         to,
         limit: 300,
       };
-      const [s, l] = await Promise.all([
+      const [s, l, o] = await Promise.all([
         fetchMeuPainelStats(filters),
         fetchMeuPainelList(filters),
+        fetchMeuPainelOrigemStats(filters),
       ]);
       setStats(s.stats);
       setItems(l.items);
+      setOrigemCounts(o.items);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Erro ao carregar';
       setError(msg);
@@ -201,6 +206,11 @@ export default function MeuPainelPage() {
         .some((v) => String(v).toLowerCase().includes(q))
     );
   }, [items, search]);
+
+  const origemCountsTotal = useMemo(
+    () => origemCounts.reduce((sum, row) => sum + row.total, 0),
+    [origemCounts]
+  );
 
   const noIdentity = !identity.username && !identity.nome && !isAdmin;
 
@@ -337,6 +347,39 @@ export default function MeuPainelPage() {
           <StatCard tone="amber"   Icon={PhoneOff}    label="Sem contato" value={fmtInt(stats.total_sem_contato)} loading={loading} />
           <StatCard tone="gray"    Icon={HelpCircle}  label="Outro"       value={fmtInt(stats.total_outro)} loading={loading} />
         </div>
+
+        {/* Contagem por origem_ativacao (coluna BASE) */}
+        {origemCounts.length > 0 && (
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-gray-800">Por origem de ativação</h2>
+              <span className="text-xs text-gray-500">{fmtInt(origemCountsTotal)} no período</span>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {origemCounts.map((row) => {
+                const label = getMeuPainelBaseLabel(row.category, row.origem_ativacao || null);
+                const pct = origemCountsTotal > 0 ? row.total / origemCountsTotal : 0;
+                return (
+                  <div key={`${row.category}:${row.origem_ativacao}`} className="px-4 py-2.5">
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <span className="text-xs font-medium text-gray-700 truncate">{label}</span>
+                      <span className="text-xs font-bold text-gray-900 tabular-nums shrink-0">
+                        {fmtInt(row.total)}
+                        <span className="ml-1.5 font-normal text-gray-500">({fmtPct(pct)})</span>
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-whatsapp-500 transition-all"
+                        style={{ width: `${Math.max(pct * 100, row.total > 0 ? 2 : 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-700 px-3 py-2 flex items-start gap-2">
