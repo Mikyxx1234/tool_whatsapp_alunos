@@ -32,6 +32,8 @@ import {
   fetchMeuPainelOrigemStats,
   MEU_PAINEL_PAGE_SIZES,
   deleteManualLead,
+  fetchConsultoresDistintos,
+  getConsultoresAcademicos,
   hasFullAccess,
   readConsultorIdentity,
   type MeuPainelCategory,
@@ -104,8 +106,13 @@ export default function MeuPainelPage() {
   const isAdmin = hasFullAccess(identity);
   // Quando tem poder pleno, permite alternar entre "Meus leads" e "Todos"
   const [adminViewAll, setAdminViewAll] = useState(isAdmin);
+  const [adminConsultorFilter, setAdminConsultorFilter] = useState('');
+  const [consultorOptions, setConsultorOptions] = useState<string[]>([]);
 
-  const consultorParaApi = isAdmin && adminViewAll ? '*' : identity.nome || identity.username || '';
+  const consultorParaApi =
+    isAdmin && adminViewAll
+      ? adminConsultorFilter || '*'
+      : identity.nome || identity.username || '';
   const consultorNomeParaInsert = identity.nome || identity.username || '';
 
   const [range, setRange] = useState<RangeKey>('today');
@@ -167,6 +174,7 @@ export default function MeuPainelPage() {
     consultorParaApi,
     isAdmin,
     adminViewAll,
+    adminConsultorFilter,
     identity.role,
     identity.categoria,
     category,
@@ -234,6 +242,19 @@ export default function MeuPainelPage() {
   useEffect(() => {
     setPage(1);
   }, [listFiltersBase]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const academic = getConsultoresAcademicos();
+    fetchConsultoresDistintos()
+      .then((r) => {
+        const merged = [...new Set([...academic, ...(r.consultores || [])])].sort((a, b) =>
+          a.localeCompare(b, 'pt-BR')
+        );
+        setConsultorOptions(merged);
+      })
+      .catch(() => setConsultorOptions(academic));
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!consultorParaApi) {
@@ -311,7 +332,9 @@ export default function MeuPainelPage() {
             </h1>
             <p className="text-xs sm:text-sm text-gray-500 mt-1">
               {isAdmin && adminViewAll
-                ? 'Mostrando todos os leads (modo admin)'
+                ? adminConsultorFilter
+                  ? `Filtrando consultor: ${adminConsultorFilter}`
+                  : 'Mostrando todos os leads (modo admin)'
                 : `Leads atribuídos a você: ${identity.nome || identity.username || '—'}`}
             </p>
           </div>
@@ -329,7 +352,10 @@ export default function MeuPainelPage() {
             {isAdmin && (
               <button
                 type="button"
-                onClick={() => setAdminViewAll((v) => !v)}
+                onClick={() => {
+                  setAdminViewAll((v) => !v);
+                  if (adminViewAll) setAdminConsultorFilter('');
+                }}
                 className="px-3 py-2 text-xs font-semibold rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
               >
                 {adminViewAll ? 'Ver apenas meus' : 'Ver todos (admin)'}
@@ -415,6 +441,27 @@ export default function MeuPainelPage() {
               <option key={c} value={c}>{CATEGORY_LABEL[c] || c}</option>
             ))}
           </select>
+
+          {isAdmin && adminViewAll && (
+            <>
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Consultor</span>
+              <select
+                value={adminConsultorFilter}
+                onChange={(e) => {
+                  setAdminConsultorFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="px-3 py-1.5 text-xs border border-gray-200 rounded-lg bg-white text-gray-700 min-w-[180px] focus:outline-none focus:ring-2 focus:ring-whatsapp-500"
+              >
+                <option value="">Todos os consultores</option>
+                {consultorOptions.map((nome) => (
+                  <option key={nome} value={nome}>
+                    {nome}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
 
           <input
             type="search"

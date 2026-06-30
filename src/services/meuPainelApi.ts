@@ -159,6 +159,7 @@ export interface CreateOutcomePayload {
   nome?: string | null;
   protocolo?: string | null;
   master_key?: string | null;
+  response_id?: string | null;
   outcome: OutcomeKind;
   motivo?: string | null;
   notes?: string | null;

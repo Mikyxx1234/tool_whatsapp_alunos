@@ -42,6 +42,7 @@ import { aggregateMeuPainelOrigemCounts } from '../utils/meuPainelLabels.js';
  * @returns {Promise<ManualOutcomeRow>}
  */
 export async function insertOutcome(data) {
+  const rgmCanon = data.rgm ? normalizeRgmCanonical(data.rgm) || String(data.rgm).trim() : null;
   const { rows } = await query(
     `insert into activation_manual_outcomes
        (category, master_key, rgm, cpf, nome, protocolo, outcome,
@@ -50,8 +51,8 @@ export async function insertOutcome(data) {
      returning *`,
     [
       data.category,
-      data.master_key ?? null,
-      data.rgm ?? null,
+      data.master_key ?? (rgmCanon ? `RGM:${rgmCanon}` : null),
+      rgmCanon,
       data.cpf ?? null,
       data.nome ?? null,
       data.protocolo ?? null,
@@ -63,6 +64,24 @@ export async function insertOutcome(data) {
     ]
   );
   return rows[0];
+}
+
+/**
+ * Preenche rgm/master_key na resposta quando o webhook não trouxe (ex.: CAA ATM).
+ * @param {string} responseId
+ * @param {{ rgm?: string|null, master_key?: string|null }} data
+ */
+export async function backfillResponseIdentity(responseId, data = {}) {
+  const rgmCanon = data.rgm ? normalizeRgmCanonical(data.rgm) || String(data.rgm).trim() : null;
+  const masterKey = data.master_key ?? (rgmCanon ? `RGM:${rgmCanon}` : null);
+  if (!rgmCanon && !masterKey) return;
+  await query(
+    `update activation_responses
+        set rgm = coalesce(nullif(trim(rgm), ''), $2),
+            master_key = coalesce(nullif(trim(master_key), ''), $3)
+      where id = $1`,
+    [responseId, rgmCanon, masterKey]
+  );
 }
 
 /**
@@ -272,6 +291,83 @@ function meuPainelFilterParams(filters = {}) {
   return { consultorTrim, fromDate, toDate, category };
 }
 
+/** RGM efetivo: resposta + matriculados + MV telefone */
+const EFFECTIVE_RGM_EXPR = `nullif(trim(coalesce(ar.rgm, mat.rgm, lk.rgm)), '')`;
+
+const MEU_PAINEL_DLC_JOIN = `
+left join datacrazy_lead_cache dlc
+  on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
+`;
+
+const MEU_PAINEL_LK_JOIN = `
+left join mv_aluno_por_telefone lk
+  on lk.phone_norm = normalize_phone_br(ar.telefone)
+`;
+
+const MEU_PAINEL_MAT_LATERAL = `
+left join lateral (
+  select
+    mr.data->>'RGM'   as rgm,
+    mr.data->>'Nome'  as nome,
+    mr.data->>'Curso' as curso,
+    mr.data->>'Polo'  as polo
+  from matriculados_rows mr
+  where mr.snapshot_id = (
+    select id from matriculados_snapshots order by created_at desc limit 1
+  )
+    and (
+      (
+        dlc.cpf is not null
+        and regexp_replace(coalesce(mr.data->>'CPF', ''), '[^0-9]', '', 'g')
+            = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+      )
+      or (
+        nullif(trim(coalesce(ar.rgm, '')), '') is not null
+        and regexp_replace(coalesce(mr.data->>'RGM', ''), '[^0-9]', '', 'g')
+            = regexp_replace(coalesce(ar.rgm, ''), '[^0-9]', '', 'g')
+      )
+    )
+  limit 1
+) mat on true
+`;
+
+/** Casamento marcação manual ↔ lead (RGM enriquecido, master_key ou CPF). */
+const OUTCOME_MATCH_WHERE = `
+  amo.category = ar.category
+  and (
+    (
+      ${EFFECTIVE_RGM_EXPR} is not null
+      and amo.rgm is not null
+      and regexp_replace(amo.rgm, '[^0-9]', '', 'g')
+          = regexp_replace(coalesce(ar.rgm, mat.rgm, lk.rgm, ''), '[^0-9]', '', 'g')
+      and length(regexp_replace(amo.rgm, '[^0-9]', '', 'g')) >= 5
+    )
+    or (
+      nullif(trim(coalesce(ar.master_key, '')), '') is not null
+      and amo.master_key is not null
+      and amo.master_key = ar.master_key
+    )
+    or (
+      amo.cpf is not null
+      and length(regexp_replace(amo.cpf, '[^0-9]', '', 'g')) = 11
+      and regexp_replace(amo.cpf, '[^0-9]', '', 'g') = regexp_replace(
+        coalesce(dlc.cpf, nullif(trim(ar.raw_payload->>'cpf'), ''), nullif(trim(lk.cpf), ''), ''),
+        '[^0-9]', '', 'g'
+      )
+    )
+  )
+`;
+
+const MEU_PAINEL_OUTCOME_LATERAL = `
+left join lateral (
+  select id, outcome, motivo, notes, occurred_at, consultor_nome, proof_path
+    from activation_manual_outcomes amo
+   where ${OUTCOME_MATCH_WHERE}
+   order by occurred_at desc
+   limit 1
+) amo on true
+`;
+
 const MEU_PAINEL_WHERE_SQL = `
   (
     $1::text is null
@@ -377,41 +473,15 @@ export async function listMeuPainel(filters = {}) {
         or coalesce((ar.raw_payload->>'manual')::boolean, false)
       )                                as is_manual
     from activation_responses ar
-    left join datacrazy_lead_cache dlc
-      on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
-    -- nome/rgm/cpf por telefone (bases acadêmicas consolidadas) quando faltam nas outras fontes
-    left join mv_aluno_por_telefone lk
-      on lk.phone_norm = normalize_phone_br(ar.telefone)
-    left join lateral (
-      select
-        mr.data->>'RGM'   as rgm,
-        mr.data->>'Nome'  as nome,
-        mr.data->>'Curso' as curso,
-        mr.data->>'Polo'  as polo
-      from matriculados_rows mr
-      where mr.snapshot_id = (
-        select id from matriculados_snapshots order by created_at desc limit 1
-      )
-        and (
-          (
-            dlc.cpf is not null
-            and regexp_replace(coalesce(mr.data->>'CPF', ''), '[^0-9]', '', 'g')
-                = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
-          )
-          or (
-            nullif(trim(coalesce(ar.rgm, '')), '') is not null
-            and regexp_replace(coalesce(mr.data->>'RGM', ''), '[^0-9]', '', 'g')
-                = regexp_replace(coalesce(ar.rgm, ''), '[^0-9]', '', 'g')
-          )
-        )
-      limit 1
-    ) mat on true
+    ${MEU_PAINEL_DLC_JOIN}
+    ${MEU_PAINEL_LK_JOIN}
+    ${MEU_PAINEL_MAT_LATERAL}
     left join lateral (
       select protocolo, nome, cpf, curso, polo, status, last_status_change_at
       from caa_protocols c
       where (
-        nullif(trim(coalesce(ar.rgm, mat.rgm)), '') is not null
-        and c.rgm = nullif(trim(coalesce(ar.rgm, mat.rgm)), '')
+        ${EFFECTIVE_RGM_EXPR} is not null
+        and c.rgm = ${EFFECTIVE_RGM_EXPR}
       )
          or (
         dlc.cpf is not null
@@ -421,15 +491,7 @@ export async function listMeuPainel(filters = {}) {
       order by c.last_status_change_at desc nulls last
       limit 1
     ) cp on true
-    left join lateral (
-      select id, outcome, motivo, notes, occurred_at, consultor_nome, proof_path
-        from activation_manual_outcomes
-       where category = ar.category
-         and nullif(trim(coalesce(ar.rgm, mat.rgm)), '') is not null
-         and rgm = nullif(trim(coalesce(ar.rgm, mat.rgm)), '')
-       order by occurred_at desc
-       limit 1
-    ) amo on true
+    ${MEU_PAINEL_OUTCOME_LATERAL}
     where ${MEU_PAINEL_WHERE_SQL}
     order by ar.received_at desc
     limit $5 offset $6
@@ -464,50 +526,60 @@ export async function listMeuPainel(filters = {}) {
  * }>}
  */
 export async function meuPainelStats(filters = {}) {
-  const isAdmin = !filters.consultor || filters.consultor === '*';
-  const consultorTrim = isAdmin ? null : String(filters.consultor).trim();
-  const fromDate = filters.from ? new Date(filters.from) : null;
-  let toDate = null;
-  if (filters.to) {
-    const d = filters.to instanceof Date ? new Date(filters.to) : new Date(filters.to);
-    d.setUTCDate(d.getUTCDate() + 1);
-    toDate = d;
-  }
-  const category = filters.category ? String(filters.category).trim() : null;
+  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
 
   const { rows } = await query(
     `
-    with my_responses as (
-      select ar.id, ar.category, ar.rgm, ar.response_kind
-        from activation_responses ar
-       -- match bidirecional: "Danubia" salvo casa com consultor "Danubia Sousa" e vice-versa
-       where (
-         $1::text is null
-         or (
-           ar.consultor_responsavel_nome is not null
-           and (
-             ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
-             or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
-           )
-         )
-       )
-         and ($2::timestamptz is null or ar.received_at >= $2)
-         and ($3::timestamptz is null or ar.received_at < $3)
-         and ($4::text is null or ar.category = $4)
+    with enriched as (
+      select
+        ar.id,
+        ar.response_kind,
+        ar.category,
+        ${EFFECTIVE_RGM_EXPR} as effective_rgm,
+        ar.master_key,
+        coalesce(
+          dlc.cpf,
+          nullif(trim(ar.raw_payload->>'cpf'), ''),
+          lk.cpf
+        ) as effective_cpf
+      from activation_responses ar
+      ${MEU_PAINEL_DLC_JOIN}
+      ${MEU_PAINEL_LK_JOIN}
+      ${MEU_PAINEL_MAT_LATERAL}
+      where ${MEU_PAINEL_WHERE_SQL}
     ),
     latest_outcomes as (
-      select distinct on (mr.rgm, mr.category)
-             mr.id as response_id, amo.outcome
-        from my_responses mr
+      select distinct on (e.id)
+             e.id as response_id,
+             amo.outcome
+        from enriched e
         left join activation_manual_outcomes amo
-          on amo.rgm = mr.rgm
-         and amo.category = mr.category
-       where mr.rgm is not null
-       order by mr.rgm, mr.category, amo.occurred_at desc nulls last
+          on amo.category = e.category
+         and (
+           (
+             e.effective_rgm is not null
+             and amo.rgm is not null
+             and regexp_replace(amo.rgm, '[^0-9]', '', 'g')
+                 = regexp_replace(e.effective_rgm, '[^0-9]', '', 'g')
+           )
+           or (
+             nullif(trim(coalesce(e.master_key, '')), '') is not null
+             and amo.master_key is not null
+             and amo.master_key = e.master_key
+           )
+           or (
+             amo.cpf is not null
+             and e.effective_cpf is not null
+             and length(regexp_replace(amo.cpf, '[^0-9]', '', 'g')) = 11
+             and regexp_replace(amo.cpf, '[^0-9]', '', 'g')
+                 = regexp_replace(e.effective_cpf, '[^0-9]', '', 'g')
+           )
+         )
+       order by e.id, amo.occurred_at desc nulls last
     )
     select
-      (select count(*)::int from my_responses)                                              as total_atribuido,
-      (select count(*)::int from my_responses where response_kind = 'opt_out')              as total_opt_out,
+      (select count(*)::int from enriched)                                              as total_atribuido,
+      (select count(*)::int from enriched where response_kind = 'opt_out')              as total_opt_out,
       (select count(*)::int from latest_outcomes where outcome is not null)                 as total_marcado,
       (select count(*)::int from latest_outcomes where outcome = 'revertido')               as total_revertido,
       (select count(*)::int from latest_outcomes where outcome = 'confirmado')              as total_confirmado,

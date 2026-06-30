@@ -82,6 +82,7 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
         nome: item.nome,
         protocolo: item.protocolo,
         master_key: item.master_key,
+        response_id: item.response_id,
         outcome,
         motivo: motivo.trim() || null,
         notes: notes.trim() || null,

@@ -147,7 +147,14 @@ function _hasFullAccess(req) {
 
 function resolveConsultor(req) {
   const consultorRaw = String(req.query.consultor || '').trim();
-  if (_hasFullAccess(req) || consultorRaw === '*') {
+  const fullAccess = _hasFullAccess(req);
+  if (consultorRaw === '*') {
+    return { consultor: null, isAdmin: fullAccess };
+  }
+  if (fullAccess) {
+    if (consultorRaw) {
+      return { consultor: consultorRaw, isAdmin: true };
+    }
     return { consultor: null, isAdmin: true };
   }
   if (!consultorRaw) {
@@ -372,6 +379,7 @@ router.post('/meu-painel/outcomes', async (req, res) => {
     const consultorNome =
       String(body.consultor_nome || body.consultorNome || '').trim().slice(0, 200);
     const rgm = body.rgm ? String(body.rgm).trim() : null;
+    const responseId = body.response_id ? String(body.response_id).trim() : null;
     if (!VALID_MEU_PAINEL_CATEGORIES.has(category)) {
       return res.status(400).json({ error: `category invalida: ${category}` });
     }
@@ -397,6 +405,12 @@ router.post('/meu-painel/outcomes', async (req, res) => {
       consultor_nome: consultorNome,
       occurred_at: body.occurred_at || null,
     });
+    if (responseId) {
+      await manualOutcomesRepo.backfillResponseIdentity(responseId, {
+        rgm,
+        master_key: body.master_key ?? (rgm ? `RGM:${rgm}` : null),
+      });
+    }
     res.status(201).json({ ok: true, outcome: row });
   } catch (err) {
     handleError(res, err);
