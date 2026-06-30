@@ -58,9 +58,14 @@ export interface MeuPainelListResponse {
   consultor: string | null;
   is_admin: boolean;
   total: number;
+  limit?: number;
+  offset?: number;
   items: MeuPainelItem[];
   missing_consultor?: boolean;
 }
+
+export const MEU_PAINEL_PAGE_SIZES = [50, 100, 200, 300] as const;
+export type MeuPainelPageSize = (typeof MEU_PAINEL_PAGE_SIZES)[number];
 
 export interface MeuPainelStatsResponse {
   consultor: string | null;
@@ -70,8 +75,8 @@ export interface MeuPainelStatsResponse {
 }
 
 export interface MeuPainelOrigemCount {
-  category: string;
-  origem_ativacao: string;
+  key: string;
+  label: string;
   total: number;
 }
 
@@ -432,17 +437,36 @@ export const CATEGORY_LABEL: Record<string, string> = {
   rematricula: 'Rematrícula',
 };
 
+/** Chave estável para agrupar contagens (unifica variantes de origem_ativacao). */
+export function getMeuPainelOrigemGroupKey(
+  category: string,
+  origemAtivacao?: string | null
+): string {
+  const cat = String(category || '').trim().toLowerCase();
+  const origem = String(origemAtivacao || '').trim().toLowerCase();
+
+  if (cat === 'processos-caa') {
+    if (origem === 'caa_atm') return 'processos-caa:atm';
+    if (origem === 'caa_ia') return 'processos-caa:ia';
+    // vazio, caa ou variantes legadas do CRM → mesmo bucket
+    return 'processos-caa:default';
+  }
+
+  return cat || 'unknown';
+}
+
+const ORIGEM_GROUP_LABEL: Record<string, string> = {
+  'processos-caa:default': 'Processos CAA',
+  'processos-caa:atm': 'Processos CAA ATM',
+  'processos-caa:ia': 'Processos CAA IA',
+};
+
 /** Rótulo da coluna BASE no Meu Painel; diferencia sub-origens de processos CAA. */
 export function getMeuPainelBaseLabel(
   category: string,
   origemAtivacao?: string | null
 ): string {
-  if (category === 'processos-caa') {
-    const origem = (origemAtivacao || '').trim().toLowerCase();
-    if (!origem) return 'processos Caa';
-    if (origem === 'caa') return 'processos CAA';
-    if (origem === 'caa_ia') return 'Processos CAA_IA';
-    if (origem === 'caa_atm') return 'processos CAA_ATM';
-  }
+  const key = getMeuPainelOrigemGroupKey(category, origemAtivacao);
+  if (ORIGEM_GROUP_LABEL[key]) return ORIGEM_GROUP_LABEL[key];
   return CATEGORY_LABEL[category] || category;
 }

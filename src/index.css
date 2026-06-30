@@ -150,6 +150,7 @@ html.dark body {
 .dark .hover\:border-gray-400:hover { border-color: var(--dcz-accent) !important; }
 
 /* Divide (entre linhas de tabela/lista) */
+.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
 .dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
 .dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]),
 .dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),

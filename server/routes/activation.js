@@ -171,19 +171,23 @@ router.get('/meu-painel/list', async (req, res) => {
       return res.status(400).json({ error: `category invalida: ${category}` });
     }
     const { from, to } = parseDateRange(req.query.from, req.query.to);
-    const rows = await manualOutcomesRepo.listMeuPainel({
+    const limit = manualOutcomesRepo.parseMeuPainelPageSize(req.query.limit);
+    const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+    const { items, total } = await manualOutcomesRepo.listMeuPainel({
       consultor,
       from,
       to,
       category,
-      limit: req.query.limit,
-      offset: req.query.offset,
+      limit,
+      offset,
     });
     res.json({
       consultor: consultor || null,
       is_admin: isAdmin,
-      total: rows.length,
-      items: rows,
+      total,
+      limit,
+      offset,
+      items,
     });
   } catch (err) {
     handleError(res, err);

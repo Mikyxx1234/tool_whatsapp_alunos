@@ -3,6 +3,7 @@ import { query, getPool } from '../db/client.js';
 import { masterKeyFromParts } from '../utils/activationIdentity.js';
 import { normalizeBrazilianPhone } from '../utils/phoneNormalizer.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
+import { aggregateMeuPainelOrigemCounts } from '../utils/meuPainelLabels.js';
 
 /**
  * @typedef {Object} ManualOutcomeRow
@@ -255,13 +256,12 @@ export async function createFromCrm(data) {
  *   limit?: number,
  *   offset?: number,
  * }} filters
- * @returns {Promise<Array<object>>}
+ * @returns {Promise<{ items: Array<object>, total: number }>}
  */
-export async function listMeuPainel(filters = {}) {
+function meuPainelFilterParams(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
   const consultorTrim = isAdmin ? null : String(filters.consultor).trim();
   const fromDate = filters.from ? new Date(filters.from) : null;
-  // Advance to midnight of the next day so the full `to` calendar day is included.
   let toDate = null;
   if (filters.to) {
     const d = filters.to instanceof Date ? new Date(filters.to) : new Date(filters.to);
@@ -269,10 +269,54 @@ export async function listMeuPainel(filters = {}) {
     toDate = d;
   }
   const category = filters.category ? String(filters.category).trim() : null;
-  const limit = Math.min(Math.max(parseInt(String(filters.limit ?? '200'), 10) || 200, 1), 1000);
-  const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
+  return { consultorTrim, fromDate, toDate, category };
+}
 
+const MEU_PAINEL_WHERE_SQL = `
+  (
+    $1::text is null
+    or (
+      ar.consultor_responsavel_nome is not null
+      and (
+        ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
+        or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
+      )
+    )
+  )
+  and ($2::timestamptz is null or ar.received_at >= $2)
+  and ($3::timestamptz is null or ar.received_at < $3)
+  and ($4::text is null or ar.category = $4)
+`;
+
+export const MEU_PAINEL_PAGE_SIZES = [50, 100, 200, 300];
+
+/** @param {unknown} raw */
+export function parseMeuPainelPageSize(raw) {
+  const n = parseInt(String(raw ?? '50'), 10);
+  return MEU_PAINEL_PAGE_SIZES.includes(n) ? n : 50;
+}
+
+/**
+ * Total de leads no Meu Painel (mesmos filtros da listagem).
+ * @param {Parameters<typeof listMeuPainel>[0]} filters
+ */
+export async function countMeuPainel(filters = {}) {
+  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
   const { rows } = await query(
+    `select count(*)::int as total from activation_responses ar where ${MEU_PAINEL_WHERE_SQL}`,
+    [consultorTrim, fromDate, toDate, category]
+  );
+  return Number(rows[0]?.total || 0);
+}
+
+export async function listMeuPainel(filters = {}) {
+  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const limit = parseMeuPainelPageSize(filters.limit);
+  const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
+  const whereParams = [consultorTrim, fromDate, toDate, category];
+
+  const [listResult, total] = await Promise.all([
+    query(
     `
     select
       ar.id                            as response_id,
@@ -386,26 +430,15 @@ export async function listMeuPainel(filters = {}) {
        order by occurred_at desc
        limit 1
     ) amo on true
-    -- match bidirecional: "Danubia" salvo casa com consultor "Danubia Sousa" e vice-versa
-    where (
-      $1::text is null
-      or (
-        ar.consultor_responsavel_nome is not null
-        and (
-          ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
-          or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
-        )
-      )
-    )
-      and ($2::timestamptz is null or ar.received_at >= $2)
-      and ($3::timestamptz is null or ar.received_at < $3)
-      and ($4::text is null or ar.category = $4)
+    where ${MEU_PAINEL_WHERE_SQL}
     order by ar.received_at desc
     limit $5 offset $6
     `,
-    [consultorTrim, fromDate, toDate, category, limit, offset]
-  );
-  return rows;
+      [...whereParams, limit, offset]
+    ),
+    countMeuPainel(filters),
+  ]);
+  return { items: listResult.rows, total };
 }
 
 /**
@@ -509,7 +542,7 @@ export async function meuPainelStats(filters = {}) {
  *   to?: string|Date|null,
  *   category?: string|null,
  * }} filters
- * @returns {Promise<Array<{ category: string, origem_ativacao: string, total: number }>>}
+ * @returns {Promise<Array<{ key: string, label: string, total: number }>>}
  */
 export async function meuPainelOrigemCounts(filters = {}) {
   const isAdmin = !filters.consultor || filters.consultor === '*';
@@ -548,11 +581,12 @@ export async function meuPainelOrigemCounts(filters = {}) {
     `,
     [consultorTrim, fromDate, toDate, category]
   );
-  return rows.map((r) => ({
+  const raw = rows.map((r) => ({
     category: r.category,
     origem_ativacao: r.origem_ativacao || '',
     total: Number(r.total || 0),
   }));
+  return aggregateMeuPainelOrigemCounts(raw);
 }
 
 function normalizePhoneInput(input) {
