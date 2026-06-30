@@ -60,6 +60,7 @@ import {
   isRematriculaEmCursoRow,
   rematFinanceiroSubgrupoFromRow,
 } from '../utils/rematriculaEligibility.js';
+import { isMatriculadosActivationEligible } from '../utils/matriculadosTipoMatricula.js';
 
 export const URGENCY_HIGH_DAYS = 30;
 export const URGENCY_MEDIUM_DAYS = 14;
@@ -936,10 +937,15 @@ async function _buildTermPhaseList(category, matSnap, excludeDispatched, targetP
   const seenMaster = new Set();
   let skipped_already_dispatched = 0;
   let skipped_duplicate_key = 0;
+  let skipped_not_eligible = 0;
 
   for (const entry of matIndex.byCanon.values()) {
     const row = entry.row;
     if (!row) continue;
+    if (!isMatriculadosActivationEligible(row)) {
+      skipped_not_eligible += 1;
+      continue;
+    }
     const term = findTermForMatriculadoRow(terms, row);
     const { phase, daysUntilEffectiveStart, daysUntilOfficialStart } =
       resolveTermActivationPhase(term, today);
@@ -986,6 +992,7 @@ async function _buildTermPhaseList(category, matSnap, excludeDispatched, targetP
     cooldown_hours: cooldownHours,
     skipped_already_dispatched,
     skipped_duplicate_key,
+    skipped_not_eligible,
     skipped_ciclo_divergente: 0,
     skipped_bb_limbo: 0,
     exclude_dispatched: excludeDispatched,
