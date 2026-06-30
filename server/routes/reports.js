@@ -59,23 +59,40 @@ async function resolveCaaSnapshotScope(req) {
   return { kind: 'last_snapshot', snapshot: snap, previous_snapshot: previous };
 }
 
+function overviewCacheKey(filters) {
+  if (!filters.term_id && !filters.polo) return '';
+  return JSON.stringify({
+    term_id: filters.term_id || null,
+    polo: filters.polo || null,
+  });
+}
+
 router.get('/overview', async (req, res) => {
   try {
     if (!isDbConfigured()) {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
-    const { counts, count_hints } = await reportOverviewCache.getCachedOverview(async () => {
-      const base = await reportRepo.overviewFromSnapshots(parseFilters(req));
-      try {
-        const remat = await getRematriculaReportSummary();
-        base.counts.rematricula = remat.total_fila;
-        base.count_hints.rematricula = remat.hint;
-      } catch (err) {
-        console.warn('[reports] overview rematrícula:', err.message);
-        base.counts.rematricula = 0;
-      }
-      return base;
-    });
+    const filters = parseFilters(req);
+    const hasFilter = Boolean(filters.term_id || filters.polo);
+    const { counts, count_hints } = await reportOverviewCache.getCachedOverview(
+      async () => {
+        const base = hasFilter
+          ? await baseComparisonService.overviewFromFilteredMatriculados(filters)
+          : await reportRepo.overviewFromSnapshots();
+        if (!hasFilter) {
+          try {
+            const remat = await getRematriculaReportSummary();
+            base.counts.rematricula = remat.total_fila;
+            base.count_hints.rematricula = remat.hint;
+          } catch (err) {
+            console.warn('[reports] overview rematrícula:', err.message);
+            base.counts.rematricula = 0;
+          }
+        }
+        return base;
+      },
+      overviewCacheKey(filters)
+    );
     res.json({ counts, count_hints });
   } catch (err) {
     handleError(res, err);

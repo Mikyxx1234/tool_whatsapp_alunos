@@ -5,7 +5,9 @@ import {
   isCaaCancelamentoPendente,
   isCaaCancelamentoSolicitacao,
 } from '../utils/caaRowFilters.js';
-import { cicloFromRow, compareCicloSets } from '../utils/cicloFromRow.js';
+import { cicloFromRow, compareCicloSets, normalizeCiclo } from '../utils/cicloFromRow.js';
+import * as academicTermRepo from '../repositories/academicTermRepository.js';
+import { findTermForMatriculadoRow } from './termResolverService.js';
 import { shouldReplaceEvasaoRow } from '../utils/evasaoDedup.js';
 import { personNameFromRow } from '../utils/personName.js';
 import { isLikelyErpMatriculaRgm, normalizeRgmCanonical, isValidRematriculaRgm } from '../utils/rgmDisplay.js';
@@ -563,4 +565,178 @@ export async function buildMatriculadosComparison() {
     });
 
   return comparisonInFlight;
+}
+
+/** @param {Record<string, unknown>} row */
+function poloFromMatriculadoRow(row) {
+  return String(row.Polo ?? row['Nome Polo'] ?? row.NOME_POLO ?? row.polo ?? '').trim();
+}
+
+/**
+ * @typedef {{ term_id?: string, polo?: string }} ReportFilters
+ */
+
+/**
+ * Índice de matriculados restrito à turma e/ou polo selecionados nos Relatórios.
+ * @param {ReportFilters} filters
+ */
+export async function buildFilteredMatriculadosIndex(filters = {}) {
+  const termId = filters.term_id ? String(filters.term_id).trim() : '';
+  const poloNeedle = filters.polo ? String(filters.polo).trim().toLowerCase() : '';
+  const hasFilter = Boolean(termId || poloNeedle);
+
+  const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
+  if (!matSnap) {
+    return {
+      matSnap: null,
+      byCanon: new Map(),
+      skipped: 0,
+      rowCount: 0,
+      hasFilter,
+      filterLabel: null,
+    };
+  }
+
+  const terms = termId ? await academicTermRepo.list({ ativoOnly: false }) : [];
+  let filterLabel = null;
+  if (termId) {
+    const t = terms.find((x) => x.id === termId);
+    filterLabel = t ? `${t.codigo} — ${t.nome}` : `turma ${termId}`;
+  }
+  if (poloNeedle) {
+    filterLabel = filterLabel ? `${filterLabel} · polo "${filters.polo}"` : `polo "${filters.polo}"`;
+  }
+
+  /** @type {Map<string, PersonIndexEntry>} */
+  const byCanon = new Map();
+  let skipped = 0;
+  let rowCount = 0;
+
+  await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
+    rowCount += 1;
+    if (termId) {
+      const term = findTermForMatriculadoRow(terms, row);
+      if (!term || term.id !== termId) return;
+    }
+    if (poloNeedle) {
+      const polo = poloFromMatriculadoRow(row).toLowerCase();
+      if (!polo.includes(poloNeedle)) return;
+    }
+    const ids = collectRowIdentities(row, { category: 'matriculados' });
+    if (ids.size === 0) {
+      skipped += 1;
+      return;
+    }
+    const canon = canonicalFromIdentities(ids);
+    if (!canon) {
+      skipped += 1;
+      return;
+    }
+    const ciclo = cicloFromRow(row);
+    const cur = byCanon.get(canon);
+    if (!cur) {
+      /** @type {PersonIndexEntry} */
+      const entry = { ids: new Set(ids), ciclos: new Set() };
+      if (ciclo) entry.ciclos.add(ciclo);
+      byCanon.set(canon, entry);
+    } else {
+      for (const id of ids) cur.ids.add(id);
+      if (ciclo) cur.ciclos.add(ciclo);
+    }
+  });
+
+  return { matSnap, byCanon, skipped, rowCount, hasFilter, filterLabel };
+}
+
+/**
+ * Conta linhas distintas na base Rematrícula (SIAA/Portal) com os mesmos filtros.
+ * @param {ReportFilters} filters
+ * @param {import('./termResolverService.js').AcademicTermLite | null | undefined} targetTerm
+ */
+async function countFilteredRematriculaSnapshot(filters, targetTerm) {
+  const snap = await baseUploadRepo.getLatestSnapshot('rematricula');
+  if (!snap) return { total: 0, adimplente: 0, inadimplente: 0 };
+
+  const poloNeedle = filters.polo ? String(filters.polo).trim().toLowerCase() : '';
+  const targetCiclo = targetTerm?.ciclo ? normalizeCiclo(targetTerm.ciclo) : null;
+  /** @type {Set<string>} */
+  const seen = new Set();
+  let adimplente = 0;
+  let inadimplente = 0;
+
+  await baseUploadRepo.forEachRowDataForSnapshot('rematricula', snap.id, (row) => {
+    if (targetCiclo) {
+      const c = cicloFromRow(row);
+      if (c !== targetCiclo) return;
+    }
+    if (poloNeedle) {
+      const polo = String(row.NOME_POLO ?? row.Polo ?? row.polo ?? '')
+        .trim()
+        .toLowerCase();
+      if (!polo.includes(poloNeedle)) return;
+    }
+    const canon = rowIdentity(row);
+    if (!canon || seen.has(canon)) return;
+    seen.add(canon);
+    const fin = String(
+      row.SIT_FINANCEIRA ?? row.situacao_financeira ?? row.Financeiro ?? ''
+    ).toLowerCase();
+    if (fin.includes('inadimpl')) inadimplente += 1;
+    else adimplente += 1;
+  });
+
+  return { total: seen.size, adimplente, inadimplente };
+}
+
+/**
+ * Cards do painel Relatórios com filtro de turma/polo (cruzamento matriculados × bases).
+ * @param {ReportFilters} filters
+ */
+export async function overviewFromFilteredMatriculados(filters = {}) {
+  const { matSnap, byCanon, skipped, rowCount, filterLabel } =
+    await buildFilteredMatriculadosIndex(filters);
+
+  /** @type {Record<string, number>} */
+  const counts = { matriculados: byCanon.size };
+  /** @type {Record<string, string>} */
+  const count_hints = {};
+
+  const hintPrefix = filterLabel ? `Filtro: ${filterLabel}` : '';
+  if (hintPrefix) {
+    count_hints.matriculados = `${hintPrefix} · ${byCanon.size.toLocaleString('pt-BR')} alunos distintos`;
+  }
+
+  if (!matSnap) {
+    for (const def of COMPARISONS) counts[def.id] = 0;
+    counts.rematricula = 0;
+    return { counts, count_hints };
+  }
+
+  const matIndex = { rowCount, skipped };
+  const otherSnaps = await baseUploadRepo.getLatestSnapshotsByCategory(
+    COMPARISONS.map((c) => c.id)
+  );
+  const blocks = await buildBlocksForMat(byCanon, matIndex, otherSnaps, matSnap);
+
+  for (const block of blocks) {
+    counts[block.id] = block.intersecao ?? 0;
+    if (hintPrefix && block.intersecao != null) {
+      count_hints[block.id] = `${hintPrefix} · cruzamento com matriculados`;
+    }
+  }
+
+  const targetTerm = filters.term_id
+    ? (await academicTermRepo.findById(String(filters.term_id))) || null
+    : null;
+  const remat = await countFilteredRematriculaSnapshot(filters, targetTerm);
+  counts.rematricula = remat.total;
+  if (hintPrefix && remat.total > 0) {
+    count_hints.rematricula = [
+      hintPrefix,
+      `${remat.adimplente.toLocaleString('pt-BR')} adimplente`,
+      `${remat.inadimplente.toLocaleString('pt-BR')} inadimplente`,
+    ].join(' · ');
+  }
+
+  return { counts, count_hints };
 }
