@@ -25,6 +25,7 @@ import { isDbConfigured } from './db/client.js';
 import { startScheduler } from './services/schedulerService.js';
 import { isApiKeyEnforced } from './middleware/requireApiKey.js';
 import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
+import { startAlunoPhoneLookupCron } from './services/alunoPhoneLookupService.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -183,6 +184,14 @@ app.listen(PORT, '0.0.0.0', () => {
       startDatacrazyCacheSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron cache DataCrazy:', err.message);
+    }
+
+    // Cron diário de refresh da MV nome-por-telefone (Meu Painel).
+    // Hora configurada em ALUNO_PHONE_LOOKUP_REFRESH_HOUR_UTC (default 04:00 UTC).
+    try {
+      startAlunoPhoneLookupCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron aluno-phone-lookup:', err.message);
     }
   }
 });

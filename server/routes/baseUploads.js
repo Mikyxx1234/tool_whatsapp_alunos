@@ -7,6 +7,10 @@ import { invalidateOverviewCache } from '../services/reportOverviewCache.js';
 import { invalidateActivationListCache } from '../services/activationService.js';
 import { bustCicloCache } from '../services/cicloResolverService.js';
 import {
+  PHONE_LOOKUP_SOURCE_CATEGORIES,
+  refreshAlunoPhoneLookupBackground,
+} from '../services/alunoPhoneLookupService.js';
+import {
   csvTextToRowObjectsFast,
   xlsxBufferToRowObjects,
 } from '../utils/spreadsheetToObjects.js';
@@ -34,6 +38,10 @@ function afterBaseUpload(category) {
     invalidateActivationListCache('rematricula');
   } else {
     invalidateActivationListCache(category);
+  }
+  // Bases que alimentam a MV de nome-por-telefone do Meu Painel.
+  if (PHONE_LOOKUP_SOURCE_CATEGORIES.has(category)) {
+    refreshAlunoPhoneLookupBackground();
   }
 }
 

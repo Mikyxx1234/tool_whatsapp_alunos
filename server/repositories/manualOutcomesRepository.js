@@ -280,7 +280,8 @@ export async function listMeuPainel(filters = {}) {
       ar.master_key                    as master_key,
       coalesce(
         nullif(trim(ar.rgm), ''),
-        nullif(trim(mat.rgm), '')
+        nullif(trim(mat.rgm), ''),
+        nullif(trim(lk.rgm), '')
       )                                as rgm,
       ar.telefone                      as telefone,
       ar.consultor_responsavel_nome    as consultor_responsavel_nome,
@@ -297,12 +298,16 @@ export async function listMeuPainel(filters = {}) {
         cp.nome,
         dlc.nome,
         mat.nome,
-        nullif(trim(ar.raw_payload->>'nome'), '')
+        nullif(trim(ar.raw_payload->>'nome'), ''),
+        nullif(trim(ar.raw_payload->>'nome do lead'), ''),
+        nullif(trim(ar.raw_payload->>'Nome do Lead'), ''),
+        lk.nome
       )                                as nome,
       coalesce(
         cp.cpf,
         dlc.cpf,
-        nullif(trim(ar.raw_payload->>'cpf'), '')
+        nullif(trim(ar.raw_payload->>'cpf'), ''),
+        nullif(trim(lk.cpf), '')
       )                                as cpf,
       coalesce(
         cp.curso,
@@ -330,6 +335,9 @@ export async function listMeuPainel(filters = {}) {
     from activation_responses ar
     left join datacrazy_lead_cache dlc
       on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
+    -- nome/rgm/cpf por telefone (bases acadêmicas consolidadas) quando faltam nas outras fontes
+    left join mv_aluno_por_telefone lk
+      on lk.phone_norm = normalize_phone_br(ar.telefone)
     left join lateral (
       select
         mr.data->>'RGM'   as rgm,

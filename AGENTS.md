@@ -5,6 +5,25 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-06-29 — Meu Painel Parte 2 (Opção A): nome/rgm/cpf por telefone via MV `mv_aluno_por_telefone`
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** Após a Parte 1 (ler `nome do lead` do `raw_payload`), restavam leads em **Meu Painel** com "—" porque o nome não estava em nenhuma fonte ligada por ID/RGM/CPF — só existia nas **bases acadêmicas, alcançável por telefone**. Ex.: `5513996483329` (DAYLLANA, em `processos_caa_rows`) e `5511915145574` (RICARDO, em `matriculados_rows`). Cruzar telefone inline é caro (telefone dentro de JSONB, exigiria regexp por linha em tabelas de 100k+).
+- **Decisão (Opção A, definitiva):** Materialized view **`mv_aluno_por_telefone`** (migration `037`) consolidando `phone_norm → nome/rgm/cpf` das 4 bases acadêmicas, com **índice único** em `phone_norm` (habilita `REFRESH ... CONCURRENTLY` e dá lookup O(1)). `listMeuPainel` ganha `left join mv_aluno_por_telefone lk on lk.phone_norm = normalize_phone_br(ar.telefone)` e `lk.nome/lk.rgm/lk.cpf` entram **no fim** dos respectivos `COALESCE` (só preenche o que falta; não muda os joins de cp/amo, que continuam por `ar.rgm`/`mat.rgm`).
+- **Normalização (`normalize_phone_br`, IMMUTABLE):** canônico BR = **DDD (2) + últimos 8 dígitos** do assinante. Unifica prefixo `55` e o `9` do celular: `5511958291608` = `11958291608` = `1158291608`. Mesma função usada na MV e no join → consistência garantida. Trade-off: dropar o `9` pode colidir celular×fixo de mesmo DDD+8 (raro; aceitável para exibir nome).
+- **Fontes e custo de build (decisões por base):**
+  - **matriculados** (710k linhas em 25 snapshots) → **só o último snapshot** (~33k, base completa autoritativa; varrer tudo seria desnecessário).
+  - **processos_caa** (~900), **docs_pendentes** (~68k), **acessos_blackboard** (~103k, sem CPF) → **todos os snapshots** (são deltas; baratos). `DISTINCT ON (phone_norm) ORDER BY created_at DESC` → vence o registro mais recente. MV final: **31.890 telefones**.
+- **Refresh:** `server/services/alunoPhoneLookupService.js` — `refreshAlunoPhoneLookupBackground()` chamado em `afterBaseUpload` (`baseUploads.js`) só para as 4 categorias-fonte (`PHONE_LOOKUP_SOURCE_CATEGORIES`), fire-and-forget, `CONCURRENTLY` com fallback para refresh normal se a MV ainda estiver vazia. Cron diário de rede de segurança (`startAlunoPhoneLookupCron`, default 04:00 UTC, env `ALUNO_PHONE_LOOKUP_REFRESH_HOUR_UTC`), guard contra execução concorrente.
+- **Validado:** DAYLLANA, RICARDO e Camila resolvem por telefone; `node --check` + import OK; sem lint.
+- **Alternativas descartadas:** **Opção B** (estender o lateral join de matriculados também por telefone) — barato mas parcial (resolveria RICARDO, não DAYLLANA, que está em processos_caa); cruzar telefone inline em todas as bases por query — caro e repetido a cada request. MV centraliza, indexa e roda o custo só no refresh periódico.
+
+### 2026-06-29 — Meu Painel: nome do aluno lê também a chave `nome do lead` do raw_payload
+- **Modelo usado:** Opus 4.8 (principal).
+- **Problema:** Na aba **Meu Painel**, a coluna ALUNO mostrava "—" para leads que **tinham nome no banco**. Investigação do tel `5511958291608` (Camila Alves Silva, resposta `processos-caa` de 29/06 09:18) revelou que o nome chegou no próprio disparo, gravado em `activation_responses.raw_payload` sob a chave **`"nome do lead"`** (formato do webhook n8n/DataCrazy), mas a query `listMeuPainel` (`server/repositories/manualOutcomesRepository.js`) só lia `raw_payload->>'nome'` — chave usada **apenas** pelos leads criados manualmente. Amostra de 30 dias: `'nome do lead'`=52 payloads, `'nome'`=20 (manuais), ~4126 sem chave de nome (dependem de joins por RGM/CPF).
+- **Decisão (Parte 1):** estender o `COALESCE` do campo `nome` em `listMeuPainel` para incluir `nullif(trim(raw_payload->>'nome do lead'),'')` e `nullif(trim(raw_payload->>'Nome do Lead'),'')` após o `'nome'` existente. Mantém a ordem de prioridade (CAA → datacrazy_lead_cache → matriculados → payload), só estende o último nível.
+- **Sem backfill / sem regressão:** a query relê o JSON já armazenado, então os "—" antigos passam a exibir o nome imediatamente; nenhuma fonte anterior foi alterada. Validado: a resposta da Camila passou a resolver "Camila Alves Silva".
+- **Não incluído (Parte 2, adiada a pedido):** fallback por telefone — (2a) join extra em `datacrazy_lead_cache.phone_norm`; (2b) cruzar telefone com bases acadêmicas (`docs_pendentes_rows`/`matriculados_rows`/`acessos_blackboard_rows`). 2b é caro inline (telefone dentro de JSON, exige regexp por linha); caminho correto seria enriquecer na escrita ou criar coluna/índice normalizado. Reabrir se os ~4126 sem nome no payload virarem dor recorrente.
+
 ### 2026-06-23 — Lookup: histórico de disparos + cache pós-envio
 - **Modelo usado:** Opus 4.8 (principal).
 - **Problema:** `activation_dispatch_events` já gravava `datacrazy_lead_id` no 1º envio, mas o lookup ignorava — sempre reconsultava API.
