@@ -114,6 +114,30 @@ export function findTermForMatriculadoRow(terms, row) {
 }
 
 /**
+ * Verifica se a linha pertence à turma escolhida (filtros de relatório / UI).
+ * Usa ciclo + janela [inicio_matricula, fim_matricula] da turma — inclui turmas inativas.
+ *
+ * @param {AcademicTermLite|null|undefined} term
+ * @param {Record<string, unknown>} row
+ */
+export function rowBelongsToAcademicTerm(term, row) {
+  if (!term) return false;
+  const termCiclo = term.ciclo ? normalizeCiclo(term.ciclo) : '';
+  const rowCiclo = cicloFromRow(row);
+  if (termCiclo && rowCiclo && rowCiclo !== termCiclo) return false;
+
+  if (term.inicio_matricula && term.fim_matricula) {
+    const dataMat = dataMatriculaFromRow(row);
+    if (!dataMat) return false;
+    const matched = findTermByMatriculaDate([term], dataMat);
+    return Boolean(matched && matched.id === term.id);
+  }
+
+  if (termCiclo && rowCiclo) return rowCiclo === termCiclo;
+  return false;
+}
+
+/**
  * @param {AcademicTermLite|null|undefined} term
  * @returns {number|null} ms UTC do início efetivo (inicio_conteudo − ambientação)
  */

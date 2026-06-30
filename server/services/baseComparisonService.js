@@ -7,7 +7,7 @@ import {
 } from '../utils/caaRowFilters.js';
 import { cicloFromRow, compareCicloSets, normalizeCiclo } from '../utils/cicloFromRow.js';
 import * as academicTermRepo from '../repositories/academicTermRepository.js';
-import { findTermForMatriculadoRow } from './termResolverService.js';
+import { rowBelongsToAcademicTerm } from './termResolverService.js';
 import { shouldReplaceEvasaoRow } from '../utils/evasaoDedup.js';
 import { personNameFromRow } from '../utils/personName.js';
 import { isLikelyErpMatriculaRgm, normalizeRgmCanonical, isValidRematriculaRgm } from '../utils/rgmDisplay.js';
@@ -597,11 +597,15 @@ export async function buildFilteredMatriculadosIndex(filters = {}) {
     };
   }
 
-  const terms = termId ? await academicTermRepo.list({ ativoOnly: false }) : [];
-  let filterLabel = null;
+  let targetTerm = null;
   if (termId) {
-    const t = terms.find((x) => x.id === termId);
-    filterLabel = t ? `${t.codigo} — ${t.nome}` : `turma ${termId}`;
+    targetTerm = await academicTermRepo.findById(termId);
+  }
+  let filterLabel = null;
+  if (targetTerm) {
+    filterLabel = `${targetTerm.codigo} — ${targetTerm.nome}`;
+  } else if (termId) {
+    filterLabel = `turma ${termId}`;
   }
   if (poloNeedle) {
     filterLabel = filterLabel ? `${filterLabel} · polo "${filters.polo}"` : `polo "${filters.polo}"`;
@@ -614,9 +618,8 @@ export async function buildFilteredMatriculadosIndex(filters = {}) {
 
   await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
     rowCount += 1;
-    if (termId) {
-      const term = findTermForMatriculadoRow(terms, row);
-      if (!term || term.id !== termId) return;
+    if (targetTerm) {
+      if (!rowBelongsToAcademicTerm(targetTerm, row)) return;
     }
     if (poloNeedle) {
       const polo = poloFromMatriculadoRow(row).toLowerCase();
