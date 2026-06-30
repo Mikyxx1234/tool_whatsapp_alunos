@@ -86,17 +86,23 @@ function fmtDateTime(iso: string | null): string {
   }
 }
 
-function rangeToFrom(range: RangeKey): string | null {
-  if (range === 'today') {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.toISOString();
-  }
+function localYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function presetDateRange(range: RangeKey): { from: string | null; to: string | null } {
+  const today = new Date();
+  const todayYmd = localYmd(today);
+  if (range === 'all') return { from: null, to: null };
+  if (range === 'today') return { from: todayYmd, to: todayYmd };
   const opt = RANGE_OPTIONS.find((o) => o.key === range);
-  if (!opt?.days) return null;
-  const d = new Date();
-  d.setDate(d.getDate() - opt.days);
-  return d.toISOString();
+  if (!opt?.days) return { from: null, to: null };
+  const from = new Date();
+  from.setDate(from.getDate() - opt.days);
+  return { from: localYmd(from), to: todayYmd };
 }
 
 export default function MeuPainelPage() {
@@ -160,8 +166,9 @@ export default function MeuPainelPage() {
   }, []);
 
   const listFiltersBase = useMemo(() => {
-    const from = usingCustomRange ? appliedFrom : rangeToFrom(range);
-    const to = usingCustomRange ? appliedTo : null;
+    const preset = presetDateRange(range);
+    const from = usingCustomRange ? appliedFrom : preset.from;
+    const to = usingCustomRange ? appliedTo : preset.to;
     return {
       consultor: consultorParaApi,
       role: isAdmin && adminViewAll ? (identity.role || 'admin') : null,

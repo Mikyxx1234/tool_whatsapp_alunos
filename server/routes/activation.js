@@ -41,13 +41,18 @@ const VALID_MEU_PAINEL_CATEGORIES = new Set([
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Valida e normaliza um par de datas YYYY-MM-DD vindas de query string.
- *  Datas inválidas são silenciosamente descartadas (retornam null).
- *  Se from > to, os valores são trocados automaticamente.
- */
+/** Valida e normaliza datas YYYY-MM-DD ou ISO (extrai o dia local UTC). */
 function parseDateRange(fromRaw, toRaw) {
-  const from = fromRaw && DATE_RE.test(String(fromRaw)) ? String(fromRaw) : null;
-  const to = toRaw && DATE_RE.test(String(toRaw)) ? String(toRaw) : null;
+  const normalize = (raw) => {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    if (DATE_RE.test(s)) return s;
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  };
+  const from = normalize(fromRaw);
+  const to = normalize(toRaw);
   if (from && to && from > to) return { from: to, to: from };
   return { from, to };
 }
