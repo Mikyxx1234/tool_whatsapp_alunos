@@ -7,7 +7,7 @@ import * as activationResponseRepo from '../repositories/activationResponseRepos
 import * as activationOrigemRepo from '../repositories/activationOrigemRepository.js';
 import {
   loadTerms,
-  findTermByMatriculaDate,
+  findTermForMatriculadoRow,
   resolveTermActivationPhase,
   getTermEffectiveStartMs,
 } from './termResolverService.js';
@@ -759,12 +759,7 @@ export async function getIntersectionActivationList(category, opts = {}) {
     let bbSubgrupo = null;
 
     if (filterBbLimbo) {
-      const dataMat =
-        row['Data Matrícula'] ??
-        row['Data Matricula'] ??
-        row['Data da Matricula'] ??
-        row['Data de Matrícula'];
-      const term = dataMat && terms.length > 0 ? findTermByMatriculaDate(terms, dataMat) : null;
+      const term = terms.length > 0 ? findTermForMatriculadoRow(terms, row) : null;
       const { phase } = resolveTermActivationPhase(term, today);
       if (phase !== 'turma_ativa') {
         skipped_bb_limbo += 1;
@@ -945,12 +940,7 @@ async function _buildTermPhaseList(category, matSnap, excludeDispatched, targetP
   for (const entry of matIndex.byCanon.values()) {
     const row = entry.row;
     if (!row) continue;
-    const dataMat =
-      row['Data Matrícula'] ??
-      row['Data Matricula'] ??
-      row['Data da Matricula'] ??
-      row['Data de Matrícula'];
-    const term = dataMat ? findTermByMatriculaDate(terms, dataMat) : null;
+    const term = findTermForMatriculadoRow(terms, row);
     const { phase, daysUntilEffectiveStart, daysUntilOfficialStart } =
       resolveTermActivationPhase(term, today);
     if (phase !== targetPhase) continue;

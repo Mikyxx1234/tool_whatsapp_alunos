@@ -107,11 +107,10 @@ export default function AcademicTermsPage() {
               Turmas/ciclos com datas, ambientação, atraso e tipo de início.
             </p>
             <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-3xl">
-              <strong>Regra ativa:</strong> alunos cuja turma ainda não começou ficam fora da fila{' '}
-              <strong>Sem acesso BB</strong>. Com <strong>Conteúdo prévio liberado</strong> nesta
-              turma, eles vão para a aba <strong>Conteúdo prévio</strong> no Disparador (mensagem
-              própria). Sem prévio, pré-engajamento só nos <strong>últimos 14 dias</strong> (aba
-              Aguardando início).
+              <strong>Regra ativa:</strong> alunos são vinculados à turma pelo <strong>ciclo</strong>{' '}
+              da planilha (ex.: 2026/2 → turma com ciclo 2026/2) ou, se não houver ciclo, pela{' '}
+              <strong>data de matrícula</strong> na janela da turma. Com prévio liberado, vão para a
+              aba <strong>Conteúdo prévio</strong> (separada do Sem acesso BB).
             </div>
           </div>
           <div className="flex gap-2">

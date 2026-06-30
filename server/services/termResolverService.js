@@ -1,4 +1,5 @@
 import * as academicTermRepo from '../repositories/academicTermRepository.js';
+import { cicloFromRow, normalizeCiclo } from '../utils/cicloFromRow.js';
 import { parseFlexibleDate } from '../utils/dateParser.js';
 
 /**
@@ -73,6 +74,43 @@ export function findTermByMatriculaDate(terms, dataMatricula) {
     if (ts >= ini && ts <= fim) return t;
   }
   return null;
+}
+
+/** @param {Record<string, unknown>} row */
+export function dataMatriculaFromRow(row) {
+  return (
+    row['Data Matrícula'] ??
+    row['Data Matricula'] ??
+    row['Data da Matricula'] ??
+    row['Data de Matrícula']
+  );
+}
+
+/**
+ * Resolve a turma do aluno matriculado.
+ * 1) Ciclo da planilha = ciclo cadastrado na turma (ex.: 2026/2 → 2026/2-Ago).
+ * 2) Fallback: data de matrícula dentro da janela [inicio_matricula, fim_matricula].
+ *
+ * @param {AcademicTermLite[]} terms
+ * @param {Record<string, unknown>} row
+ */
+export function findTermForMatriculadoRow(terms, row) {
+  const active = (terms || []).filter((t) => t.ativo !== false);
+  const rowCiclo = cicloFromRow(row);
+  if (rowCiclo) {
+    const byCiclo = active.filter((t) => normalizeCiclo(t.ciclo) === rowCiclo);
+    if (byCiclo.length === 1) return byCiclo[0];
+    if (byCiclo.length > 1) {
+      const dataMat = dataMatriculaFromRow(row);
+      if (dataMat) {
+        const byDate = findTermByMatriculaDate(byCiclo, dataMat);
+        if (byDate) return byDate;
+      }
+      return byCiclo[0];
+    }
+  }
+  const dataMat = dataMatriculaFromRow(row);
+  return dataMat ? findTermByMatriculaDate(active, dataMat) : null;
 }
 
 /**
