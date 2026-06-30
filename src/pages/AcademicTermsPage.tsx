@@ -107,10 +107,11 @@ export default function AcademicTermsPage() {
               Turmas/ciclos com datas, ambientação, atraso e tipo de início.
             </p>
             <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-3xl">
-              <strong>Regra ativa:</strong> alunos cuja data de matrícula cai em uma turma
-              cujo <em>Início do conteúdo</em> ainda não chegou são automaticamente
-              <strong> retirados da fila "Sem acesso BB"</strong> — eles ainda não têm
-              matéria liberada no Blackboard, então não faz sentido cobrar acesso.
+              <strong>Regra ativa:</strong> alunos cuja turma ainda não começou ficam fora da fila{' '}
+              <strong>Sem acesso BB</strong>. Com <strong>Conteúdo prévio liberado</strong> nesta
+              turma, eles vão para a aba <strong>Conteúdo prévio</strong> no Disparador (mensagem
+              própria). Sem prévio, pré-engajamento só nos <strong>últimos 14 dias</strong> (aba
+              Aguardando início).
             </div>
           </div>
           <div className="flex gap-2">

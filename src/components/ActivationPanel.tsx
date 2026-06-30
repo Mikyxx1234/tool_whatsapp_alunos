@@ -24,6 +24,7 @@ const CATEGORIES: { id: ActivationCategory; label: string; comparisonId: Activat
   },
   { id: 'processos-caa', label: 'CAA cancelamento', comparisonId: 'processos-caa' },
   { id: 'aguardando-inicio', label: 'Aguardando início', comparisonId: 'aguardando-inicio' },
+  { id: 'conteudo-previo', label: 'Conteúdo prévio', comparisonId: 'conteudo-previo' },
   { id: 'rematricula', label: 'Rematrícula', comparisonId: 'rematricula' },
 ];
 
@@ -102,6 +103,19 @@ export function ActivationPanel() {
       }
     };
 
+    const overrideTermPhaseCounts = async (
+      map: Partial<Record<ActivationCategory, number>>
+    ) => {
+      for (const cat of ['aguardando-inicio', 'conteudo-previo'] as const) {
+        try {
+          const r = await activationApi.roster(cat, { limit: 1, offset: 0 });
+          if (!cancelled) map[cat] = r.total;
+        } catch {
+          /* depende de turmas no calendário */
+        }
+      }
+    };
+
     const overrideRematriculaCount = async (
       map: Partial<Record<ActivationCategory, number>>
     ) => {
@@ -123,6 +137,7 @@ export function ActivationPanel() {
             map[c.id] = activationQueueCount(first.comparisons, c.comparisonId);
           }
           await overrideCaaCount(map);
+          await overrideTermPhaseCounts(map);
           await overrideRematriculaCount(map);
           if (!cancelled) setIntersectionByCat(map);
           return;
@@ -138,6 +153,7 @@ export function ActivationPanel() {
                 map[c.id] = activationQueueCount(data.comparisons, c.comparisonId);
               }
               await overrideCaaCount(map);
+              await overrideTermPhaseCounts(map);
               await overrideRematriculaCount(map);
               if (!cancelled) setIntersectionByCat(map);
             }

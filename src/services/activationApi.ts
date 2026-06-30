@@ -34,6 +34,7 @@ export type ActivationCategory =
   | 'acessos-blackboard'
   | 'processos-caa'
   | 'aguardando-inicio'
+  | 'conteudo-previo'
   | 'rematricula';
 
 export type RematSubgrupo = 'adimplente' | 'inadimplente';

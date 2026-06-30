@@ -233,7 +233,7 @@ export function AcademicTermForm({
 
         <Toggle
           label="Conteúdo prévio liberado?"
-          description="O aluno já consegue acessar conteúdos antes do início oficial."
+          description="Alunos desta turma entram na aba Conteúdo prévio no Disparador (separada do BB). Configure o template nessa aba."
           checked={conteudoPrevio}
           onChange={setConteudoPrevio}
         />

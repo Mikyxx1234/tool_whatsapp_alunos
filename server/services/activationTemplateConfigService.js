@@ -6,6 +6,8 @@ const ACTIVATION_CATEGORIES = /** @type {const} */ ([
   'provavel-evasao',
   'acessos-blackboard',
   'processos-caa',
+  'aguardando-inicio',
+  'conteudo-previo',
   'rematricula',
 ]);
 

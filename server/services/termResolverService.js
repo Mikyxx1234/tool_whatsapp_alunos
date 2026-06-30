@@ -10,7 +10,17 @@ import { parseFlexibleDate } from '../utils/dateParser.js';
  * @property {string|null} fim_matricula        ISO date
  * @property {string|null} inicio_conteudo      ISO date
  * @property {string|null} fim_conteudo         ISO date
+ * @property {boolean} tem_ambientacao
+ * @property {number} dias_ambientacao
+ * @property {boolean} conteudo_previo_liberado
  * @property {boolean} ativo
+ */
+
+/** Pré-engajamento na fila Aguardando início — só nos últimos N dias antes do início efetivo. */
+export const PRE_ENGAGEMENT_DAYS = 14;
+
+/**
+ * @typedef {'sem_turma'|'pre_engajamento'|'conteudo_previo'|'turma_ativa'} TermActivationPhase
  */
 
 /**
@@ -66,42 +76,121 @@ export function findTermByMatriculaDate(terms, dataMatricula) {
 }
 
 /**
- * Aluno está em "limbo" se o conteúdo da turma dele ainda não foi liberado.
+ * @param {AcademicTermLite|null|undefined} term
+ * @returns {number|null} ms UTC do início efetivo (inicio_conteudo − ambientação)
+ */
+export function getTermEffectiveStartMs(term) {
+  if (!term?.inicio_conteudo) return null;
+  const inicioDate = parseTermDate(term.inicio_conteudo, false);
+  if (!inicioDate) return null;
+  const ambientacao = term.tem_ambientacao ? Number(term.dias_ambientacao || 0) : 0;
+  return inicioDate.getTime() - ambientacao * 86400000;
+}
+
+/**
+ * Classifica em qual fase de ativação o aluno está, pela turma + hoje.
  *
- * Considera ambientação: se a turma tem `tem_ambientacao` e `dias_ambientacao`,
- * o conteúdo é "liberado" a partir de (inicio_conteudo - dias_ambientacao).
+ * - sem_turma: sem turma ou fora da janela de pré-engajamento (>14d)
+ * - pre_engajamento: limbo, prévio OFF, faltam ≤14d pro início efetivo
+ * - conteudo_previo: turma com conteúdo prévio liberado, início efetivo ainda não chegou
+ * - turma_ativa: início efetivo já passou → elegível à fila Sem acesso BB
+ *
+ * @param {AcademicTermLite|null|undefined} term
+ * @param {Date} [today]
+ */
+export function resolveTermActivationPhase(term, today = new Date()) {
+  if (!term?.inicio_conteudo) {
+    return {
+      phase: 'sem_turma',
+      daysUntilEffectiveStart: null,
+      daysUntilOfficialStart: null,
+      term: term || null,
+    };
+  }
+  const inicioDate = parseTermDate(term.inicio_conteudo, false);
+  if (!inicioDate) {
+    return {
+      phase: 'sem_turma',
+      daysUntilEffectiveStart: null,
+      daysUntilOfficialStart: null,
+      term,
+    };
+  }
+
+  const todayMs = today.getTime();
+  const inicioMs = inicioDate.getTime();
+  const effectiveStartMs = getTermEffectiveStartMs(term);
+
+  const daysUntilOfficialStart = Math.ceil((inicioMs - todayMs) / 86400000);
+  const daysUntilEffectiveStart =
+    effectiveStartMs != null
+      ? Math.ceil((effectiveStartMs - todayMs) / 86400000)
+      : null;
+
+  if (effectiveStartMs != null && todayMs >= effectiveStartMs) {
+    return {
+      phase: 'turma_ativa',
+      daysUntilEffectiveStart: daysUntilEffectiveStart ?? 0,
+      daysUntilOfficialStart,
+      term,
+    };
+  }
+
+  if (term.conteudo_previo_liberado) {
+    return {
+      phase: 'conteudo_previo',
+      daysUntilEffectiveStart,
+      daysUntilOfficialStart,
+      term,
+    };
+  }
+
+  if (
+    daysUntilEffectiveStart != null &&
+    daysUntilEffectiveStart > 0 &&
+    daysUntilEffectiveStart <= PRE_ENGAGEMENT_DAYS
+  ) {
+    return {
+      phase: 'pre_engajamento',
+      daysUntilEffectiveStart,
+      daysUntilOfficialStart,
+      term,
+    };
+  }
+
+  return {
+    phase: 'sem_turma',
+    daysUntilEffectiveStart,
+    daysUntilOfficialStart,
+    term,
+  };
+}
+
+/**
+ * Aluno está em "limbo" se o conteúdo da turma dele ainda não foi liberado
+ * (pré-engajamento ou conteúdo prévio — não entra na fila BB).
  *
  * @param {AcademicTermLite & { tem_ambientacao?: boolean, dias_ambientacao?: number }} term
  * @param {Date} [today=new Date()]
  */
 export function isInLimbo(term, today = new Date()) {
-  if (!term || !term.inicio_conteudo) return false;
-  const inicioDate = parseTermDate(term.inicio_conteudo, false);
-  if (!inicioDate) return false;
-  const inicio = inicioDate.getTime();
-  const ambientacaoDias = term.tem_ambientacao ? Number(term.dias_ambientacao || 0) : 0;
-  const liberadoEm = inicio - ambientacaoDias * 86400000;
-  return today.getTime() < liberadoEm;
+  const { phase } = resolveTermActivationPhase(term, today);
+  return phase === 'pre_engajamento' || phase === 'conteudo_previo';
 }
 
 /**
- * Atalho: dada uma data de matrícula, retorna { term, limbo, daysUntilStart }.
+ * Atalho: dada uma data de matrícula, retorna fase e contagem de dias.
  * @param {AcademicTermLite[]} terms
  * @param {Date|string|number} dataMatricula
  */
 export function resolveLimbo(terms, dataMatricula, today = new Date()) {
   const term = findTermByMatriculaDate(terms, dataMatricula);
-  if (!term) return { term: null, limbo: false, daysUntilStart: null };
-  if (!term.inicio_conteudo) return { term, limbo: false, daysUntilStart: null };
-  const inicioDate = parseTermDate(term.inicio_conteudo, false);
-  if (!inicioDate) return { term, limbo: false, daysUntilStart: null };
-  const inicio = inicioDate.getTime();
-  const ambientacao = term.tem_ambientacao ? Number(term.dias_ambientacao || 0) : 0;
-  const liberadoEm = inicio - ambientacao * 86400000;
-  const daysUntilStart = Math.ceil((liberadoEm - today.getTime()) / 86400000);
+  const resolved = resolveTermActivationPhase(term, today);
   return {
-    term,
-    limbo: today.getTime() < liberadoEm,
-    daysUntilStart,
+    term: resolved.term,
+    limbo: resolved.phase === 'pre_engajamento' || resolved.phase === 'conteudo_previo',
+    daysUntilStart: resolved.daysUntilEffectiveStart,
+    daysUntilOfficialStart: resolved.daysUntilOfficialStart,
+    phase: resolved.phase,
   };
 }

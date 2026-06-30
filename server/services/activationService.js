@@ -5,7 +5,12 @@ import * as activationDispatchRepo from '../repositories/activationDispatchRepos
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import * as activationOrigemRepo from '../repositories/activationOrigemRepository.js';
-import { loadTerms, findTermByMatriculaDate, resolveLimbo } from './termResolverService.js';
+import {
+  loadTerms,
+  findTermByMatriculaDate,
+  resolveTermActivationPhase,
+  getTermEffectiveStartMs,
+} from './termResolverService.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 import { loadBbAccessMap, classifyBbSubgroup } from './bbSubgroupService.js';
 import {
@@ -89,6 +94,7 @@ const COOLDOWN_HOURS_BY_CATEGORY = {
   'acessos-blackboard': 24,
   'provavel-evasao': 24,
   'aguardando-inicio': 24,
+  'conteudo-previo': 24,
   rematricula: 24,
 };
 
@@ -119,6 +125,7 @@ export const ACTIVATION_CATEGORIES = /** @type {const} */ ([
   'acessos-blackboard',
   'processos-caa',
   'aguardando-inicio',
+  'conteudo-previo',
   'rematricula',
 ]);
 
@@ -338,7 +345,7 @@ async function resolveActivationSnapshotPair(category) {
     err.status = 404;
     throw err;
   }
-  if (category === 'aguardando-inicio') {
+  if (category === 'aguardando-inicio' || category === 'conteudo-previo') {
     return { matSnap, otherSnap: null, otherSnapId: 'none' };
   }
   if (category === 'processos-caa') {
@@ -564,16 +571,14 @@ async function buildMatriculadosFallbackForRemat() {
  * @returns {{ urgency: 'alta'|'media'|'normal'|'limbo'|'sem_turma', dias_apos_inicio: number|null }}
  */
 function computeBbUrgency(term, today) {
-  if (!term?.inicio_conteudo) return { urgency: 'sem_turma', dias_apos_inicio: null };
-  const raw = String(term.inicio_conteudo || '').trim();
-  const inicioDate = parseFlexibleDate(raw.includes('T') ? raw : `${raw}T00:00:00Z`);
-  if (!inicioDate) return { urgency: 'sem_turma', dias_apos_inicio: null };
-  const inicio = inicioDate.getTime();
-  const ambientacaoMs = term.tem_ambientacao ? Number(term.dias_ambientacao || 0) * 86400000 : 0;
-  const efetivoMs = inicio - ambientacaoMs;
-  const diff = today.getTime() - efetivoMs;
-  if (diff < 0) return { urgency: 'limbo', dias_apos_inicio: Math.ceil(diff / 86400000) };
-  const dias = Math.floor(diff / 86400000);
+  const { phase, daysUntilEffectiveStart } = resolveTermActivationPhase(term, today);
+  if (phase === 'sem_turma') return { urgency: 'sem_turma', dias_apos_inicio: null };
+  if (phase !== 'turma_ativa') {
+    return { urgency: 'limbo', dias_apos_inicio: daysUntilEffectiveStart };
+  }
+  const efetivoMs = getTermEffectiveStartMs(term);
+  if (efetivoMs == null) return { urgency: 'sem_turma', dias_apos_inicio: null };
+  const dias = Math.floor((today.getTime() - efetivoMs) / 86400000);
   if (dias >= URGENCY_HIGH_DAYS) return { urgency: 'alta', dias_apos_inicio: dias };
   if (dias >= URGENCY_MEDIUM_DAYS) return { urgency: 'media', dias_apos_inicio: dias };
   return { urgency: 'normal', dias_apos_inicio: dias };
@@ -671,9 +676,12 @@ export async function getIntersectionActivationList(category, opts = {}) {
     throw err;
   }
 
-  // aguardando-inicio não tem export próprio — só usa matriculados + turmas.
+  // Filas por fase da turma — só matriculados + calendário acadêmico.
   if (category === 'aguardando-inicio') {
-    return _buildAguardandoInicioList(category, matSnap, excludeDispatched);
+    return _buildTermPhaseList(category, matSnap, excludeDispatched, 'pre_engajamento');
+  }
+  if (category === 'conteudo-previo') {
+    return _buildTermPhaseList(category, matSnap, excludeDispatched, 'conteudo_previo');
   }
 
   // CAA usa estoque acumulado de caa_protocols — não precisa de snapshot próprio.
@@ -757,11 +765,12 @@ export async function getIntersectionActivationList(category, opts = {}) {
         row['Data da Matricula'] ??
         row['Data de Matrícula'];
       const term = dataMat && terms.length > 0 ? findTermByMatriculaDate(terms, dataMat) : null;
-      const { urgency, dias_apos_inicio } = computeBbUrgency(term, today);
-      if (urgency === 'limbo') {
+      const { phase } = resolveTermActivationPhase(term, today);
+      if (phase !== 'turma_ativa') {
         skipped_bb_limbo += 1;
         continue;
       }
+      const { urgency, dias_apos_inicio } = computeBbUrgency(term, today);
       bbUrgency = urgency;
       bbDiasAposInicio = dias_apos_inicio;
       bbTermCodigo = term?.codigo ?? null;
@@ -908,10 +917,12 @@ export async function getIntersectionActivationList(category, opts = {}) {
 }
 
 /**
- * Fila "aguardando-inicio": alunos matriculados cuja turma ainda não começou (limbo).
- * Não cruza com nenhum export externo.
+ * Filas por fase da turma (aguardando-inicio / conteudo-previo).
+ * Não cruza com export externo — só matriculados + academic_terms.
+ *
+ * @param {'pre_engajamento'|'conteudo_previo'} targetPhase
  */
-async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) {
+async function _buildTermPhaseList(category, matSnap, excludeDispatched, targetPhase) {
   const cacheKey = `${category}:${matSnap.id}:none:${excludeDispatched ? 'ex' : 'all'}`;
   const cached = activationListCaches.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.data;
@@ -939,8 +950,10 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
       row['Data Matricula'] ??
       row['Data da Matricula'] ??
       row['Data de Matrícula'];
-    const { limbo, daysUntilStart, term } = resolveLimbo(terms, dataMat, today);
-    if (!limbo) continue;
+    const term = dataMat ? findTermByMatriculaDate(terms, dataMat) : null;
+    const { phase, daysUntilEffectiveStart, daysUntilOfficialStart } =
+      resolveTermActivationPhase(term, today);
+    if (phase !== targetPhase) continue;
 
     const item = rowToActivationItem(row, null, category);
     const master_key = masterKeyFromActivationItem(item) ?? undefined;
@@ -960,8 +973,10 @@ async function _buildAguardandoInicioList(category, matSnap, excludeDispatched) 
     const baseItem = master_key ? { ...item, master_key } : item;
     items.push({
       ...baseItem,
-      dias_ate_inicio: daysUntilStart ?? null,
+      dias_ate_inicio: daysUntilEffectiveStart ?? null,
+      dias_ate_inicio_oficial: daysUntilOfficialStart ?? null,
       bb_term_codigo: term?.codigo ?? null,
+      term_phase: phase,
     });
   }
 

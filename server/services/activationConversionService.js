@@ -15,6 +15,7 @@ const CATEGORY_LABELS = {
   'processos-caa': 'Processos CAA',
   'provavel-evasao': 'Provável evasão',
   'aguardando-inicio': 'Aguardando início',
+  'conteudo-previo': 'Conteúdo prévio',
   rematricula: 'Rematrícula',
 };
 

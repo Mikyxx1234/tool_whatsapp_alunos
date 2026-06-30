@@ -760,11 +760,9 @@ export function ActivationRosterTable({
       {category === 'acessos-blackboard' && skippedLimbo > 0 && (
         <div className="mx-4 mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           <strong>{skippedLimbo.toLocaleString('pt-BR')}</strong> aluno(s) cuja turma ainda não
-          começou estão na aba{' '}
-          <Link to="/?mode=activation" className="underline font-medium">
-            Aguardando início
-          </Link>
-          .
+          começou estão nas abas{' '}
+          <strong>Aguardando início</strong> (pré-engajamento, últimos 14 dias) ou{' '}
+          <strong>Conteúdo prévio</strong> (quando liberado no Calendário).
         </div>
       )}
       {category === 'acessos-blackboard' && urgencyCounts && (urgencyCounts.alta + urgencyCounts.media > 0) && (
@@ -886,6 +884,12 @@ export function ActivationRosterTable({
               {category === 'acessos-blackboard' && <th className="px-3 py-2 text-left font-medium">Grupo</th>}
               {category === 'rematricula' && <th className="px-3 py-2 text-left font-medium">Financeiro</th>}
               {category === 'aguardando-inicio' && <th className="px-3 py-2 text-left font-medium">Início em</th>}
+              {category === 'conteudo-previo' && (
+                <>
+                  <th className="px-3 py-2 text-left font-medium">Início efetivo</th>
+                  <th className="px-3 py-2 text-left font-medium">Turma</th>
+                </>
+              )}
               {category === 'processos-caa' && (
                 <th className="px-3 py-2 text-left font-medium" title="Tempo restante na janela 48h CAA">
                   Janela
@@ -921,7 +925,7 @@ export function ActivationRosterTable({
               <TableLoadingState
                 colSpan={
                   (category === 'processos-caa' ? 10
-                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'rematricula' ? 9
+                    : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'conteudo-previo' || category === 'rematricula' ? 9
                     : 8) + (selectedMasterKeys ? 1 : 0)
                 }
                 slow={slowLoad}
@@ -932,7 +936,7 @@ export function ActivationRosterTable({
                 <td
                   colSpan={
                     (category === 'processos-caa' ? 10
-                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'rematricula' ? 9
+                      : category === 'acessos-blackboard' || category === 'aguardando-inicio' || category === 'conteudo-previo' || category === 'rematricula' ? 9
                       : 8) + (selectedMasterKeys ? 1 : 0)
                   }
                   className="px-3 py-6 text-center text-gray-500 text-xs"
@@ -996,6 +1000,16 @@ export function ActivationRosterTable({
                     <td className="px-3 py-2 text-xs tabular-nums text-amber-700 font-medium">
                       {row.dias_ate_inicio != null ? `${row.dias_ate_inicio}d` : '—'}
                     </td>
+                  )}
+                  {category === 'conteudo-previo' && (
+                    <>
+                      <td className="px-3 py-2 text-xs tabular-nums text-sky-700 font-medium">
+                        {row.dias_ate_inicio != null ? `${row.dias_ate_inicio}d` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-600 font-mono">
+                        {row.bb_term_codigo ?? '—'}
+                      </td>
+                    </>
                   )}
                   {category === 'processos-caa' && (
                     <td className="px-3 py-2">

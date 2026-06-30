@@ -427,16 +427,22 @@ export default function JourneyRulesPage() {
             <Card title="Conteúdo prévio">
               <ToggleRow
                 label="Conteúdo prévio liberado?"
-                description="Aluno consegue acessar conteúdos antes do início oficial."
+                description="Regra da régua automática (jornada). Para o Disparador manual, use o mesmo toggle na turma em Calendário."
                 checked={effective.conteudo_previo_ativo}
                 onChange={(v) => handleChange('conteudo_previo_ativo', v)}
               />
-              {!effective.conteudo_previo_ativo && (
-                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-                  Conteúdo bloqueado: o decisionEngine pode usar pré-engajamento para
-                  o aluno até a liberação.
-                </div>
-              )}
+              <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 text-xs text-sky-900 space-y-2">
+                <p>
+                  <strong>Disparador:</strong> marque &quot;Conteúdo prévio liberado&quot; na{' '}
+                  <strong>turma</strong> (Calendário). Alunos vão para a aba{' '}
+                  <strong>Conteúdo prévio</strong> — separada do Sem acesso BB. Escolha o template
+                  nessa aba.
+                </p>
+                <p>
+                  <strong>Sem prévio na turma:</strong> pré-engajamento só nos últimos{' '}
+                  <strong>14 dias</strong> antes do início efetivo (aba Aguardando início).
+                </p>
+              </div>
             </Card>
 
             <Card title="Atraso no início">

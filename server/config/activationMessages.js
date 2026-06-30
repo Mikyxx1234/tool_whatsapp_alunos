@@ -11,6 +11,8 @@ const CATEGORY_ENV = {
   'provavel-evasao': 'PROVAVEL_EVASAO',
   'acessos-blackboard': 'ACESSOS_BLACKBOARD',
   'processos-caa': 'PROCESSOS_CAA',
+  'aguardando-inicio': 'AGUARDANDO_INICIO',
+  'conteudo-previo': 'CONTEUDO_PREVIO',
   rematricula: 'REMATRICULA',
 };
 

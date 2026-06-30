@@ -27,7 +27,8 @@ const CATEGORY_LABEL: Record<ActivationCategory, string> = {
   'provavel-evasao': 'Provável evasão (faixa de risco)',
   'acessos-blackboard': 'Sem acesso BB (fora do export)',
   'processos-caa': 'CAA cancelamento',
-  'aguardando-inicio': 'Aguardando início da turma',
+  'aguardando-inicio': 'Aguardando início da turma (pré-engajamento)',
+  'conteudo-previo': 'Conteúdo prévio liberado',
   rematricula: 'Rematrícula (2026/1 → 2026/2)',
 };
 

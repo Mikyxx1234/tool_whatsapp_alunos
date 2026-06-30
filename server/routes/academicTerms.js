@@ -8,6 +8,8 @@ import { invalidateActivationListCache } from '../services/activationService.js'
 function bustTermCaches() {
   invalidateTermsCache();
   invalidateActivationListCache('acessos-blackboard');
+  invalidateActivationListCache('aguardando-inicio');
+  invalidateActivationListCache('conteudo-previo');
 }
 
 const router = Router();
