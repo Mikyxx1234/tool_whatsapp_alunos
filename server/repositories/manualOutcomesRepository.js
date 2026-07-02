@@ -542,9 +542,10 @@ export async function listMeuPainel(filters = {}) {
 }
 
 /**
- * KPIs do consultor: total atribuído, marcados (qualquer outcome),
- * revertido, confirmado, sem_contato, outro, opt_outs.
- * Quando consultor é null/'*', retorna estatísticas globais.
+ * KPIs do consultor.
+ * - Atribuídos: leads recebidos no período (received_at).
+ * - Marcados/Revertidos/etc.: desfechos registrados no período (occurred_at),
+ *   alinhado à meta diária do Painel Geral.
  *
  * @param {{
  *   consultor?: string|null,
@@ -563,81 +564,70 @@ export async function listMeuPainel(filters = {}) {
  *   taxa_reversao: number,
  * }>}
  */
+/** KPIs de marcação por data do desfecho (occurred_at) — alinhado à meta diária. */
+async function meuPainelOutcomeStats(filters = {}) {
+  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const { rows } = await query(
+    `
+    select
+      count(*)::int as total_marcado,
+      count(*) filter (where outcome = 'revertido')::int as total_revertido,
+      count(*) filter (where outcome = 'confirmado')::int as total_confirmado,
+      count(*) filter (where outcome = 'sem_contato')::int as total_sem_contato,
+      count(*) filter (where outcome = 'outro')::int as total_outro
+    from activation_manual_outcomes amo
+    where ($1::timestamptz is null or amo.occurred_at >= $1)
+      and ($2::timestamptz is null or amo.occurred_at < $2)
+      and (
+        $3::text is null
+        or (
+          amo.consultor_nome is not null
+          and (
+            amo.consultor_nome ilike '%' || $3::text || '%'
+            or $3::text ilike '%' || amo.consultor_nome || '%'
+          )
+        )
+      )
+      and ($4::text is null or amo.category = $4)
+    `,
+    [fromDate, toDate, consultorTrim, category]
+  );
+  return rows[0] || {};
+}
+
 export async function meuPainelStats(filters = {}) {
   const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
 
-  const { rows } = await query(
-    `
-    with enriched as (
+  const [attribRows, outcomeRow] = await Promise.all([
+    query(
+      `
+      with enriched as (
+        select ar.id, ar.response_kind
+        from activation_responses ar
+        where ${MEU_PAINEL_WHERE_SQL}
+      )
       select
-        ar.id,
-        ar.response_kind,
-        ar.category,
-        ${EFFECTIVE_RGM_EXPR} as effective_rgm,
-        ar.master_key,
-        coalesce(
-          dlc.cpf,
-          nullif(trim(ar.raw_payload->>'cpf'), ''),
-          lk.cpf
-        ) as effective_cpf
-      from activation_responses ar
-      ${MEU_PAINEL_DLC_JOIN}
-      ${MEU_PAINEL_LK_JOIN}
-      ${MEU_PAINEL_MAT_LATERAL}
-      where ${MEU_PAINEL_WHERE_SQL}
+        (select count(*)::int from enriched) as total_atribuido,
+        (select count(*)::int from enriched where response_kind = 'opt_out') as total_opt_out
+      `,
+      [consultorTrim, fromDate, toDate, category]
     ),
-    latest_outcomes as (
-      select distinct on (e.id)
-             e.id as response_id,
-             amo.outcome
-        from enriched e
-        left join activation_manual_outcomes amo
-          on amo.category = e.category
-         and (
-           (
-             e.effective_rgm is not null
-             and amo.rgm is not null
-             and regexp_replace(amo.rgm, '[^0-9]', '', 'g')
-                 = regexp_replace(e.effective_rgm, '[^0-9]', '', 'g')
-           )
-           or (
-             nullif(trim(coalesce(e.master_key, '')), '') is not null
-             and amo.master_key is not null
-             and amo.master_key = e.master_key
-           )
-           or (
-             amo.cpf is not null
-             and e.effective_cpf is not null
-             and length(regexp_replace(amo.cpf, '[^0-9]', '', 'g')) = 11
-             and regexp_replace(amo.cpf, '[^0-9]', '', 'g')
-                 = regexp_replace(e.effective_cpf, '[^0-9]', '', 'g')
-           )
-         )
-       order by e.id, amo.occurred_at desc nulls last
-    )
-    select
-      (select count(*)::int from enriched)                                              as total_atribuido,
-      (select count(*)::int from enriched where response_kind = 'opt_out')              as total_opt_out,
-      (select count(*)::int from latest_outcomes where outcome is not null)                 as total_marcado,
-      (select count(*)::int from latest_outcomes where outcome = 'revertido')               as total_revertido,
-      (select count(*)::int from latest_outcomes where outcome = 'confirmado')              as total_confirmado,
-      (select count(*)::int from latest_outcomes where outcome = 'sem_contato')             as total_sem_contato,
-      (select count(*)::int from latest_outcomes where outcome = 'outro')                   as total_outro
-    `,
-    [consultorTrim, fromDate, toDate, category]
-  );
+    meuPainelOutcomeStats(filters),
+  ]);
+  const rows = attribRows.rows;
   const r = rows[0] || {};
-  const totalMarcado = Number(r.total_marcado || 0);
-  const totalRevertido = Number(r.total_revertido || 0);
+  const o = outcomeRow || {};
+  const totalMarcado = Number(o.total_marcado || 0);
+  const totalRevertido = Number(o.total_revertido || 0);
   const taxaReversao = totalMarcado > 0 ? totalRevertido / totalMarcado : 0;
   return {
     total_atribuido: Number(r.total_atribuido || 0),
     total_opt_out: Number(r.total_opt_out || 0),
     total_marcado: totalMarcado,
     total_revertido: totalRevertido,
-    total_confirmado: Number(r.total_confirmado || 0),
-    total_sem_contato: Number(r.total_sem_contato || 0),
-    total_outro: Number(r.total_outro || 0),
+    total_confirmado: Number(o.total_confirmado || 0),
+    total_sem_contato: Number(o.total_sem_contato || 0),
+    total_outro: Number(o.total_outro || 0),
     taxa_reversao: taxaReversao,
   };
 }

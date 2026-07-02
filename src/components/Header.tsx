@@ -8,9 +8,17 @@ import {
   Files,
   TrendingUp,
   ClipboardCheck,
+  LayoutDashboard,
+  Target,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
-import { type AbaSlug, getAbasPermitidas } from '../services/meuPainelApi';
+import {
+  type AbaSlug,
+  defaultHomePath,
+  getAbasPermitidas,
+  hasFullAccess,
+  readConsultorIdentity,
+} from '../services/meuPainelApi';
 
 interface HeaderProps {
   onShowHistory?: () => void;
@@ -23,8 +31,25 @@ const NAV: Array<{
   icon?: typeof Users;
   match: (path: string) => boolean;
   slug: AbaSlug;
+  fullAccessOnly?: boolean;
 }> = [
-  { to: '/', label: 'Disparador', slug: 'disparador', match: (p) => p === '/' },
+  {
+    to: '/painel',
+    label: 'Painel',
+    icon: LayoutDashboard,
+    slug: 'painel',
+    match: (p) => p === '/painel',
+    fullAccessOnly: true,
+  },
+  {
+    to: '/metas',
+    label: 'Metas',
+    icon: Target,
+    slug: 'metas',
+    match: (p) => p.startsWith('/metas'),
+    fullAccessOnly: true,
+  },
+  { to: '/disparador', label: 'Disparador', slug: 'disparador', match: (p) => p === '/disparador' },
   { to: '/students', label: 'Alunos', icon: Users, slug: 'alunos', match: (p) => p.startsWith('/students') },
   {
     to: '/academic-terms',
@@ -73,23 +98,27 @@ const NAV: Array<{
 export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps) {
   const { pathname } = useLocation();
   const abasPermitidas = getAbasPermitidas();
-  const navVisible = abasPermitidas === null
-    ? NAV
-    : NAV.filter((item) => abasPermitidas.includes(item.slug));
+  const showMgmt = hasFullAccess(readConsultorIdentity());
+  const home = defaultHomePath();
+
+  let navVisible = NAV.filter((item) => !item.fullAccessOnly || showMgmt);
+  if (abasPermitidas !== null) {
+    navVisible = navVisible.filter((item) => abasPermitidas.includes(item.slug));
+  }
 
   return (
     <header className="bg-white border-b border-gray-100 sticky top-0 z-40">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 space-y-3">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 space-y-4">
         <div className="flex items-center justify-between gap-3">
-          <Link to="/" className="flex items-center gap-3 min-w-0 shrink">
-            <div className="w-10 h-10 bg-whatsapp-500 rounded-xl flex items-center justify-center shrink-0">
+          <Link to={home} className="flex items-center gap-3 min-w-0 shrink">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shrink-0 shadow-sm ring-1 ring-white/10">
               <MessageSquare className="w-5 h-5 text-white" />
             </div>
             <div className="min-w-0">
-              <h1 className="text-lg sm:text-xl font-semibold text-gray-900 truncate">
+              <h1 className="font-display text-xl sm:text-2xl font-extrabold tracking-[-0.03em] leading-none text-gray-900 truncate">
                 Disparador WhatsApp
               </h1>
-              <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">
+              <p className="mt-1 text-xs sm:text-sm font-medium text-gray-500 hidden sm:block">
                 Disparos manuais + Régua Inteligente de relacionamento
               </p>
             </div>
@@ -99,7 +128,7 @@ export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps)
             <button
               type="button"
               onClick={onShowHistory}
-              className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
+              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shrink-0"
             >
               <History className="w-4 h-4" />
               <span className="hidden sm:inline">Histórico</span>
@@ -118,13 +147,13 @@ export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps)
               <Link
                 key={item.to}
                 to={item.to}
-                className={`px-3 py-2 text-sm rounded-lg font-medium transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                className={`font-display px-3 py-2 text-[0.72rem] rounded-xl font-extrabold uppercase tracking-[0.12em] transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   active
-                    ? 'bg-whatsapp-50 text-whatsapp-700'
-                    : 'text-gray-600 hover:bg-gray-50'
+                    ? 'bg-primary/10 text-primary border border-primary/20'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border border-transparent'
                 }`}
               >
-                {Icon && <Icon className="w-4 h-4 shrink-0" />}
+                {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
                 {item.label}
               </Link>
             );

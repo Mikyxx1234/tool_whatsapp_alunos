@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,8 +6,27 @@
 
 body {
   font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-color: #f8fafc;
   color: #0f172a;
+}
+
+/* Tipografia alinhada ao dcz-crm-sync: títulos em Manrope 800, corpo em Inter. */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Manrope', 'Inter', sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.font-display,
+.font-headline {
+  font-family: 'Manrope', 'Inter', sans-serif;
+}
+
+.font-mono,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 @layer components {

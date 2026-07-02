@@ -375,7 +375,7 @@ export function RematriculaTrackingPanel() {
             {loading ? '…' : fmt(k?.rematriculas_acumuladas)}
           </p>
           <p className="text-xs text-slate-500 mt-0.5">
-            matriculados · ciclo {k?.rematriculas_ciclo || '—'} · {fmt(k?.rematriculas_hoje)}{' '}
+            matriculados (upload CRM) · ciclo {k?.rematriculas_ciclo || '—'} · {fmt(k?.rematriculas_hoje)}{' '}
             {viewingDate ? 'no dia' : 'hoje'} · {fmt(k?.rematriculas_periodo)} no período
           </p>
         </div>

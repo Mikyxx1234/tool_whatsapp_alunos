@@ -481,9 +481,9 @@ export default function MeuPainelPage() {
 
         {/* KPIs */}
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-          <StatCard tone="sky"     Icon={Send}        label="Atribuídos"  value={fmtInt(stats.total_atribuido)} loading={loading} />
-          <StatCard tone="indigo"  Icon={Edit3}       label="Marcados"    value={fmtInt(stats.total_marcado)}   hint={`${fmtPct(stats.total_marcado / Math.max(1, stats.total_atribuido))} do total`} loading={loading} />
-          <StatCard tone="emerald" Icon={CheckCircle} label="Revertidos"  value={fmtInt(stats.total_revertido)} hint={`Taxa: ${fmtPct(stats.taxa_reversao)}`} loading={loading} />
+          <StatCard tone="sky"     Icon={Send}        label="Atribuídos"  value={fmtInt(stats.total_atribuido)} hint="recebidos no período" loading={loading} />
+          <StatCard tone="indigo"  Icon={Edit3}       label="Marcados"    value={fmtInt(stats.total_marcado)}   hint="por data da marcação" loading={loading} />
+          <StatCard tone="emerald" Icon={CheckCircle} label="Revertidos"  value={fmtInt(stats.total_revertido)} hint={`por data do revertimento · ${fmtPct(stats.taxa_reversao)}`} loading={loading} />
           <StatCard tone="rose"    Icon={XCircle}     label="Confirmados" value={fmtInt(stats.total_confirmado)} loading={loading} />
           <StatCard tone="amber"   Icon={PhoneOff}    label="Sem contato" value={fmtInt(stats.total_sem_contato)} loading={loading} />
           <StatCard tone="gray"    Icon={HelpCircle}  label="Outro"       value={fmtInt(stats.total_outro)} loading={loading} />
@@ -582,19 +582,20 @@ export default function MeuPainelPage() {
                   <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Consultor</th>
                   <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">CAA</th>
                   <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcação</th>
+                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcado em</th>
                   <th className="px-3 py-2 text-right font-semibold uppercase tracking-wider">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {listLoading && items.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                       Carregando…
                     </td>
                   </tr>
                 ) : filteredItems.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-10 text-center text-gray-500">
+                    <td colSpan={9} className="px-3 py-10 text-center text-gray-500">
                       {items.length === 0
                         ? 'Nenhum lead atribuído ao seu nome no período selecionado.'
                         : 'Nenhum lead corresponde à busca nesta página.'}
@@ -633,6 +634,15 @@ export default function MeuPainelPage() {
                           </span>
                         ) : (
                           <span className="text-[11px] text-gray-400 italic">não marcado</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                        {it.outcome_occurred_at ? (
+                          <span title={OUTCOME_LABEL[it.outcome as OutcomeKind]}>
+                            {fmtDateTime(it.outcome_occurred_at)}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-gray-400">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">

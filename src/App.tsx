@@ -2,6 +2,8 @@ import type { ReactElement } from 'react';
 import { BrowserRouter, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import RematriculaPage from './pages/RematriculaPage';
 import DisparadorPage from './pages/DisparadorPage';
+import PainelPage from './pages/PainelPage';
+import MetasPage from './pages/MetasPage';
 import StudentsPage from './pages/StudentsPage';
 import StudentDetailPage from './pages/StudentDetailPage';
 import AcademicTermsPage from './pages/AcademicTermsPage';
@@ -25,7 +27,6 @@ function ProtectedRoute({ slug, children }: { slug: AbaSlug; children: ReactElem
   if (allowed.includes(slug)) return children;
   const fallback = firstAllowedRoute();
   if (fallback === window.location.pathname) {
-    // Nada permitido (lista vazia) — mostra mensagem em vez de loop.
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-gray-50">
         <div className="max-w-md text-center bg-white rounded-2xl border border-gray-100 p-8 shadow-sm">
@@ -40,6 +41,10 @@ function ProtectedRoute({ slug, children }: { slug: AbaSlug; children: ReactElem
     );
   }
   return <Navigate to={fallback} replace />;
+}
+
+function HomeRedirect() {
+  return <Navigate to={firstAllowedRoute()} replace />;
 }
 
 function NotFoundRedirect() {
@@ -57,7 +62,10 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/rematricula" element={<RematriculaPage />} />
-        <Route path="/" element={<ProtectedRoute slug="disparador"><DisparadorPage /></ProtectedRoute>} />
+        <Route path="/" element={<HomeRedirect />} />
+        <Route path="/painel" element={<ProtectedRoute slug="painel"><PainelPage /></ProtectedRoute>} />
+        <Route path="/metas" element={<ProtectedRoute slug="metas"><MetasPage /></ProtectedRoute>} />
+        <Route path="/disparador" element={<ProtectedRoute slug="disparador"><DisparadorPage /></ProtectedRoute>} />
         <Route path="/students" element={<ProtectedRoute slug="alunos"><StudentsPage /></ProtectedRoute>} />
         <Route path="/students/:id" element={<ProtectedRoute slug="alunos"><StudentDetailPage /></ProtectedRoute>} />
         <Route path="/academic-terms" element={<ProtectedRoute slug="calendario"><AcademicTermsPage /></ProtectedRoute>} />

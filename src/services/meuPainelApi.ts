@@ -222,13 +222,42 @@ export async function fetchConsultoresDistintos() {
   return jsonFetch<{ consultores: string[] }>('/api/activation/consultores-distintos');
 }
 
-/** Le ?consultores=A|B|C da URL (injetado pelo dcz-crm-sync APENAS para admin)
- *  e persiste em localStorage pra sobreviver a navegacao client-side.
- *  Chamada uma vez no boot do app, em main.tsx. */
+/** Catálogo de consultor acadêmico (username + nome exibido). */
+export interface ConsultorCatalogo {
+  username: string;
+  nome: string;
+}
+
+const LS_CONSULTORES_CATALOGO_KEY = 'dw_consultores_catalogo_v1';
+const LS_CONSULTORES_KEY = 'dw_consultores_academicos_admin_v1';
+
+/** Le ?consultores_json= e ?consultores= da URL (injetado pelo dcz). */
 export function readConsultoresAcademicosFromUrl(): string[] {
   if (typeof window === 'undefined') return [];
   try {
     const qs = new URLSearchParams(window.location.search);
+    const rawJson = qs.get('consultores_json');
+    if (rawJson) {
+      try {
+        const parsed = JSON.parse(rawJson) as ConsultorCatalogo[];
+        if (Array.isArray(parsed)) {
+          const catalog = parsed
+            .map((c) => ({
+              username: String(c?.username || '').trim(),
+              nome: String(c?.nome || '').trim(),
+            }))
+            .filter((c) => c.nome);
+          try {
+            localStorage.setItem(LS_CONSULTORES_CATALOGO_KEY, JSON.stringify(catalog));
+          } catch { /* noop */ }
+          const names = catalog.map((c) => c.nome);
+          try {
+            localStorage.setItem(LS_CONSULTORES_KEY, JSON.stringify(names));
+          } catch { /* noop */ }
+          return names;
+        }
+      } catch { /* fallback abaixo */ }
+    }
     const raw = qs.get('consultores');
     if (raw) {
       const list = raw
@@ -240,6 +269,26 @@ export function readConsultoresAcademicosFromUrl(): string[] {
     }
   } catch { /* noop */ }
   return getConsultoresAcademicos();
+}
+
+/** Catálogo completo (username + nome) persistido do dcz. */
+export function getConsultoresCatalogo(): ConsultorCatalogo[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(LS_CONSULTORES_CATALOGO_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ConsultorCatalogo[];
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((c) => ({
+            username: String(c?.username || '').trim(),
+            nome: String(c?.nome || '').trim(),
+          }))
+          .filter((c) => c.nome);
+      }
+    }
+  } catch { /* noop */ }
+  return getConsultoresAcademicos().map((nome) => ({ username: '', nome }));
 }
 
 /** Le do localStorage a lista persistida em readConsultoresAcademicosFromUrl. */
@@ -265,6 +314,8 @@ export function getConsultoresAcademicos(): string[] {
    ========================================================================== */
 
 export type AbaSlug =
+  | 'painel'
+  | 'metas'
   | 'disparador'
   | 'alunos'
   | 'calendario'
@@ -275,7 +326,7 @@ export type AbaSlug =
   | 'regras';
 
 export const ABA_SLUGS_VALIDOS: AbaSlug[] = [
-  'disparador', 'alunos', 'calendario', 'bases',
+  'painel', 'metas', 'disparador', 'alunos', 'calendario', 'bases',
   'relatorios', 'conversao', 'meu_painel', 'regras',
 ];
 
@@ -327,25 +378,36 @@ export function isAbaPermitida(slug: AbaSlug): boolean {
 /** Mapping rota react-router -> slug da aba. Usado pelo App.tsx pra
  *  redirecionar quando o usuario tenta acessar uma rota negada. */
 export const ROUTE_TO_ABA: Array<{ path: string; slug: AbaSlug; match: (p: string) => boolean }> = [
-  { path: '/',              slug: 'disparador',  match: (p) => p === '/' },
-  { path: '/students',      slug: 'alunos',      match: (p) => p === '/students' || p.startsWith('/students/') },
-  { path: '/academic-terms',slug: 'calendario',  match: (p) => p.startsWith('/academic-terms') },
-  { path: '/bases',         slug: 'bases',       match: (p) => p.startsWith('/bases') },
-  { path: '/reports',       slug: 'relatorios',  match: (p) => p.startsWith('/reports') },
-  { path: '/conversao',     slug: 'conversao',   match: (p) => p.startsWith('/conversao') },
-  { path: '/meu-painel',    slug: 'meu_painel',  match: (p) => p.startsWith('/meu-painel') },
-  { path: '/journey-rules', slug: 'regras',      match: (p) => p.startsWith('/journey-rules') },
+  { path: '/painel', slug: 'painel', match: (p) => p === '/painel' || p.startsWith('/painel/') },
+  { path: '/metas', slug: 'metas', match: (p) => p.startsWith('/metas') },
+  { path: '/disparador', slug: 'disparador', match: (p) => p === '/disparador' },
+  { path: '/students', slug: 'alunos', match: (p) => p === '/students' || p.startsWith('/students/') },
+  { path: '/academic-terms', slug: 'calendario', match: (p) => p.startsWith('/academic-terms') },
+  { path: '/bases', slug: 'bases', match: (p) => p.startsWith('/bases') },
+  { path: '/reports', slug: 'relatorios', match: (p) => p.startsWith('/reports') },
+  { path: '/conversao', slug: 'conversao', match: (p) => p.startsWith('/conversao') },
+  { path: '/meu-painel', slug: 'meu_painel', match: (p) => p.startsWith('/meu-painel') },
+  { path: '/journey-rules', slug: 'regras', match: (p) => p.startsWith('/journey-rules') },
 ];
 
-/** Primeira rota permitida ao usuario (pra fallback em "/" quando o
- *  usuario nao tem `disparador` permitido). */
+/** Primeira rota permitida ao usuario (landing e fallback de rota negada). */
 export function firstAllowedRoute(): string {
   const allowed = getAbasPermitidas();
-  if (allowed === null || allowed.length === 0) return '/';
+  if (allowed === null) {
+    const id = readConsultorIdentity();
+    if (hasFullAccess(id)) return '/painel';
+    return '/disparador';
+  }
+  if (allowed.length === 0) return '/disparador';
   for (const r of ROUTE_TO_ABA) {
     if (allowed.includes(r.slug)) return r.path;
   }
-  return '/';
+  return '/disparador';
+}
+
+/** Alias semântico para home / logo. */
+export function defaultHomePath(): string {
+  return firstAllowedRoute();
 }
 
 /** Lê identidade do consultor passada via query param pelo dcz-crm-sync.
@@ -354,7 +416,6 @@ export function firstAllowedRoute(): string {
  *  Limpa quando role/identidade muda — qualquer query nova sobrescreve.
  */
 const LS_KEY = 'dw_consultor_identity_v1';
-const LS_CONSULTORES_KEY = 'dw_consultores_academicos_admin_v1';
 const LS_ABAS_PERMITIDAS_KEY = 'dw_abas_permitidas_v1';
 
 interface ConsultorIdentity {
