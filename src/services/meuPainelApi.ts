@@ -30,6 +30,8 @@ export interface MeuPainelItem {
   category: string;
   master_key: string | null;
   rgm: string | null;
+  /** RGM gravado em activation_responses (vazio = consultor pode preencher ao marcar). */
+  response_rgm: string | null;
   telefone: string | null;
   consultor_responsavel_nome: string | null;
   origem_ativacao: string | null;
@@ -164,6 +166,9 @@ export interface CreateOutcomePayload {
   motivo?: string | null;
   notes?: string | null;
   consultor_nome: string;
+  /** Auth no POST outcomes (mesmo critério de admin/supervisor do GET). */
+  role?: string | null;
+  categoria?: string | null;
   occurred_at?: string | null;
 }
 
@@ -374,6 +379,28 @@ export function isSupervisorAcademico(categoria: string | null | undefined): boo
 /** True se o usuário tem poder pleno no Meu Painel (admin OU Supervisor Acadêmico). */
 export function hasFullAccess(identity: ConsultorIdentity): boolean {
   return identity.role === 'admin' || isSupervisorAcademico(identity.categoria);
+}
+
+/** Match bidirecional parcial (mesma regra do backend Meu Painel). */
+export function consultorMatchesAssigned(
+  assignedNome: string | null | undefined,
+  identity: ConsultorIdentity
+): boolean {
+  const assigned = (assignedNome || '').trim().toLowerCase();
+  if (!assigned) return false;
+  const candidates = [identity.nome, identity.username]
+    .map((s) => (s || '').trim().toLowerCase())
+    .filter(Boolean);
+  return candidates.some((c) => assigned.includes(c) || c.includes(assigned));
+}
+
+/** Lead sem RGM exibido: consultor responsável ou admin/supervisor pode preencher ao marcar. */
+export function canFillRgmForLead(
+  item: Pick<MeuPainelItem, 'rgm' | 'consultor_responsavel_nome'>,
+  identity: ConsultorIdentity
+): boolean {
+  if (item.rgm) return false;
+  return hasFullAccess(identity) || consultorMatchesAssigned(item.consultor_responsavel_nome, identity);
 }
 
 export function readConsultorIdentity(): ConsultorIdentity {

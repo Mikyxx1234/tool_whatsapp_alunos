@@ -6,6 +6,8 @@ import {
   OUTCOME_LABEL,
   getMeuPainelBaseLabel,
   createOutcome,
+  canFillRgmForLead,
+  readConsultorIdentity,
 } from '../services/meuPainelApi';
 
 interface Props {
@@ -52,14 +54,19 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
   const [outcome, setOutcome] = useState<OutcomeKind | null>(null);
   const [motivo, setMotivo] = useState('');
   const [notes, setNotes] = useState('');
+  const [rgmInput, setRgmInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const identity = readConsultorIdentity();
+  const canFillRgm = item ? canFillRgmForLead(item, identity) : false;
 
   useEffect(() => {
     if (open && item) {
       setOutcome((item.outcome as OutcomeKind | null) ?? null);
       setMotivo(item.outcome_motivo ?? '');
       setNotes(item.outcome_notes ?? '');
+      setRgmInput('');
       setError(null);
     }
   }, [open, item]);
@@ -72,21 +79,34 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
       return;
     }
     if (!item) return;
+
+    const rgmToSave = canFillRgm ? rgmInput.trim() : (item.rgm || '').trim();
+    if (canFillRgm && !rgmToSave) {
+      setError('Informe o RGM do aluno para salvar a marcação.');
+      return;
+    }
+    if (!canFillRgm && !rgmToSave && !item.master_key) {
+      setError('Este lead não possui RGM. Somente o consultor responsável pode preencher.');
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
       await createOutcome({
         category: item.category,
-        rgm: item.rgm,
+        rgm: rgmToSave || null,
         cpf: item.cpf,
         nome: item.nome,
         protocolo: item.protocolo,
-        master_key: item.master_key,
+        master_key: rgmToSave ? `RGM:${rgmToSave}` : item.master_key,
         response_id: item.response_id,
         outcome,
         motivo: motivo.trim() || null,
         notes: notes.trim() || null,
         consultor_nome: consultorNome,
+        role: identity.role,
+        categoria: identity.categoria,
       });
       onSaved();
       onClose();
@@ -116,7 +136,11 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
               {item.nome || '(sem nome)'}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              RGM {item.rgm || '—'}
+              {item.rgm ? (
+                <>RGM {item.rgm}</>
+              ) : (
+                <>RGM não informado</>
+              )}
               {item.protocolo ? <> · Protocolo {item.protocolo}</> : null}
               {item.telefone ? <> · {item.telefone}</> : null}
             </p>
@@ -132,6 +156,28 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
         </div>
 
         <div className="px-5 py-4 space-y-5">
+          {canFillRgm && (
+            <div>
+              <label htmlFor="outcome-rgm" className="text-xs font-semibold text-gray-700 mb-1.5 block">
+                RGM <span className="text-rose-600">*</span>
+              </label>
+              <input
+                id="outcome-rgm"
+                type="text"
+                inputMode="numeric"
+                value={rgmInput}
+                onChange={(e) => setRgmInput(e.target.value.replace(/[^\d]/g, ''))}
+                maxLength={12}
+                placeholder="Ex.: 49340671"
+                className="input font-mono"
+                autoFocus
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Este lead ainda não tem RGM. Informe o número de matrícula para registrar o desfecho.
+              </p>
+            </div>
+          )}
+
           <div>
             <p className="text-xs font-semibold text-gray-700 mb-2">Desfecho</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -209,7 +255,7 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || !outcome}
+            disabled={saving || !outcome || (canFillRgm && !rgmInput.trim())}
             className="px-4 py-2 text-sm font-semibold text-white bg-whatsapp-600 rounded-lg hover:bg-whatsapp-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
           >
             {saving ? 'Salvando...' : 'Salvar marcação'}

@@ -31,6 +31,7 @@ import {
 } from '../services/activationTemplateConfigService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import * as manualOutcomesRepo from '../repositories/manualOutcomesRepository.js';
+import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 
 const VALID_OUTCOMES = new Set(['revertido', 'confirmado', 'sem_contato', 'outro']);
@@ -144,7 +145,7 @@ function _isSupervisorAcademicoCat(categoriaRaw) {
 
 /** True se o requester tem poder pleno (role=admin OU categoria=Supervisor Acadêmico). */
 function _hasFullAccess(req) {
-  const role = String(req.query.role || '').trim().toLowerCase();
+  const role = String(req.query.role || req.body?.role || '').trim().toLowerCase();
   if (role === 'admin') return true;
   const categoria = req.query.categoria || req.body?.categoria;
   return _isSupervisorAcademicoCat(categoria);
@@ -383,7 +384,9 @@ router.post('/meu-painel/outcomes', async (req, res) => {
     const outcome = String(body.outcome || '').trim();
     const consultorNome =
       String(body.consultor_nome || body.consultorNome || '').trim().slice(0, 200);
-    const rgm = body.rgm ? String(body.rgm).trim() : null;
+    const fullAccess = _hasFullAccess(req);
+    const rgmRaw = body.rgm ? String(body.rgm).trim() : null;
+    const rgm = rgmRaw ? (normalizeRgmCanonical(rgmRaw) || rgmRaw) : null;
     const responseId = body.response_id ? String(body.response_id).trim() : null;
     if (!VALID_MEU_PAINEL_CATEGORIES.has(category)) {
       return res.status(400).json({ error: `category invalida: ${category}` });
@@ -396,6 +399,13 @@ router.post('/meu-painel/outcomes', async (req, res) => {
     }
     if (!rgm && !body.master_key) {
       return res.status(400).json({ error: 'rgm ou master_key e obrigatorio' });
+    }
+    if (responseId) {
+      await manualOutcomesRepo.assertCanSetResponseRgm(responseId, {
+        consultorNome,
+        fullAccess,
+        rgm,
+      });
     }
     const row = await manualOutcomesRepo.upsertOutcome({
       category,
