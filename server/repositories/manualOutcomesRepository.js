@@ -122,6 +122,77 @@ export async function backfillResponseIdentity(responseId, data = {}) {
   );
 }
 
+/** Match bidirecional parcial entre nome do consultor atribuído e quem está marcando. */
+export function consultorNomeMatches(assignedNome, callerNome) {
+  const assigned = String(assignedNome || '').trim();
+  const caller = String(callerNome || '').trim();
+  if (!assigned || !caller) return false;
+  const a = assigned.toLowerCase();
+  const c = caller.toLowerCase();
+  return a.includes(c) || c.includes(a);
+}
+
+/**
+ * @param {string} responseId
+ * @returns {Promise<{ id: string, rgm: string|null, master_key: string|null, consultor_responsavel_nome: string|null }|null>}
+ */
+export async function getActivationResponseById(responseId) {
+  const { rows } = await query(
+    `select id, rgm, master_key, consultor_responsavel_nome
+       from activation_responses
+      where id = $1`,
+    [responseId]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Valida permissão e formato ao preencher RGM em lead que ainda não tem na resposta.
+ * @param {string} responseId
+ * @param {{ consultorNome: string, fullAccess?: boolean, rgm?: string|null }} opts
+ */
+export async function assertCanSetResponseRgm(responseId, opts) {
+  const row = await getActivationResponseById(responseId);
+  if (!row) {
+    const err = new Error('Lead nao encontrado.');
+    err.status = 404;
+    throw err;
+  }
+
+  const storedRgm = row.rgm ? String(row.rgm).trim() : '';
+  const incomingRgm = opts.rgm ? normalizeRgmCanonical(opts.rgm) || String(opts.rgm).trim() : '';
+
+  if (storedRgm) {
+    const storedCanon = normalizeRgmCanonical(storedRgm) || storedRgm;
+    if (incomingRgm && incomingRgm !== storedCanon) {
+      const err = new Error('RGM ja cadastrado neste lead.');
+      err.status = 409;
+      throw err;
+    }
+    return row;
+  }
+
+  if (!incomingRgm) return row;
+
+  if (
+    !opts.fullAccess
+    && !consultorNomeMatches(row.consultor_responsavel_nome, opts.consultorNome)
+  ) {
+    const err = new Error('Somente o consultor responsavel pode preencher o RGM deste lead.');
+    err.status = 403;
+    throw err;
+  }
+
+  const canon = normalizeRgmCanonical(incomingRgm);
+  if (!canon || canon.replace(/\D/g, '').length < 5) {
+    const err = new Error('RGM invalido. Informe o numero de matricula (8 digitos).');
+    err.status = 400;
+    throw err;
+  }
+
+  return row;
+}
+
 /**
  * @param {string} id
  * @returns {Promise<ManualOutcomeRow|null>}
@@ -461,6 +532,7 @@ export async function listMeuPainel(filters = {}) {
         nullif(trim(mat.rgm), ''),
         nullif(trim(lk.rgm), '')
       )                                as rgm,
+      nullif(trim(ar.rgm), '')         as response_rgm,
       ar.telefone                      as telefone,
       ar.consultor_responsavel_nome    as consultor_responsavel_nome,
       ar.origem_ativacao               as origem_ativacao,
