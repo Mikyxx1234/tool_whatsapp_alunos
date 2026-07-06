@@ -140,6 +140,7 @@ export interface PainelOverviewData {
     ano_mes_meta: string;
     meta_referencia_dia: string;
     ref_dia?: string | null;
+    origem_ativacao?: string | null;
   };
   conversao: {
     total_dispatches: number;
@@ -230,6 +231,7 @@ export async function fetchPainelOverview(opts?: {
   period_days?: number;
   perfil?: string;
   ref_dia?: string | null;
+  origem_ativacao?: string | null;
 }): Promise<PainelOverviewData> {
   const p = new URLSearchParams(authQuery().replace(/^\?/, ''));
   if (opts?.from) p.set('from', opts.from);
@@ -237,6 +239,7 @@ export async function fetchPainelOverview(opts?: {
   if (opts?.period_days != null) p.set('period_days', String(opts.period_days));
   if (opts?.perfil) p.set('perfil', opts.perfil);
   if (opts?.ref_dia) p.set('ref_dia', opts.ref_dia);
+  if (opts?.origem_ativacao) p.set('origem_ativacao', opts.origem_ativacao);
   const qs = p.toString();
   const catalogo = getConsultoresCatalogo();
   const res = await fetch(`/api/painel/overview${qs ? `?${qs}` : ''}`, {
@@ -250,6 +253,7 @@ export async function fetchPainelOverview(opts?: {
       catalogo,
       perfil: opts?.perfil || 'caa',
       ref_dia: opts?.ref_dia || null,
+      origem_ativacao: opts?.origem_ativacao || null,
     }),
   });
   const raw = await res.text();

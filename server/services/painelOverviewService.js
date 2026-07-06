@@ -5,6 +5,11 @@ import * as consultorMetasRepo from '../repositories/consultorMetasRepository.js
 import { buildConsultorResolver } from '../utils/consultorNomeResolver.js';
 import { fetchConsultoresCatalogo } from '../utils/fetchConsultoresCatalogo.js';
 import {
+  normalizeOrigemAtivacaoFilter,
+  origemFilterToGroupKey,
+  sqlOutcomeLinkedToResponseExists,
+} from '../utils/origemAtivacaoFilter.js';
+import {
   buildAlertas,
   buildMetaStatus,
   buildProjecaoMeta,
@@ -47,7 +52,7 @@ function periodFromOpts(from, to, periodDays, conversion) {
 
 /**
  * Marcados no período agrupados por consultor que registrou a marcação.
- * @param {{ from?: string|null, to?: string|null, category?: string|null }} range
+ * @param {{ from?: string|null, to?: string|null, category?: string|null, origem_ativacao?: string|null }} range
  */
 async function marcadosPorConsultor(range) {
   const fromDate = range.from ? new Date(range.from + 'T00:00:00.000Z') : null;
@@ -58,7 +63,11 @@ async function marcadosPorConsultor(range) {
     toDate = d;
   }
   const category = range.category ? String(range.category).trim() : null;
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(range.origem_ativacao);
   const catCond = category ? 'and category = $3' : '';
+  const origemOutcomeCond = origemAtivacao
+    ? `and ${sqlOutcomeLinkedToResponseExists('amo', origemAtivacao)}`
+    : '';
   const params = category ? [fromDate, toDate, category] : [fromDate, toDate];
 
   const { rows } = await query(
@@ -67,10 +76,11 @@ async function marcadosPorConsultor(range) {
         count(*)::int as total_marcado,
         count(*) filter (where outcome = 'revertido')::int as total_revertido,
         count(*) filter (where outcome = 'confirmado')::int as total_confirmado
-       from activation_manual_outcomes
+       from activation_manual_outcomes amo
       where ($1::timestamptz is null or occurred_at >= $1)
         and ($2::timestamptz is null or occurred_at < $2)
         ${catCond}
+        ${origemOutcomeCond}
       group by consultor_nome
       order by total_marcado desc, consultor_nome`,
     params
@@ -153,7 +163,7 @@ function buildCalendarioMeta({ from, to, hojeBrt, metaDia, evolucao }) {
 }
 
 /**
- * @param {{ from?: string|null, to?: string|null, period_days?: number, perfil?: string|null, ref_dia?: string|null, catalogo?: Array<{nome?: string, username?: string}> }} opts
+ * @param {{ from?: string|null, to?: string|null, period_days?: number, perfil?: string|null, ref_dia?: string|null, origem_ativacao?: string|null, catalogo?: Array<{nome?: string, username?: string}> }} opts
  */
 export async function getPainelOverview(opts = {}) {
   const { from, to } = parseRange(opts.from, opts.to);
@@ -161,20 +171,27 @@ export async function getPainelOverview(opts = {}) {
   const perfil = resolvePainelPerfil(opts.perfil);
   const isCaa = perfil.modo === 'caa';
   const category = perfil.category;
+  const origemAtivacao = isCaa ? normalizeOrigemAtivacaoFilter(opts.origem_ativacao) : null;
   const refDiaRaw = opts.ref_dia && DATE_RE.test(String(opts.ref_dia)) ? String(opts.ref_dia) : null;
 
   const convOpts = refDiaRaw
-    ? { category, from: refDiaRaw, to: refDiaRaw }
+    ? { category, from: refDiaRaw, to: refDiaRaw, origem_ativacao: origemAtivacao }
     : from || to
-      ? { category, from, to }
-      : { category, period_days: periodDays };
+      ? { category, from, to, origem_ativacao: origemAtivacao }
+      : { category, period_days: periodDays, origem_ativacao: origemAtivacao };
 
   const statsFrom = refDiaRaw || from;
   const statsTo = refDiaRaw || to;
 
   const [conversion, meuPainel] = await Promise.all([
     getActivationConversion(convOpts),
-    manualOutcomesRepo.meuPainelStats({ consultor: null, from: statsFrom, to: statsTo, category }),
+    manualOutcomesRepo.meuPainelStats({
+      consultor: null,
+      from: statsFrom,
+      to: statsTo,
+      category,
+      origem_ativacao: origemAtivacao,
+    }),
   ]);
 
   const periodRange = periodFromOpts(from, to, periodDays, conversion);
@@ -191,8 +208,12 @@ export async function getPainelOverview(opts = {}) {
     ? refDiaRaw
     : null;
   const equipeRefDia = refDia || hojeBrt;
-  const porConsultorHoje = isCaa
+  // Meta do time: sempre Processos CAA completo (ignora filtro origem_ativacao).
+  const porConsultorHojeMeta = isCaa
     ? await marcadosPorConsultor({ from: equipeRefDia, to: equipeRefDia, category })
+    : [];
+  const porConsultorHoje = isCaa
+    ? await marcadosPorConsultor({ from: equipeRefDia, to: equipeRefDia, category, origem_ativacao: origemAtivacao })
     : [];
 
   const allNames = [
@@ -210,23 +231,27 @@ export async function getPainelOverview(opts = {}) {
     metaByKey.set(key, Number(m.meta_marcados) || 0);
   }
 
-  const [pendentesInsights, evolucaoDiaria, diarioAtivacoes, porBaseRaw] = await Promise.all([
-    isCaa ? fetchPendentesInsights({ resolver, metaKeys: metaByKey }) : Promise.resolve({
+  const [pendentesInsights, evolucaoDiaria, evolucaoDiariaMeta, diarioAtivacoes, porBaseRaw] = await Promise.all([
+    isCaa ? fetchPendentesInsights({ resolver, metaKeys: metaByKey, origem_ativacao: origemAtivacao }) : Promise.resolve({
       por_consultor: [],
       aging: { age_0_4h: 0, age_4_24h: 0, age_1_3d: 0, age_3d_plus: 0, total: 0 },
       definicao: null,
       escopo: null,
     }),
     isCaa
+      ? fetchEvolucaoDiaria({ ...periodRange, category, origem_ativacao: origemAtivacao })
+      : Promise.resolve([]),
+    isCaa
       ? fetchEvolucaoDiaria({ ...periodRange, category })
       : Promise.resolve([]),
     fetchDiarioAtivacoes({ ...periodRange, category }),
-    isCaa ? fetchConversaoPorBase(refDia ? { ...periodRange, from: refDia, to: refDia } : periodRange) : Promise.resolve([]),
+    isCaa ? fetchConversaoPorBase(refDia ? { ...periodRange, from: refDia, to: refDia } : periodRange, { origem_ativacao: origemAtivacao }) : Promise.resolve([]),
   ]);
 
   const porBase = isCaa
-    ? porBaseRaw
-      .filter((b) => String(b.key || '').startsWith('processos-caa'))
+    ? (origemAtivacao
+      ? porBaseRaw.filter((b) => b.key === origemFilterToGroupKey(origemAtivacao))
+      : porBaseRaw.filter((b) => String(b.key || '').startsWith('processos-caa')))
       .map((b) => ({ ...b, unique_dispatched: null, unique_responders: null, taxa_resposta: null }))
     : [];
 
@@ -240,6 +265,22 @@ export async function getPainelOverview(opts = {}) {
       total_confirmado: 0,
     };
     hojeByKey.set(key, {
+      total_marcado: prev.total_marcado + row.total_marcado,
+      total_revertido: prev.total_revertido + row.total_revertido,
+      total_confirmado: prev.total_confirmado + row.total_confirmado,
+    });
+  }
+
+  const hojeMetaByKey = new Map();
+  for (const row of porConsultorHojeMeta) {
+    const key = resolver.resolveKey(row.consultor_nome);
+    if (!key) continue;
+    const prev = hojeMetaByKey.get(key) || {
+      total_marcado: 0,
+      total_revertido: 0,
+      total_confirmado: 0,
+    };
+    hojeMetaByKey.set(key, {
       total_marcado: prev.total_marcado + row.total_marcado,
       total_revertido: prev.total_revertido + row.total_revertido,
       total_confirmado: prev.total_confirmado + row.total_confirmado,
@@ -294,14 +335,18 @@ export async function getPainelOverview(opts = {}) {
     });
   }
 
-  const metaTotal = isCaa ? equipe.reduce((s, r) => s + (r.meta_diaria ?? 0), 0) : 0;
-  const marcadoTotal = isCaa ? equipe.reduce((s, r) => s + r.total_marcado, 0) : 0;
+  const metaTotalFixo = isCaa
+    ? [...metaByKey.values()].reduce((s, m) => s + (Number(m) || 0), 0)
+    : 0;
+  const marcadoTotalMeta = isCaa
+    ? [...equipeKeys].reduce((s, key) => s + (hojeMetaByKey.get(key)?.total_marcado ?? 0), 0)
+    : 0;
 
   const metas_resumo = isCaa ? {
     consultores_com_meta: equipe.filter((e) => e.meta_diaria != null).length,
-    meta_total: metaTotal,
-    marcado_total: marcadoTotal,
-    pct_meta_global: metaTotal > 0 ? marcadoTotal / metaTotal : null,
+    meta_total: metaTotalFixo,
+    marcado_total: marcadoTotalMeta,
+    pct_meta_global: metaTotalFixo > 0 ? marcadoTotalMeta / metaTotalFixo : null,
     meta_tipo: 'diaria',
   } : {
     consultores_com_meta: 0,
@@ -315,8 +360,8 @@ export async function getPainelOverview(opts = {}) {
     from: periodRange.from,
     to: periodRange.to,
     hojeBrt,
-    metaDia: metaTotal,
-    evolucao: evolucaoDiaria,
+    metaDia: metaTotalFixo,
+    evolucao: evolucaoDiariaMeta,
   }) : { dias: [], meta_dia: 0, resumo: { dias_avaliados: 0, dias_bateram: 0, taxa_sucesso: null } };
 
   const funil = isCaa ? {
@@ -374,6 +419,7 @@ export async function getPainelOverview(opts = {}) {
       ano_mes_meta: refMonth,
       meta_referencia_dia: refDia || hojeBrt,
       ref_dia: refDia,
+      origem_ativacao: origemAtivacao,
     },
     conversao: {
       total_dispatches: conversion.kpis?.total_dispatches ?? 0,

@@ -1,6 +1,11 @@
 import { query } from '../db/client.js';
 import * as journeySettingsRepo from '../repositories/journeySettingsRepository.js';
 import {
+  normalizeOrigemAtivacaoFilter,
+  sqlOrigemAtivacaoCond,
+  sqlOutcomeLinkedToResponseExists,
+} from '../utils/origemAtivacaoFilter.js';
+import {
   getRgmToCicloMap,
   getAvailableCiclos,
   rgmFromMasterKey,
@@ -58,11 +63,24 @@ function buildValidResponseExists(rAlias, staleHoursParamIdx, dispSinceParamIdx 
 }
 
 /**
- * @param {{ category?: string, period_days?: number, offset?: number, ciclo?: string, from?: string|null, to?: string|null }} opts
+ * @param {{ category?: string, period_days?: number, offset?: number, ciclo?: string, from?: string|null, to?: string|null, origem_ativacao?: string|null }} opts
  */
-export async function getActivationConversion({ category = 'all', period_days = 30, offset = 0, ciclo = null, from = null, to = null } = {}) {
+export async function getActivationConversion({ category = 'all', period_days = 30, offset = 0, ciclo = null, from = null, to = null, origem_ativacao = null } = {}) {
   const periodDays = Math.min(Math.max(Number(period_days) || 30, 1), 365);
   const offsetNum = Math.max(Number(offset) || 0, 0);
+  const origemFilter = normalizeOrigemAtivacaoFilter(origem_ativacao);
+  const origemRespCond = sqlOrigemAtivacaoCond('r', origemFilter);
+  const origemDispCond = origemFilter
+    ? `AND EXISTS (
+        SELECT 1 FROM activation_responses r
+        WHERE r.master_key = activation_dispatch_events.master_key
+          AND r.category = activation_dispatch_events.category
+          ${sqlOrigemAtivacaoCond('r', origemFilter)}
+      )`
+    : '';
+  const origemRevCond = origemFilter
+    ? `AND ${sqlOutcomeLinkedToResponseExists('activation_manual_outcomes', origemFilter)}`
+    : '';
 
   let sinceIso;
   let untilIso = null;
@@ -151,7 +169,8 @@ export async function getActivationConversion({ category = 'all', period_days = 
     WHERE status = 'sent'
       AND created_at >= $1
       ${dispCatCond}
-      ${dispUntilCond}`,
+      ${dispUntilCond}
+      ${origemDispCond}`,
     dispParams
   );
 
@@ -180,6 +199,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
       ${respKpiCatCond}
       ${respKpiCicloCond}
       ${respKpiUntilCond}
+      ${origemRespCond}
       AND ${validResponseExistsR}`,
     respKpiParams
   );
@@ -189,6 +209,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const uc = Number(rk.unique_clickers) || 0;
   const um = Number(rk.unique_messages) || 0;
   const uo = Number(rk.unique_opt_outs) || 0;
+  const dispDenom = ud > 0 ? ud : (origemFilter ? ur : 0);
 
   // --- KPI de revertidos (marcações manuais do Meu Painel) ---
   // activation_manual_outcomes tem master_key (text, nullable) — usa DISTINCT master_key
@@ -207,7 +228,8 @@ export async function getActivationConversion({ category = 'all', period_days = 
         AND occurred_at >= $1
         ${rkCatCond}
         ${rkCicloCond}
-        ${rkUntilCond}`,
+        ${rkUntilCond}
+        ${origemRevCond}`,
     rkParams
   );
 
@@ -219,8 +241,8 @@ export async function getActivationConversion({ category = 'all', period_days = 
     unique_messages: um,
     unique_opt_outs: uo,
     unique_reverted: Number(rev?.unique_reverted ?? 0),
-    response_rate: ud > 0 ? ur / ud : 0,
-    opt_out_rate: ud > 0 ? uo / ud : 0,
+    response_rate: dispDenom > 0 ? ur / dispDenom : 0,
+    opt_out_rate: dispDenom > 0 ? uo / dispDenom : 0,
   };
 
   // --- by_category: revertidos pre-fetched via GROUP BY (single query for all 6 cats) ---

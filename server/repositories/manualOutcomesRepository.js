@@ -4,6 +4,11 @@ import { masterKeyFromParts } from '../utils/activationIdentity.js';
 import { normalizeBrazilianPhone } from '../utils/phoneNormalizer.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
 import { aggregateMeuPainelOrigemCounts } from '../utils/meuPainelLabels.js';
+import {
+  normalizeOrigemAtivacaoFilter,
+  sqlOrigemAtivacaoCond,
+  sqlOutcomeLinkedToResponseExists,
+} from '../utils/origemAtivacaoFilter.js';
 
 /**
  * @typedef {Object} ManualOutcomeRow
@@ -397,7 +402,13 @@ function meuPainelFilterParams(filters = {}) {
     toDate = d;
   }
   const category = filters.category ? String(filters.category).trim() : null;
-  return { consultorTrim, fromDate, toDate, category };
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(filters.origem_ativacao);
+  return { consultorTrim, fromDate, toDate, category, origemAtivacao };
+}
+
+/** WHERE base do Meu Painel + filtro opcional de origem_ativacao. */
+function meuPainelWhereSql(origemAtivacao) {
+  return `${MEU_PAINEL_WHERE_SQL}${sqlOrigemAtivacaoCond('ar', origemAtivacao)}`;
 }
 
 /** RGM efetivo: resposta + matriculados + MV telefone */
@@ -506,16 +517,16 @@ export function parseMeuPainelPageSize(raw) {
  * @param {Parameters<typeof listMeuPainel>[0]} filters
  */
 export async function countMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
   const { rows } = await query(
-    `select count(*)::int as total from activation_responses ar where ${MEU_PAINEL_WHERE_SQL}`,
+    `select count(*)::int as total from activation_responses ar where ${meuPainelWhereSql(origemAtivacao)}`,
     [consultorTrim, fromDate, toDate, category]
   );
   return Number(rows[0]?.total || 0);
 }
 
 export async function listMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
   const limit = parseMeuPainelPageSize(filters.limit);
   const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
   const whereParams = [consultorTrim, fromDate, toDate, category];
@@ -602,8 +613,8 @@ export async function listMeuPainel(filters = {}) {
       limit 1
     ) cp on true
     ${MEU_PAINEL_OUTCOME_LATERAL}
-    where ${MEU_PAINEL_WHERE_SQL}
-    order by ar.received_at desc
+ where ${meuPainelWhereSql(origemAtivacao)}
+ order by ar.received_at desc
     limit $5 offset $6
     `,
       [...whereParams, limit, offset]
@@ -638,7 +649,10 @@ export async function listMeuPainel(filters = {}) {
  */
 /** KPIs de marcação por data do desfecho (occurred_at) — alinhado à meta diária. */
 async function meuPainelOutcomeStats(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
+  const origemOutcomeCond = origemAtivacao
+    ? `and ${sqlOutcomeLinkedToResponseExists('amo', origemAtivacao)}`
+    : '';
   const { rows } = await query(
     `
     select
@@ -661,6 +675,7 @@ async function meuPainelOutcomeStats(filters = {}) {
         )
       )
       and ($4::text is null or amo.category = $4)
+      ${origemOutcomeCond}
     `,
     [fromDate, toDate, consultorTrim, category]
   );
@@ -668,7 +683,7 @@ async function meuPainelOutcomeStats(filters = {}) {
 }
 
 export async function meuPainelStats(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
 
   const [attribRows, outcomeRow] = await Promise.all([
     query(
@@ -676,7 +691,7 @@ export async function meuPainelStats(filters = {}) {
       with enriched as (
         select ar.id, ar.response_kind
         from activation_responses ar
-        where ${MEU_PAINEL_WHERE_SQL}
+        where ${meuPainelWhereSql(origemAtivacao)}
       )
       select
         (select count(*)::int from enriched) as total_atribuido,
@@ -727,6 +742,7 @@ export async function meuPainelOrigemCounts(filters = {}) {
     toDate = d;
   }
   const category = filters.category ? String(filters.category).trim() : null;
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(filters.origem_ativacao);
 
   const { rows } = await query(
     `
@@ -748,6 +764,7 @@ export async function meuPainelOrigemCounts(filters = {}) {
       and ($2::timestamptz is null or v.received_at >= $2)
       and ($3::timestamptz is null or v.received_at < $3)
       and ($4::text is null or v.category = $4)
+      ${sqlOrigemAtivacaoCond('v', origemAtivacao)}
     group by v.category, v.origem_ativacao
     order by total desc, v.category, v.origem_ativacao
     `,

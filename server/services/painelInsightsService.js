@@ -1,5 +1,10 @@
 import { query } from '../db/client.js';
 import { aggregateMeuPainelOrigemCounts, getMeuPainelBaseLabel, getMeuPainelOrigemGroupKey } from '../utils/meuPainelLabels.js';
+import {
+  normalizeOrigemAtivacaoFilter,
+  sqlOrigemAtivacaoCond,
+  sqlOutcomeLinkedToResponseExists,
+} from '../utils/origemAtivacaoFilter.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -71,9 +76,12 @@ const PENDENTE_ENGAGED_SQL = `
  * @param {{
  *   resolver: { resolveKey: (n: string) => string, displayName: (k: string) => string },
  *   metaKeys?: Set<string>|null,
+ *   origem_ativacao?: string|null,
  * }} ctx
  */
 export async function fetchPendentesInsights(ctx) {
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(ctx.origem_ativacao);
+  const origemCond = sqlOrigemAtivacaoCond('ar', origemAtivacao);
   const { rows } = await query(
     `
     select
@@ -99,6 +107,7 @@ export async function fetchPendentesInsights(ctx) {
       and trim(ar.consultor_responsavel_nome) <> ''
       and ${PENDENTE_ENGAGED_SQL}
       and not (${OUTCOME_EXISTS})
+      ${origemCond}
     group by ar.consultor_responsavel_nome
     order by pendentes desc, ar.consultor_responsavel_nome
     `
@@ -152,23 +161,28 @@ export async function fetchPendentesInsights(ctx) {
   };
 }
 
-/** @param {{ from?: string|null, to?: string|null, category?: string|null }} range */
+/** @param {{ from?: string|null, to?: string|null, category?: string|null, origem_ativacao?: string|null }} range */
 export async function fetchEvolucaoDiaria(range) {
   const { fromDate, toDate } = parseDateRange(range.from, range.to);
   const category = range.category ? String(range.category).trim() : null;
-  const catCond = category ? 'and category = $3' : '';
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(range.origem_ativacao);
+  const catCond = category ? 'and amo.category = $3' : '';
+  const origemOutcomeCond = origemAtivacao
+    ? `and ${sqlOutcomeLinkedToResponseExists('amo', origemAtivacao)}`
+    : '';
   const params = category ? [fromDate, toDate, category] : [fromDate, toDate];
 
   const { rows } = await query(
     `
     select
-      (occurred_at at time zone 'America/Sao_Paulo')::date as dia,
+      (amo.occurred_at at time zone 'America/Sao_Paulo')::date as dia,
       count(*)::int as marcados,
-      count(*) filter (where outcome = 'revertido')::int as revertidos
-    from activation_manual_outcomes
-    where ($1::timestamptz is null or occurred_at >= $1)
-      and ($2::timestamptz is null or occurred_at < $2)
+      count(*) filter (where amo.outcome = 'revertido')::int as revertidos
+    from activation_manual_outcomes amo
+    where ($1::timestamptz is null or amo.occurred_at >= $1)
+      and ($2::timestamptz is null or amo.occurred_at < $2)
       ${catCond}
+      ${origemOutcomeCond}
     group by 1
     order by 1
     `,
@@ -364,9 +378,12 @@ export async function fetchEvolucaoDiariaAtribuidos(range) {
   }));
 }
 
-/** @param {{ from?: string|null, to?: string|null }} range */
-export async function fetchConversaoPorBase(range) {
+/** @param {{ from?: string|null, to?: string|null }} range @param {{ origem_ativacao?: string|null }} [opts] */
+export async function fetchConversaoPorBase(range, opts = {}) {
   const { fromDate, toDate } = parseDateRange(range.from, range.to);
+  const origemAtivacao = normalizeOrigemAtivacaoFilter(opts.origem_ativacao);
+  const origemAttribCond = sqlOrigemAtivacaoCond('v', origemAtivacao);
+  const origemRespCond = sqlOrigemAtivacaoCond('ar', origemAtivacao);
 
   const [attribRows, marcadoRows] = await Promise.all([
     query(
@@ -375,6 +392,7 @@ export async function fetchConversaoPorBase(range) {
         from vw_meu_painel_origem_ativacao v
        where ($1::timestamptz is null or v.received_at >= $1)
          and ($2::timestamptz is null or v.received_at < $2)
+         ${origemAttribCond}
        group by v.category, v.origem_ativacao
       `,
       [fromDate, toDate]
@@ -404,6 +422,7 @@ export async function fetchConversaoPorBase(range) {
              and ar.master_key = amo.master_key
            )
          )
+         ${origemRespCond}
         where ($1::timestamptz is null or amo.occurred_at >= $1)
           and ($2::timestamptz is null or amo.occurred_at < $2)
         order by amo.id, ar.received_at desc

@@ -41,6 +41,30 @@ import {
 
 type RangeKey = 'today' | '7d' | '30d' | '90d';
 const PAINEL_PERFIL_STORAGE = 'painel_perfil_v1';
+const PAINEL_ORIGEM_STORAGE = 'painel_origem_caa_v1';
+
+export type PainelOrigemCaa = 'geral' | 'caa' | 'caa_atm' | 'caa_ia';
+
+const ORIGEM_CAA_OPTIONS: Array<{ id: PainelOrigemCaa; label: string }> = [
+  { id: 'geral', label: 'Geral' },
+  { id: 'caa', label: 'CAA' },
+  { id: 'caa_atm', label: 'CAA ATM' },
+  { id: 'caa_ia', label: 'CAA IA' },
+];
+
+function readStoredOrigemCaa(): PainelOrigemCaa {
+  try {
+    const v = localStorage.getItem(PAINEL_ORIGEM_STORAGE);
+    if (v && ORIGEM_CAA_OPTIONS.some((o) => o.id === v)) return v as PainelOrigemCaa;
+  } catch { /* ignore */ }
+  return 'geral';
+}
+
+function storeOrigemCaa(id: PainelOrigemCaa) {
+  try {
+    localStorage.setItem(PAINEL_ORIGEM_STORAGE, id);
+  } catch { /* ignore */ }
+}
 
 function readStoredPerfil(): string {
   try {
@@ -787,6 +811,7 @@ export default function PainelPage() {
 
   const [range, setRange] = useState<RangeKey>('30d');
   const [perfil, setPerfil] = useState(readStoredPerfil);
+  const [origemCaa, setOrigemCaa] = useState<PainelOrigemCaa>(readStoredOrigemCaa);
   const [selectedDia, setSelectedDia] = useState<string | null>(null);
   const [data, setData] = useState<PainelOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -803,6 +828,7 @@ export default function PainelPage() {
       const d = await fetchPainelOverview({
         ...baseOpts,
         ref_dia: selectedDia,
+        origem_ativacao: perfil === 'caa' && origemCaa !== 'geral' ? origemCaa : null,
       });
       setData(d);
     } catch (e) {
@@ -810,12 +836,18 @@ export default function PainelPage() {
     } finally {
       setLoading(false);
     }
-  }, [range, perfil, selectedDia]);
+  }, [range, perfil, origemCaa, selectedDia]);
 
   const handlePerfilChange = (id: string) => {
     setPerfil(id);
     setSelectedDia(null);
     storePerfil(id);
+  };
+
+  const handleOrigemCaaChange = (id: PainelOrigemCaa) => {
+    setOrigemCaa(id);
+    setSelectedDia(null);
+    storeOrigemCaa(id);
   };
 
   const handleRangeChange = (key: RangeKey) => {
@@ -852,6 +884,8 @@ export default function PainelPage() {
   const isCaa = data?.perfil.modo === 'caa';
   const perfilLabel = data?.perfil.label ?? 'Processos CAA';
   const perfis = data?.perfis_disponiveis ?? [];
+  const origemAtivo = perfil === 'caa' && origemCaa !== 'geral';
+  const origemLabel = ORIGEM_CAA_OPTIONS.find((o) => o.id === origemCaa)?.label;
   const refDia = data?.period.ref_dia ?? selectedDia;
   const hojeBrt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
   const diaLabel = refDia ? fmtDateBr(refDia) : 'hoje';
@@ -879,7 +913,7 @@ export default function PainelPage() {
             <h2 className="font-display text-xl font-extrabold tracking-tight text-gray-900">Painel Geral</h2>
             <p className="text-sm text-gray-500">
               {isCaa
-                ? 'Gestão CAA — metas e respostas sem marcação'
+                ? `Gestão CAA — metas e respostas sem marcação${origemAtivo && origemLabel ? ` · ${origemLabel}` : ''}`
                 : `${perfilLabel} — disparos e taxa de resposta`}
               {refDia
                 ? ` · dia ${refDia.split('-').reverse().join('/')}`
@@ -895,6 +929,24 @@ export default function PainelPage() {
               perfis={perfis}
               onChange={handlePerfilChange}
             />
+            {perfil === 'caa' && (
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
+                {ORIGEM_CAA_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => handleOrigemCaaChange(opt.id)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      origemCaa === opt.id
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
               {RANGE_OPTIONS.map((opt) => (
                 <button
