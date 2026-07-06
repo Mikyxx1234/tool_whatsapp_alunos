@@ -469,7 +469,17 @@ const CAL_MONTH_LABEL = [
 ];
 const CAL_WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
-function CalendarioMeta({ calendario, loading }: { calendario?: PainelCalendarioMeta; loading: boolean }) {
+function CalendarioMeta({
+  calendario,
+  loading,
+  selectedDia,
+  onSelectDia,
+}: {
+  calendario?: PainelCalendarioMeta;
+  loading: boolean;
+  selectedDia?: string | null;
+  onSelectDia?: (dia: string | null) => void;
+}) {
   const months = useMemo(() => {
     const dias = calendario?.dias ?? [];
     const map = new Map<string, PainelCalendarioDia[]>();
@@ -500,6 +510,18 @@ function CalendarioMeta({ calendario, loading }: { calendario?: PainelCalendario
           <span className="text-xs text-gray-500">
             Bateu em <strong className="text-emerald-600">{resumo.dias_bateram}</strong> de {resumo.dias_avaliados} dias úteis
             {resumo.taxa_sucesso != null ? ` · ${fmtPct(resumo.taxa_sucesso)}` : ''}
+            {selectedDia ? (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  onClick={() => onSelectDia?.(null)}
+                  className="text-indigo-600 hover:underline font-medium"
+                >
+                  Ver período completo
+                </button>
+              </>
+            ) : null}
           </span>
         )}
       </div>
@@ -538,16 +560,34 @@ function CalendarioMeta({ calendario, loading }: { calendario?: PainelCalendario
                       const tip = d.status === 'futuro' || d.status === 'fim_semana' || d.status === 'sem_meta'
                         ? `${fmtDateBr(d.dia)} · ${st.label}`
                         : `${fmtDateBr(d.dia)} · ${fmtInt(d.marcados)}/${fmtInt(d.meta_dia)} marcados${d.pct != null ? ` (${fmtPct(d.pct)})` : ''}`;
-                      return (
-                        <div
-                          key={i}
-                          title={tip}
-                          className={`aspect-square rounded-md border flex flex-col items-center justify-center leading-none transition-transform hover:scale-105 cursor-default ${st.cell} ${d.hoje ? 'ring-2 ring-offset-1 ring-indigo-500' : ''}`}
-                        >
+                      const clickable = d.status !== 'futuro' && d.status !== 'sem_meta' && Boolean(onSelectDia);
+                      const isSelected = selectedDia === d.dia;
+                      const cellClass = `aspect-square rounded-md border flex flex-col items-center justify-center leading-none transition-transform ${st.cell} ${
+                        isSelected ? 'ring-2 ring-offset-1 ring-indigo-500 scale-105 z-10' : d.hoje && !isSelected ? 'ring-2 ring-offset-1 ring-sky-400' : ''
+                      } ${clickable ? 'cursor-pointer hover:scale-105 hover:shadow-sm' : 'cursor-default'}`;
+                      const inner = (
+                        <>
                           <span className="text-[10px] font-semibold">{dayNum}</span>
                           {(d.status === 'bateu' || d.status === 'quase' || d.status === 'abaixo' || d.status === 'zero') && (
                             <span className="text-[8px] opacity-80 tabular-nums">{fmtInt(d.marcados)}</span>
                           )}
+                        </>
+                      );
+                      return clickable ? (
+                        <button
+                          key={i}
+                          type="button"
+                          title={tip}
+                          aria-label={tip}
+                          aria-pressed={isSelected}
+                          onClick={() => onSelectDia?.(isSelected ? null : d.dia)}
+                          className={cellClass}
+                        >
+                          {inner}
+                        </button>
+                      ) : (
+                        <div key={i} title={tip} className={cellClass}>
+                          {inner}
                         </div>
                       );
                     })}
@@ -747,6 +787,7 @@ export default function PainelPage() {
 
   const [range, setRange] = useState<RangeKey>('30d');
   const [perfil, setPerfil] = useState(readStoredPerfil);
+  const [selectedDia, setSelectedDia] = useState<string | null>(null);
   const [data, setData] = useState<PainelOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -756,22 +797,34 @@ export default function PainelPage() {
     setError(null);
     try {
       const opts = presetRange(range);
-      const d = await fetchPainelOverview(
-        'period_days' in opts
-          ? { period_days: opts.period_days, perfil }
-          : { ...opts, perfil }
-      );
+      const baseOpts = 'period_days' in opts
+        ? { period_days: opts.period_days, perfil }
+        : { ...opts, perfil };
+      const d = await fetchPainelOverview({
+        ...baseOpts,
+        ref_dia: selectedDia,
+      });
       setData(d);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro ao carregar');
     } finally {
       setLoading(false);
     }
-  }, [range, perfil]);
+  }, [range, perfil, selectedDia]);
 
   const handlePerfilChange = (id: string) => {
     setPerfil(id);
+    setSelectedDia(null);
     storePerfil(id);
+  };
+
+  const handleRangeChange = (key: RangeKey) => {
+    setRange(key);
+    setSelectedDia(null);
+  };
+
+  const handleSelectDia = (dia: string | null) => {
+    setSelectedDia(dia);
   };
 
   useEffect(() => {
@@ -799,6 +852,10 @@ export default function PainelPage() {
   const isCaa = data?.perfil.modo === 'caa';
   const perfilLabel = data?.perfil.label ?? 'Processos CAA';
   const perfis = data?.perfis_disponiveis ?? [];
+  const refDia = data?.period.ref_dia ?? selectedDia;
+  const hojeBrt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  const diaLabel = refDia ? fmtDateBr(refDia) : 'hoje';
+  const showProjecao = !refDia || refDia === hojeBrt;
   const diarioResumo = data?.diario_ativacoes?.resumo;
   const respostaKpi = isCaa
     ? {
@@ -824,9 +881,11 @@ export default function PainelPage() {
               {isCaa
                 ? 'Gestão CAA — metas e respostas sem marcação'
                 : `${perfilLabel} — disparos e taxa de resposta`}
-              {data?.period.meta_referencia_dia
-                ? ` · hoje ${data.period.meta_referencia_dia.split('-').reverse().join('/')}`
-                : ''}
+              {refDia
+                ? ` · dia ${refDia.split('-').reverse().join('/')}`
+                : data?.period.meta_referencia_dia
+                  ? ` · hoje ${data.period.meta_referencia_dia.split('-').reverse().join('/')}`
+                  : ''}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -841,7 +900,7 @@ export default function PainelPage() {
                 <button
                   key={opt.key}
                   type="button"
-                  onClick={() => setRange(opt.key)}
+                  onClick={() => handleRangeChange(opt.key)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     range === opt.key
                       ? 'bg-whatsapp-500 text-white'
@@ -876,6 +935,21 @@ export default function PainelPage() {
           </div>
         )}
 
+        {refDia && isCaa && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-indigo-200 bg-indigo-50/60 px-4 py-2.5 text-sm text-indigo-900">
+            <span>
+              Exibindo dados do dia <strong>{fmtDateBr(refDia)}</strong> — KPIs, equipe e conversão por base
+            </span>
+            <button
+              type="button"
+              onClick={() => handleSelectDia(null)}
+              className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline"
+            >
+              Voltar ao período
+            </button>
+          </div>
+        )}
+
         {!loading && (data?.alertas.length ?? 0) > 0 && (
           <section className="space-y-2">
             <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-gray-500">Alertas</h3>
@@ -897,7 +971,7 @@ export default function PainelPage() {
               <KpiCard tone="amber" label="Marcados" value={loading ? '…' : fmtInt(mp?.total_marcado ?? 0)} hint={`reversão ${fmtPct(mp?.taxa_reversao ?? 0)}`} icon={<Edit3 className="w-4 h-4" />} />
               <KpiCard
                 tone="slate"
-                label="Meta do time (hoje)"
+                label={`Meta do time (${diaLabel})`}
                 value={loading ? '…' : data?.metas_resumo.meta_total ? `${fmtInt(data.metas_resumo.marcado_total)} / ${fmtInt(data.metas_resumo.meta_total)}` : '—'}
                 hint={
                   loading
@@ -930,11 +1004,11 @@ export default function PainelPage() {
             )}
           </section>
 
-          {isCaa && (
+          {isCaa && showProjecao && (
           <section className="rounded-xl border border-gray-100 bg-white shadow-sm p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
               <Clock className="w-4 h-4 text-indigo-600" />
-              Projeção da meta (hoje)
+              Projeção da meta ({diaLabel})
             </h3>
             {loading ? (
               <p className="text-sm text-gray-400">Carregando…</p>
@@ -996,7 +1070,14 @@ export default function PainelPage() {
 
         <DiarioAtivacoes diario={data?.diario_ativacoes} loading={loading} perfilLabel={perfilLabel} />
 
-        {isCaa && <CalendarioMeta calendario={data?.calendario_meta} loading={loading} />}
+        {isCaa && (
+          <CalendarioMeta
+            calendario={data?.calendario_meta}
+            loading={loading}
+            selectedDia={refDia}
+            onSelectDia={handleSelectDia}
+          />
+        )}
 
         {isCaa && (
         <>
@@ -1004,7 +1085,7 @@ export default function PainelPage() {
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-indigo-600" />
-              Ranking — time CAA (hoje)
+              Ranking — time CAA ({diaLabel})
             </h3>
             <span className="text-xs text-gray-500">{data?.equipe.length ?? 0} consultores com meta</span>
           </div>

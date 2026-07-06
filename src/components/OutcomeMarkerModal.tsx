@@ -10,6 +10,19 @@ import {
   readConsultorIdentity,
 } from '../services/meuPainelApi';
 
+function brtDateInputToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+}
+
+function brtDateInputFromIso(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(iso));
+}
+
+/** Converte YYYY-MM-DD (dia BRT) para ISO com meio-dia BRT — evita virada de dia por UTC. */
+function brtDateToOccurredAt(dateStr: string): string {
+  return `${dateStr}T12:00:00-03:00`;
+}
+
 interface Props {
   open: boolean;
   item: MeuPainelItem | null;
@@ -55,6 +68,7 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
   const [motivo, setMotivo] = useState('');
   const [notes, setNotes] = useState('');
   const [rgmInput, setRgmInput] = useState('');
+  const [occurredDate, setOccurredDate] = useState(brtDateInputToday);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +81,9 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
       setMotivo(item.outcome_motivo ?? '');
       setNotes(item.outcome_notes ?? '');
       setRgmInput('');
+      setOccurredDate(
+        item.outcome_occurred_at ? brtDateInputFromIso(item.outcome_occurred_at) : brtDateInputToday()
+      );
       setError(null);
     }
   }, [open, item]);
@@ -89,6 +106,10 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
       setError('Este lead não possui RGM. Somente o consultor responsável pode preencher.');
       return;
     }
+    if (!occurredDate) {
+      setError('Informe a data do desfecho.');
+      return;
+    }
 
     setSaving(true);
     setError(null);
@@ -107,6 +128,7 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
         consultor_nome: consultorNome,
         role: identity.role,
         categoria: identity.categoria,
+        occurred_at: brtDateToOccurredAt(occurredDate),
       });
       onSaved();
       onClose();
@@ -197,6 +219,25 @@ export function OutcomeMarkerModal({ open, item, consultorNome, onClose, onSaved
               })}
             </div>
           </div>
+
+          {outcome && (
+            <div>
+              <label htmlFor="outcome-date" className="text-xs font-semibold text-gray-700 mb-1.5 block">
+                {outcome === 'revertido' ? 'Data do revertimento' : 'Data do desfecho'}
+              </label>
+              <input
+                id="outcome-date"
+                type="date"
+                value={occurredDate}
+                onChange={(e) => setOccurredDate(e.target.value)}
+                max={brtDateInputToday()}
+                className="input max-w-xs"
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Usada nos KPIs diários e na meta de revertidos do painel (fuso São Paulo).
+              </p>
+            </div>
+          )}
 
           <div>
             <label htmlFor="outcome-motivo" className="text-xs font-semibold text-gray-700 mb-1.5 block">

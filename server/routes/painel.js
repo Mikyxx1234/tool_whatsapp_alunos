@@ -18,6 +18,7 @@ async function handleOverview(req, res) {
       to: q.to || null,
       period_days: q.period_days || 30,
       perfil: q.perfil || 'caa',
+      ref_dia: q.ref_dia || null,
       catalogo,
     });
     res.json({ ok: true, data });

@@ -139,6 +139,7 @@ export interface PainelOverviewData {
     period_days: number | null;
     ano_mes_meta: string;
     meta_referencia_dia: string;
+    ref_dia?: string | null;
   };
   conversao: {
     total_dispatches: number;
@@ -228,12 +229,14 @@ export async function fetchPainelOverview(opts?: {
   to?: string | null;
   period_days?: number;
   perfil?: string;
+  ref_dia?: string | null;
 }): Promise<PainelOverviewData> {
   const p = new URLSearchParams(authQuery().replace(/^\?/, ''));
   if (opts?.from) p.set('from', opts.from);
   if (opts?.to) p.set('to', opts.to);
   if (opts?.period_days != null) p.set('period_days', String(opts.period_days));
   if (opts?.perfil) p.set('perfil', opts.perfil);
+  if (opts?.ref_dia) p.set('ref_dia', opts.ref_dia);
   const qs = p.toString();
   const catalogo = getConsultoresCatalogo();
   const res = await fetch(`/api/painel/overview${qs ? `?${qs}` : ''}`, {
@@ -243,7 +246,11 @@ export async function fetchPainelOverview(opts?: {
       'Content-Type': 'application/json',
       ...apiAuthHeaders(),
     },
-    body: JSON.stringify({ catalogo, perfil: opts?.perfil || 'caa' }),
+    body: JSON.stringify({
+      catalogo,
+      perfil: opts?.perfil || 'caa',
+      ref_dia: opts?.ref_dia || null,
+    }),
   });
   const raw = await res.text();
   if (!raw.trim()) {

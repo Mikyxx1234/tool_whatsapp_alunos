@@ -153,7 +153,7 @@ function buildCalendarioMeta({ from, to, hojeBrt, metaDia, evolucao }) {
 }
 
 /**
- * @param {{ from?: string|null, to?: string|null, period_days?: number, perfil?: string|null, catalogo?: Array<{nome?: string, username?: string}> }} opts
+ * @param {{ from?: string|null, to?: string|null, period_days?: number, perfil?: string|null, ref_dia?: string|null, catalogo?: Array<{nome?: string, username?: string}> }} opts
  */
 export async function getPainelOverview(opts = {}) {
   const { from, to } = parseRange(opts.from, opts.to);
@@ -161,26 +161,38 @@ export async function getPainelOverview(opts = {}) {
   const perfil = resolvePainelPerfil(opts.perfil);
   const isCaa = perfil.modo === 'caa';
   const category = perfil.category;
+  const refDiaRaw = opts.ref_dia && DATE_RE.test(String(opts.ref_dia)) ? String(opts.ref_dia) : null;
 
-  const convOpts = from || to
-    ? { category, from, to }
-    : { category, period_days: periodDays };
+  const convOpts = refDiaRaw
+    ? { category, from: refDiaRaw, to: refDiaRaw }
+    : from || to
+      ? { category, from, to }
+      : { category, period_days: periodDays };
+
+  const statsFrom = refDiaRaw || from;
+  const statsTo = refDiaRaw || to;
 
   const [conversion, meuPainel] = await Promise.all([
     getActivationConversion(convOpts),
-    manualOutcomesRepo.meuPainelStats({ consultor: null, from, to, category }),
+    manualOutcomesRepo.meuPainelStats({ consultor: null, from: statsFrom, to: statsTo, category }),
   ]);
 
   const periodRange = periodFromOpts(from, to, periodDays, conversion);
-  const refMonth = anoMesFromDate(to || from || null);
+  const refMonth = anoMesFromDate(refDiaRaw || to || from || null);
   const catalogo = await fetchConsultoresCatalogo(opts.catalogo);
   const [metasRows] = await Promise.all([
     consultorMetasRepo.listMetas({ ano_mes: refMonth }),
   ]);
 
   const hojeBrt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  const refDia = refDiaRaw
+    && refDiaRaw >= periodRange.from
+    && refDiaRaw <= periodRange.to
+    ? refDiaRaw
+    : null;
+  const equipeRefDia = refDia || hojeBrt;
   const porConsultorHoje = isCaa
-    ? await marcadosPorConsultor({ from: hojeBrt, to: hojeBrt, category })
+    ? await marcadosPorConsultor({ from: equipeRefDia, to: equipeRefDia, category })
     : [];
 
   const allNames = [
@@ -209,7 +221,7 @@ export async function getPainelOverview(opts = {}) {
       ? fetchEvolucaoDiaria({ ...periodRange, category })
       : Promise.resolve([]),
     fetchDiarioAtivacoes({ ...periodRange, category }),
-    isCaa ? fetchConversaoPorBase(periodRange) : Promise.resolve([]),
+    isCaa ? fetchConversaoPorBase(refDia ? { ...periodRange, from: refDia, to: refDia } : periodRange) : Promise.resolve([]),
   ]);
 
   const porBase = isCaa
@@ -261,7 +273,18 @@ export async function getPainelOverview(opts = {}) {
       pendentes_24h_plus: (pend?.age_4_24h ?? 0) + (pend?.age_1_3d ?? 0) + (pend?.age_3d_plus ?? 0),
       status_meta: 'sem_meta',
     };
-    row.status_meta = buildMetaStatus(row, work);
+    if (refDia && refDia !== hojeBrt) {
+      const pct = row.pct_meta ?? 0;
+      row.status_meta = row.meta_diaria == null || row.meta_diaria <= 0
+        ? 'sem_meta'
+        : pct >= 1
+          ? 'batendo'
+          : pct >= 0.7
+            ? 'em_risco'
+            : 'atrasado';
+    } else {
+      row.status_meta = buildMetaStatus(row, work);
+    }
     return row;
   }).sort((a, b) => b.total_marcado - a.total_marcado || a.consultor_nome.localeCompare(b.consultor_nome, 'pt-BR')) : [];
 
@@ -316,7 +339,7 @@ export async function getPainelOverview(opts = {}) {
     taxa_resposta: conversion.kpis?.response_rate ?? null,
   };
 
-  const projecao_meta = isCaa ? buildProjecaoMeta(metas_resumo) : {
+  const projecao_meta = isCaa && (!refDia || refDia === hojeBrt) ? buildProjecaoMeta(metas_resumo) : {
     projecao_fim_dia: null,
     pct_projecao: null,
     elapsed_hours: 0,
@@ -349,7 +372,8 @@ export async function getPainelOverview(opts = {}) {
       to: periodRange.to,
       period_days: from || to ? null : periodDays,
       ano_mes_meta: refMonth,
-      meta_referencia_dia: hojeBrt,
+      meta_referencia_dia: refDia || hojeBrt,
+      ref_dia: refDia,
     },
     conversao: {
       total_dispatches: conversion.kpis?.total_dispatches ?? 0,
