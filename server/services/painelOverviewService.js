@@ -8,6 +8,7 @@ import {
   normalizeOrigemAtivacaoFilter,
   origemFilterToGroupKey,
   sqlOutcomeLinkedToResponseExists,
+  isOrigemMovimentacaoInterna,
 } from '../utils/origemAtivacaoFilter.js';
 import {
   buildAlertas,
@@ -244,7 +245,11 @@ export async function getPainelOverview(opts = {}) {
     isCaa
       ? fetchEvolucaoDiaria({ ...periodRange, category })
       : Promise.resolve([]),
-    fetchDiarioAtivacoes({ ...periodRange, category }),
+    fetchDiarioAtivacoes(
+      isCaa && isOrigemMovimentacaoInterna(origemAtivacao)
+        ? { from: periodRange.from, to: periodRange.to, category: null }
+        : { ...periodRange, category }
+    ),
     isCaa ? fetchConversaoPorBase(refDia ? { ...periodRange, from: refDia, to: refDia } : periodRange, { origem_ativacao: origemAtivacao }) : Promise.resolve([]),
   ]);
 
@@ -427,6 +432,7 @@ export async function getPainelOverview(opts = {}) {
       unique_responders: conversion.kpis?.unique_responders ?? 0,
       response_rate: conversion.kpis?.response_rate ?? 0,
       unique_reverted: conversion.kpis?.unique_reverted ?? 0,
+      whatsapp_metrics: conversion.kpis?.whatsapp_metrics !== false,
     },
     meu_painel: meuPainel,
     equipe,

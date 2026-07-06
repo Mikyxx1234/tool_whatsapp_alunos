@@ -13,6 +13,11 @@ export function normalizeOrigemAtivacaoFilter(raw) {
   return null;
 }
 
+/** CAA ATM/IA entram via movimentação no DataCrazy — não há disparo WhatsApp. */
+export function isOrigemMovimentacaoInterna(filter) {
+  return filter === 'caa_atm' || filter === 'caa_ia';
+}
+
 /**
  * Fragmento SQL AND para coluna origem_ativacao.
  * @param {string} alias ex.: ar

@@ -885,6 +885,8 @@ export default function PainelPage() {
   const perfilLabel = data?.perfil.label ?? 'Processos CAA';
   const perfis = data?.perfis_disponiveis ?? [];
   const origemAtivo = perfil === 'caa' && origemCaa !== 'geral';
+  const isMovimentacaoInterna = perfil === 'caa' && (origemCaa === 'caa_atm' || origemCaa === 'caa_ia');
+  const showWhatsappMetrics = cv?.whatsapp_metrics !== false;
   const origemLabel = ORIGEM_CAA_OPTIONS.find((o) => o.id === origemCaa)?.label;
   const refDia = data?.period.ref_dia ?? selectedDia;
   const hojeBrt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
@@ -913,7 +915,7 @@ export default function PainelPage() {
             <h2 className="font-display text-xl font-extrabold tracking-tight text-gray-900">Painel Geral</h2>
             <p className="text-sm text-gray-500">
               {isCaa
-                ? `Gestão CAA — metas e respostas sem marcação${origemAtivo && origemLabel ? ` · ${origemLabel}` : ''}`
+                ? `Gestão CAA — metas e respostas sem marcação${origemAtivo && origemLabel ? ` · ${origemLabel}` : ''}${isMovimentacaoInterna ? ' · movimentação DataCrazy' : ''}`
                 : `${perfilLabel} — disparos e taxa de resposta`}
               {refDia
                 ? ` · dia ${refDia.split('-').reverse().join('/')}`
@@ -1014,8 +1016,8 @@ export default function PainelPage() {
         )}
 
         <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${isCaa ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-2'}`}>
-          <KpiCard tone="sky" label="Disparos enviados" value={loading ? '…' : fmtInt(cv?.total_dispatches ?? 0)} hint={loading ? undefined : disparosHint} icon={<Send className="w-4 h-4" />} />
-          <KpiCard tone="emerald" label="Responderam" value={loading ? '…' : fmtInt(respostaKpi.total)} hint={loading ? undefined : fmtPct(respostaKpi.taxa)} icon={<Users className="w-4 h-4" />} />
+          <KpiCard tone="sky" label="Disparos enviados" value={loading ? '…' : showWhatsappMetrics ? fmtInt(cv?.total_dispatches ?? 0) : '—'} hint={loading ? undefined : showWhatsappMetrics ? disparosHint : 'Sem disparo WhatsApp'} icon={<Send className="w-4 h-4" />} />
+          <KpiCard tone="emerald" label="Responderam" value={loading ? '…' : showWhatsappMetrics ? fmtInt(respostaKpi.total) : '—'} hint={loading ? undefined : showWhatsappMetrics ? fmtPct(respostaKpi.taxa) : 'N/A para ATM/IA'} icon={<Users className="w-4 h-4" />} />
           {isCaa ? (
             <>
               <KpiCard tone="emerald" label="Revertidos" value={loading ? '…' : fmtInt(cv?.unique_reverted ?? 0)} icon={<RotateCcw className="w-4 h-4" />} />
@@ -1120,7 +1122,9 @@ export default function PainelPage() {
           </section>
         )}
 
-        <DiarioAtivacoes diario={data?.diario_ativacoes} loading={loading} perfilLabel={perfilLabel} />
+        {showWhatsappMetrics && (
+          <DiarioAtivacoes diario={data?.diario_ativacoes} loading={loading} perfilLabel={perfilLabel} />
+        )}
 
         {isCaa && (
           <CalendarioMeta

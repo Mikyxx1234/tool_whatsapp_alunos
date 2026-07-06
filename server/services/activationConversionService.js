@@ -4,6 +4,7 @@ import {
   normalizeOrigemAtivacaoFilter,
   sqlOrigemAtivacaoCond,
   sqlOutcomeLinkedToResponseExists,
+  isOrigemMovimentacaoInterna,
 } from '../utils/origemAtivacaoFilter.js';
 import {
   getRgmToCicloMap,
@@ -69,15 +70,19 @@ export async function getActivationConversion({ category = 'all', period_days = 
   const periodDays = Math.min(Math.max(Number(period_days) || 30, 1), 365);
   const offsetNum = Math.max(Number(offset) || 0, 0);
   const origemFilter = normalizeOrigemAtivacaoFilter(origem_ativacao);
+  const skipWhatsappMetrics = isOrigemMovimentacaoInterna(origemFilter);
   const origemRespCond = sqlOrigemAtivacaoCond('r', origemFilter);
-  const origemDispCond = origemFilter
-    ? `AND EXISTS (
+  // ATM/IA: sem disparo WhatsApp — não cruzar dispatch_events com responses da origem.
+  const origemDispCond = skipWhatsappMetrics
+    ? 'AND false'
+    : origemFilter
+      ? `AND EXISTS (
         SELECT 1 FROM activation_responses r
         WHERE r.master_key = activation_dispatch_events.master_key
           AND r.category = activation_dispatch_events.category
           ${sqlOrigemAtivacaoCond('r', origemFilter)}
       )`
-    : '';
+      : '';
   const origemRevCond = origemFilter
     ? `AND ${sqlOutcomeLinkedToResponseExists('activation_manual_outcomes', origemFilter)}`
     : '';
@@ -188,8 +193,10 @@ export async function getActivationConversion({ category = 'all', period_days = 
     withUntilForResponses(respKpiParamsPreUntil, 'COALESCE(r.received_at, r.created_at)');
   const validResponseExistsR = buildValidResponseExists('r', respKpiStaleIdx, 1, respKpiDispUntilIdx);
 
-  const { rows: [rk] } = await query(
-    `SELECT
+  const rk = skipWhatsappMetrics
+    ? { unique_responders: 0, unique_clickers: 0, unique_messages: 0, unique_opt_outs: 0 }
+    : (await query(
+      `SELECT
       COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL)::bigint AS unique_responders,
       COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'click')::bigint AS unique_clickers,
       COUNT(DISTINCT r.master_key) FILTER (WHERE r.master_key IS NOT NULL AND r.response_kind = 'message')::bigint AS unique_messages,
@@ -201,15 +208,15 @@ export async function getActivationConversion({ category = 'all', period_days = 
       ${respKpiUntilCond}
       ${origemRespCond}
       AND ${validResponseExistsR}`,
-    respKpiParams
-  );
+      respKpiParams
+    )).rows[0];
 
   const ud = Number(dk.unique_dispatched) || 0;
   const ur = Number(rk.unique_responders) || 0;
   const uc = Number(rk.unique_clickers) || 0;
   const um = Number(rk.unique_messages) || 0;
   const uo = Number(rk.unique_opt_outs) || 0;
-  const dispDenom = ud > 0 ? ud : (origemFilter ? ur : 0);
+  const dispDenom = skipWhatsappMetrics ? 0 : (ud > 0 ? ud : (origemFilter ? ur : 0));
 
   // --- KPI de revertidos (marcações manuais do Meu Painel) ---
   // activation_manual_outcomes tem master_key (text, nullable) — usa DISTINCT master_key
@@ -243,6 +250,7 @@ export async function getActivationConversion({ category = 'all', period_days = 
     unique_reverted: Number(rev?.unique_reverted ?? 0),
     response_rate: dispDenom > 0 ? ur / dispDenom : 0,
     opt_out_rate: dispDenom > 0 ? uo / dispDenom : 0,
+    whatsapp_metrics: !skipWhatsappMetrics,
   };
 
   // --- by_category: revertidos pre-fetched via GROUP BY (single query for all 6 cats) ---

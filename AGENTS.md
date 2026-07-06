@@ -5,6 +5,18 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-06 — Painel CAA ATM/IA: sem métricas de disparo WhatsApp
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** Filtros `caa_atm`/`caa_ia` exibiam "Disparos enviados" (ex.: 36) porque `getActivationConversion` cruzava `activation_dispatch_events` com `activation_responses` da mesma origem via `EXISTS` — leads que receberam disparo CAA normal e depois entraram via movimentação DataCrazy (ou vice-versa) contaminavam o KPI.
+- **Decisão:** `isOrigemMovimentacaoInterna()` em `origemAtivacaoFilter.js`; para ATM/IA zerar/ocultar KPIs de disparo e resposta (`whatsapp_metrics: false`), manter Atribuídos/Marcados/Revertidos/Meta; ocultar diário de ativações no front.
+- **Alternativas descartadas:** manter EXISTS e tentar filtrar por ordem temporal dispatch vs ATM (frágil, 32 casos dispatch-after-ATM em 30d); contar só responses sem EXISTS (continuaria inflando "Responderam").
+
+### 2026-07-06 — Meu Painel: backfill consultor/RGM do raw_payload + MV telefone
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** Leads com `—` em RGM e/ou consultor no painel tinham dados no banco não propagados: webhook n8n grava `Consultor` e `RGM` dentro de `raw_payload` (ex.: `"Consultor": "Beatriz"`) mas a rota POST `/responses` só lia chaves top-level → coluna `consultor_responsavel_nome` ficava null. RGM idem (`RGM` no payload + `mv_aluno_por_telefone` não eram usados na gravação).
+- **Decisão:** (1) `recordResponse` extrai consultor/RGM de `rawPayload` e resolve RGM por telefone na MV; rota aceita `body.Consultor`. (2) `backfillResponsesMissingIdentity()` preenche retroativamente de payload, MV e dispatch (72h). Backfill rodado em prod/dev — ex.: tel `11994260396` passou a ter consultor Beatriz; RGM permanece null (não existe em nenhuma fonte → consultor preenche no modal).
+- **Alternativas descartadas:** inferir consultor do operador do dispatch (migration 025 removeu — consultor ≠ quem disparou).
+
 ### 2026-06-25 — Meu Painel: join de outcome/CAA usa RGM efetivo (ar→mat→lk) + upsert por (category, rgm)
 - **Modelo usado:** Opus 4.7 (principal).
 - **Problema:** `listMeuPainel` exibia RGM via `coalesce(ar.rgm, mat.rgm, lk.rgm)` mas joins de `activation_manual_outcomes` e `caa_protocols` usavam só `ar.rgm`/`mat.rgm`. Leads com RGM resolvido por telefone (`mv_aluno_por_telefone`) gravavam outcome com RGM correto mas liam "não marcado" (ex.: Camila Rodrigues RGM 49340671). `meuPainelStats` tinha o mesmo gap. Múltiplos cliques geravam duplicatas em `activation_manual_outcomes` (16 linhas no caso Camila).

@@ -80,6 +80,144 @@ export async function findRgmByCpfInMatriculados(cpfDigits) {
   return bestRgm;
 }
 
+function consultorFromRawPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const candidates = [
+    raw.consultor_responsavel_nome,
+    raw.consultorResponsavelNome,
+    raw.Consultor,
+    raw.consultor,
+    raw.responsavel,
+    raw.responsible_user_name,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim().slice(0, 200);
+  }
+  return null;
+}
+
+function rgmFromRawPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const rawRgm = raw.RGM ?? raw.rgm ?? null;
+  if (rawRgm === null || rawRgm === undefined || String(rawRgm).trim() === '') return null;
+  return normalizeRgmCanonical(rawRgm) || null;
+}
+
+/**
+ * @param {string|null|undefined} telefone
+ * @returns {Promise<string|null>}
+ */
+async function findRgmByPhoneInLk(telefone) {
+  const tel = normalizePhoneOrRaw(telefone);
+  if (!tel) return null;
+  const { rows } = await query(
+    `select rgm from mv_aluno_por_telefone where phone_norm = normalize_phone_br($1) limit 1`,
+    [tel]
+  );
+  const rgm = rows[0]?.rgm;
+  if (!rgm || !String(rgm).trim()) return null;
+  return normalizeRgmCanonical(rgm) || String(rgm).trim();
+}
+
+/**
+ * Preenche consultor/RGM faltantes a partir de raw_payload, MV telefone e dispatch.
+ * @param {{ days?: number, category?: string|null }} [opts]
+ * @returns {Promise<{ consultor: number, rgm_payload: number, rgm_lk: number, rgm_dispatch: number }>}
+ */
+export async function backfillResponsesMissingIdentity(opts = {}) {
+  const days = Math.max(1, Math.floor(Number(opts.days) || 30));
+  const category = opts.category ? String(opts.category).trim() : null;
+
+  const categoryFilter = category ? 'and ar.category = $2' : '';
+  const params = [days];
+  if (category) params.push(category);
+
+  const consultor = await query(
+    `update activation_responses ar
+        set consultor_responsavel_nome = trim(both from coalesce(
+              nullif(trim(ar.raw_payload->>'Consultor'), ''),
+              nullif(trim(ar.raw_payload->>'consultor'), '')
+            ))
+      where nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is null
+        and nullif(trim(coalesce(
+              ar.raw_payload->>'Consultor',
+              ar.raw_payload->>'consultor',
+              ''
+            )), '') is not null
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}`,
+    params
+  );
+
+  const rgmPayload = await query(
+    `update activation_responses ar
+        set rgm = nullif(regexp_replace(coalesce(ar.raw_payload->>'RGM', ar.raw_payload->>'rgm', ''), '[^0-9]', '', 'g'), ''),
+            master_key = coalesce(
+              nullif(trim(ar.master_key), ''),
+              case
+                when nullif(regexp_replace(coalesce(ar.raw_payload->>'RGM', ar.raw_payload->>'rgm', ''), '[^0-9]', '', 'g'), '') is not null
+                then 'RGM:' || nullif(regexp_replace(coalesce(ar.raw_payload->>'RGM', ar.raw_payload->>'rgm', ''), '[^0-9]', '', 'g'), '')
+                else ar.master_key
+              end
+            )
+      where nullif(trim(coalesce(ar.rgm, '')), '') is null
+        and length(regexp_replace(coalesce(ar.raw_payload->>'RGM', ar.raw_payload->>'rgm', ''), '[^0-9]', '', 'g')) >= 5
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}`,
+    params
+  );
+
+  const rgmLk = await query(
+    `update activation_responses ar
+        set rgm = lk.rgm,
+            master_key = coalesce(nullif(trim(ar.master_key), ''), 'RGM:' || lk.rgm)
+       from mv_aluno_por_telefone lk
+      where lk.phone_norm = normalize_phone_br(ar.telefone)
+        and nullif(trim(coalesce(ar.rgm, '')), '') is null
+        and nullif(trim(coalesce(lk.rgm, '')), '') is not null
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}`,
+    params
+  );
+
+  const rgmDispatch = await query(
+    `with candidates as (
+       select ar.id,
+              (
+                select de.rgm
+                  from activation_dispatch_events de
+                 where de.status = 'sent'
+                   and de.category = ar.category
+                   and nullif(trim(coalesce(de.rgm, '')), '') is not null
+                   and regexp_replace(coalesce(de.telefone, ''), '[^0-9]', '', 'g')
+                       = regexp_replace(coalesce(ar.telefone, ''), '[^0-9]', '', 'g')
+                   and de.created_at <= coalesce(ar.received_at, ar.created_at)
+                   and de.created_at >= coalesce(ar.received_at, ar.created_at) - interval '72 hours'
+                 order by de.created_at desc
+                 limit 1
+              ) as rgm
+         from activation_responses ar
+        where nullif(trim(coalesce(ar.rgm, '')), '') is null
+          and ar.received_at >= now() - ($1::int * interval '1 day')
+          ${categoryFilter}
+     )
+     update activation_responses ar
+        set rgm = c.rgm,
+            master_key = coalesce(nullif(trim(ar.master_key), ''), 'RGM:' || c.rgm)
+       from candidates c
+      where ar.id = c.id
+        and c.rgm is not null`,
+    params
+  );
+
+  return {
+    consultor: consultor.rowCount ?? 0,
+    rgm_payload: rgmPayload.rowCount ?? 0,
+    rgm_lk: rgmLk.rowCount ?? 0,
+    rgm_dispatch: rgmDispatch.rowCount ?? 0,
+  };
+}
+
 /**
  * Insere uma resposta (idempotente via external_id).
  * Quando master_key/lead_id/phone faltam, tenta resolver pelo último dispatch.
@@ -112,6 +250,12 @@ export async function recordResponse(input) {
   if (!rgm && input.rgm) {
     rgm = normalizeRgmCanonical(input.rgm);
   }
+  if (!rgm) {
+    rgm = rgmFromRawPayload(input.rawPayload);
+  }
+  if (!rgm && telNorm) {
+    rgm = await findRgmByPhoneInLk(telNorm);
+  }
 
   let category = input.category ?? null;
   let masterKey = input.masterKey ?? null;
@@ -136,9 +280,9 @@ export async function recordResponse(input) {
   }
 
   const consultorNome =
-    typeof input.consultorResponsavelNome === 'string' && input.consultorResponsavelNome.trim()
+    (typeof input.consultorResponsavelNome === 'string' && input.consultorResponsavelNome.trim()
       ? input.consultorResponsavelNome.trim().slice(0, 200)
-      : null;
+      : null) ?? consultorFromRawPayload(input.rawPayload);
 
   const params = [
     category,

@@ -92,6 +92,7 @@ router.post('/responses', requireApiKey, async (req, res) => {
     const consultorResponsavelNome =
       body.consultor_responsavel_nome ??
       body.consultorResponsavelNome ??
+      body.Consultor ??
       body.consultor ??
       body.responsavel ??
       body.responsible_user_name ??

@@ -148,6 +148,7 @@ export interface PainelOverviewData {
     unique_responders: number;
     response_rate: number;
     unique_reverted: number;
+    whatsapp_metrics?: boolean;
   };
   meu_painel: {
     total_atribuido: number;
