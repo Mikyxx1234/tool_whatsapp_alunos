@@ -9,6 +9,7 @@ import {
   sqlOrigemAtivacaoCond,
   sqlOutcomeLinkedToResponseExists,
 } from '../utils/origemAtivacaoFilter.js';
+import { sqlCaaMeuPainelConsultorAllowlist } from '../utils/caaConsultorAllowlist.js';
 
 /**
  * @typedef {Object} ManualOutcomeRow
@@ -408,9 +409,9 @@ function meuPainelFilterParams(filters = {}) {
   return { consultorTrim, fromDate, toDate, category, origemAtivacao, search };
 }
 
-/** WHERE base do Meu Painel + filtro opcional de origem_ativacao. */
+/** WHERE base do Meu Painel + filtro opcional de origem_ativacao + allowlist CAA. */
 function meuPainelWhereSql(origemAtivacao) {
-  return `${MEU_PAINEL_WHERE_SQL}${sqlOrigemAtivacaoCond('ar', origemAtivacao)}`;
+  return `${MEU_PAINEL_WHERE_SQL}${sqlOrigemAtivacaoCond('ar', origemAtivacao)} and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}`;
 }
 
 /** RGM efetivo: resposta + matriculados + MV telefone */
@@ -799,26 +800,27 @@ export async function meuPainelOrigemCounts(filters = {}) {
   const { rows } = await query(
     `
     select
-      v.category,
-      v.origem_ativacao,
+      ar.category,
+      coalesce(nullif(trim(ar.origem_ativacao), ''), '') as origem_ativacao,
       count(*)::int as total
-    from vw_meu_painel_origem_ativacao v
+    from activation_responses ar
     where (
       $1::text is null
       or (
-        v.consultor_responsavel_nome is not null
+        ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
         and (
-          v.consultor_responsavel_nome ilike '%' || $1::text || '%'
-          or $1::text ilike '%' || v.consultor_responsavel_nome || '%'
+          ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} ilike '%' || $1::text || '%'
+          or $1::text ilike '%' || ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} || '%'
         )
       )
     )
-      and ($2::timestamptz is null or v.received_at >= $2)
-      and ($3::timestamptz is null or v.received_at < $3)
-      and ($4::text is null or v.category = $4)
-      ${sqlOrigemAtivacaoCond('v', origemAtivacao)}
-    group by v.category, v.origem_ativacao
-    order by total desc, v.category, v.origem_ativacao
+      and ($2::timestamptz is null or ar.received_at >= $2)
+      and ($3::timestamptz is null or ar.received_at < $3)
+      and ($4::text is null or ar.category = $4)
+      ${sqlOrigemAtivacaoCond('ar', origemAtivacao)}
+      and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}
+    group by ar.category, coalesce(nullif(trim(ar.origem_ativacao), ''), '')
+    order by total desc, ar.category, origem_ativacao
     `,
     [consultorTrim, fromDate, toDate, category]
   );

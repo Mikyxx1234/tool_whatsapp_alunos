@@ -1,5 +1,7 @@
 import { query } from '../db/client.js';
+import { MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL } from '../repositories/manualOutcomesRepository.js';
 import { aggregateMeuPainelOrigemCounts, getMeuPainelBaseLabel, getMeuPainelOrigemGroupKey } from '../utils/meuPainelLabels.js';
+import { sqlCaaMeuPainelConsultorAllowlist } from '../utils/caaConsultorAllowlist.js';
 import {
   normalizeOrigemAtivacaoFilter,
   sqlOrigemAtivacaoCond,
@@ -85,7 +87,7 @@ export async function fetchPendentesInsights(ctx) {
   const { rows } = await query(
     `
     select
-      ar.consultor_responsavel_nome as consultor_nome,
+      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} as consultor_nome,
       count(*)::int as pendentes,
       count(*) filter (
         where ar.received_at >= now() - interval '4 hours'
@@ -103,13 +105,13 @@ export async function fetchPendentesInsights(ctx) {
       )::int as age_3d_plus
     from activation_responses ar
     where ar.category = 'processos-caa'
-      and ar.consultor_responsavel_nome is not null
-      and trim(ar.consultor_responsavel_nome) <> ''
+      and ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
+      and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}
       and ${PENDENTE_ENGAGED_SQL}
       and not (${OUTCOME_EXISTS})
       ${origemCond}
-    group by ar.consultor_responsavel_nome
-    order by pendentes desc, ar.consultor_responsavel_nome
+    group by ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL}
+    order by pendentes desc, consultor_nome
     `
   );
 

@@ -5,6 +5,12 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-07 — Meu Painel Processos CAA: allowlist Wesley Guerreiro + Danubia
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** Leads da base Processos CAA (incl. ATM/IA) apareciam atribuídos a Joyce, Julia, Beatriz, Felipe etc. no painel "Leads para marcar". Regra operacional: só **Wesley Guerreiro** e **Danubia** atendem CAA.
+- **Decisão:** `caaConsultorAllowlist.js` + `sqlCaaMeuPainelConsultorAllowlist()` aplicado em `meuPainelWhereSql` (list/stats/count), `meuPainelOrigemCounts` (passou a usar `activation_responses` + consultor efetivo) e `fetchPendentesInsights` (Painel Geral). Match por prefixo ILIKE `wesley%` / `danubia%` no consultor efetivo (`MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL`). Outras categorias não são afetadas.
+- **Alternativas descartadas:** filtrar só no front (bypass via API); whitelist hardcoded no n8n (não impede dados históricos errados no DB).
+
 ### 2026-07-07 — Meu Painel: consultor efetivo do payload + sync CRM periódico
 - **Modelo usado:** Opus 4.7 (principal).
 - **Problema:** Coluna `consultor_responsavel_nome` ficava null (41 leads/7d) ou desatualizada (90 divergências vs `raw_payload.Consultor`) — ex.: Renata com "Julia" no payload mas "—" na UI. Causa: gravação antiga não propagava payload; ON CONFLICT priorizava coluna antiga; 30 leads com chave `Consultor` vazia no webhook.
