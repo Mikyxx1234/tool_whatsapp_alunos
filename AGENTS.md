@@ -5,11 +5,11 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
-### 2026-07-07 — Meu Painel Processos CAA: allowlist Wesley Guerreiro + Danubia
+### 2026-07-07 — Meu Painel Processos CAA: consultor inválido em branco (Wesley + Danubia)
 - **Modelo usado:** Opus 4.7 (principal).
-- **Problema:** Leads da base Processos CAA (incl. ATM/IA) apareciam atribuídos a Joyce, Julia, Beatriz, Felipe etc. no painel "Leads para marcar". Regra operacional: só **Wesley Guerreiro** e **Danubia** atendem CAA.
-- **Decisão:** `caaConsultorAllowlist.js` + `sqlCaaMeuPainelConsultorAllowlist()` aplicado em `meuPainelWhereSql` (list/stats/count), `meuPainelOrigemCounts` (passou a usar `activation_responses` + consultor efetivo) e `fetchPendentesInsights` (Painel Geral). Match por prefixo ILIKE `wesley%` / `danubia%` no consultor efetivo (`MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL`). Outras categorias não são afetadas.
-- **Alternativas descartadas:** filtrar só no front (bypass via API); whitelist hardcoded no n8n (não impede dados históricos errados no DB).
+- **Problema:** Leads CAA apareciam com consultores errados (Joyce, Beatriz, etc.). Regra operacional: só **Wesley Guerreiro** e **Danubia** atendem CAA; demais devem ficar **sem consultor na UI** até correção automática.
+- **Decisão:** (1) `sqlCaaMeuPainelDisplayConsultor()` — todos os leads CAA continuam no painel; coluna CONSULTOR mostra NULL se efetivo ≠ Wesley/Danubia. (2) Persistência/sync/backfill só gravam Wesley/Danubia em `processos-caa`; backfill limpa coluna inválida. (3) Sync CRM re-tenta leads CAA sem consultor válido.
+- **Alternativas descartadas:** ocultar leads com consultor errado (usuário pediu ver todos); exibir nome errado até sync (confunde operação).
 
 ### 2026-07-07 — Meu Painel: consultor efetivo do payload + sync CRM periódico
 - **Modelo usado:** Opus 4.7 (principal).

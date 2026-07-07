@@ -1,5 +1,6 @@
 import { query } from '../db/client.js';
 import { masterKeyFromParts } from '../utils/activationIdentity.js';
+import { sanitizeCaaConsultorForStorage } from '../utils/caaConsultorAllowlist.js';
 import { normalizeBrazilianPhone } from '../utils/phoneNormalizer.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
 import { excelSerialToDate, parseFlexibleDate } from '../utils/dateParser.js';
@@ -216,7 +217,7 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
     params
   );
 
-  // Step 1 — backfill consultor de raw_payload (corrige null e coluna desatualizada)
+  // Step 1 — backfill consultor de raw_payload (só Wesley/Danubia em processos-caa)
   const consultor = await query(
     `update activation_responses ar
         set consultor_responsavel_nome = trim(both from coalesce(
@@ -231,6 +232,19 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
         and ar.received_at >= now() - ($1::int * interval '1 day')
         ${categoryFilter}
         and (
+          ar.category <> 'processos-caa'
+          or lower(trim(coalesce(
+                ar.raw_payload->>'Consultor',
+                ar.raw_payload->>'consultor',
+                ''
+              ))) like 'wesley%'
+          or lower(trim(coalesce(
+                ar.raw_payload->>'Consultor',
+                ar.raw_payload->>'consultor',
+                ''
+              ))) like 'danubia%'
+        )
+        and (
           nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is null
           or lower(trim(ar.consultor_responsavel_nome)) <> lower(trim(coalesce(
                 ar.raw_payload->>'Consultor',
@@ -238,6 +252,19 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
                 ''
               )))
         )`,
+    params
+  );
+
+  // Step 1b — limpa consultor inválido já gravado em processos-caa
+  const consultorClear = await query(
+    `update activation_responses ar
+        set consultor_responsavel_nome = null
+      where ar.category = 'processos-caa'
+        and nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is not null
+        and lower(trim(ar.consultor_responsavel_nome)) not like 'wesley%'
+        and lower(trim(ar.consultor_responsavel_nome)) not like 'danubia%'
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}`,
     params
   );
 
@@ -335,6 +362,7 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
   return {
     lead_id_payload: leadIdPayload.rowCount ?? 0,
     consultor: consultor.rowCount ?? 0,
+    consultor_clear: consultorClear.rowCount ?? 0,
     rgm_payload: rgmPayload.rowCount ?? 0,
     rgm_lk: rgmLk.rowCount ?? 0,
     rgm_dispatch: rgmDispatch.rowCount ?? 0,
@@ -420,10 +448,12 @@ export async function recordResponse(input) {
     }
   }
 
-  const consultorNome =
+  const consultorNome = sanitizeCaaConsultorForStorage(
+    category,
     (typeof input.consultorResponsavelNome === 'string' && input.consultorResponsavelNome.trim()
       ? input.consultorResponsavelNome.trim().slice(0, 200)
-      : null) ?? consultorFromRawPayload(rawPayload);
+      : null) ?? consultorFromRawPayload(rawPayload)
+  );
 
   // Resolve origem_ativacao: input explícito → raw_payload
   const origemAtivacao =
@@ -456,12 +486,39 @@ export async function recordResponse(input) {
      on conflict (external_id, category, ((received_at at time zone 'UTC')::date))
      where external_id is not null
      do update set
-       consultor_responsavel_nome = coalesce(
-         nullif(trim(excluded.consultor_responsavel_nome), ''),
-         nullif(trim(excluded.raw_payload->>'Consultor'), ''),
-         nullif(trim(excluded.raw_payload->>'consultor'), ''),
-         nullif(trim(activation_responses.consultor_responsavel_nome), '')
-       ),
+       consultor_responsavel_nome = case
+         when coalesce(excluded.category, activation_responses.category) = 'processos-caa' then
+           case
+             when nullif(trim(coalesce(
+               excluded.consultor_responsavel_nome,
+               excluded.raw_payload->>'Consultor',
+               excluded.raw_payload->>'consultor',
+               activation_responses.consultor_responsavel_nome,
+               ''
+             )), '') ilike 'wesley%'
+               or nullif(trim(coalesce(
+                 excluded.consultor_responsavel_nome,
+                 excluded.raw_payload->>'Consultor',
+                 excluded.raw_payload->>'consultor',
+                 activation_responses.consultor_responsavel_nome,
+                 ''
+               )), '') ilike 'danubia%'
+             then nullif(trim(coalesce(
+               excluded.consultor_responsavel_nome,
+               excluded.raw_payload->>'Consultor',
+               excluded.raw_payload->>'consultor',
+               activation_responses.consultor_responsavel_nome,
+               ''
+             )), '')
+             else activation_responses.consultor_responsavel_nome
+           end
+         else coalesce(
+           nullif(trim(excluded.consultor_responsavel_nome), ''),
+           nullif(trim(excluded.raw_payload->>'Consultor'), ''),
+           nullif(trim(excluded.raw_payload->>'consultor'), ''),
+           nullif(trim(activation_responses.consultor_responsavel_nome), '')
+         )
+       end,
        rgm = coalesce(activation_responses.rgm, excluded.rgm),
        master_key = coalesce(activation_responses.master_key, excluded.master_key),
        datacrazy_lead_id = coalesce(activation_responses.datacrazy_lead_id, excluded.datacrazy_lead_id),
@@ -618,10 +675,12 @@ export async function countSince(category, since) {
  * @returns {Promise<ActivationResponseRow|null>}
  */
 export async function updateConsultorResponsavel(id, consultorNome) {
-  const clean =
-    typeof consultorNome === 'string' && consultorNome.trim()
-      ? consultorNome.trim().slice(0, 200)
-      : null;
+  const { rows: existing } = await query(
+    `select category from activation_responses where id = $1`,
+    [id]
+  );
+  const category = existing[0]?.category ?? null;
+  const clean = sanitizeCaaConsultorForStorage(category, consultorNome);
   const { rows } = await query(
     `update activation_responses
         set consultor_responsavel_nome = $2
@@ -662,17 +721,32 @@ export async function syncConsultorFromCrmForResponses(opts = {}) {
   const params = category ? [days, limit, category] : [days, limit];
 
   const { rows } = await query(
-    `select ar.id, ar.datacrazy_lead_id
+    `select ar.id, ar.datacrazy_lead_id, ar.category
        from activation_responses ar
       where ar.datacrazy_lead_id is not null
-        and nullif(trim(coalesce(
-          ar.raw_payload->>'Consultor',
-          ar.raw_payload->>'consultor',
-          ar.consultor_responsavel_nome,
-          ''
-        )), '') is null
         and ar.received_at >= now() - ($1::int * interval '1 day')
         ${categoryFilter}
+        and (
+          (
+            ar.category <> 'processos-caa'
+            and nullif(trim(coalesce(
+              ar.raw_payload->>'Consultor',
+              ar.raw_payload->>'consultor',
+              ar.consultor_responsavel_nome,
+              ''
+            )), '') is null
+          )
+          or (
+            ar.category = 'processos-caa'
+            and (
+              nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is null
+              or (
+                lower(trim(ar.consultor_responsavel_nome)) not like 'wesley%'
+                and lower(trim(ar.consultor_responsavel_nome)) not like 'danubia%'
+              )
+            )
+          )
+        )
       order by ar.received_at desc
       limit $2`,
     params
@@ -691,8 +765,10 @@ export async function syncConsultorFromCrmForResponses(opts = {}) {
         row.datacrazy_lead_id,
         CONSULTOR_CRM_FIELD_ID
       );
-      const nome =
-        typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : null;
+      const nome = sanitizeCaaConsultorForStorage(
+        row.category,
+        typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : null
+      );
       if (!nome) continue;
       await query(
         `update activation_responses

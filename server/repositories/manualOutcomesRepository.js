@@ -9,7 +9,7 @@ import {
   sqlOrigemAtivacaoCond,
   sqlOutcomeLinkedToResponseExists,
 } from '../utils/origemAtivacaoFilter.js';
-import { sqlCaaMeuPainelConsultorAllowlist } from '../utils/caaConsultorAllowlist.js';
+import { sqlCaaMeuPainelDisplayConsultor } from '../utils/caaConsultorAllowlist.js';
 
 /**
  * @typedef {Object} ManualOutcomeRow
@@ -409,9 +409,9 @@ function meuPainelFilterParams(filters = {}) {
   return { consultorTrim, fromDate, toDate, category, origemAtivacao, search };
 }
 
-/** WHERE base do Meu Painel + filtro opcional de origem_ativacao + allowlist CAA. */
+/** WHERE base do Meu Painel + filtro opcional de origem_ativacao. */
 function meuPainelWhereSql(origemAtivacao) {
-  return `${MEU_PAINEL_WHERE_SQL}${sqlOrigemAtivacaoCond('ar', origemAtivacao)} and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}`;
+  return `${MEU_PAINEL_WHERE_SQL}${sqlOrigemAtivacaoCond('ar', origemAtivacao)}`;
 }
 
 /** RGM efetivo: resposta + matriculados + MV telefone */
@@ -423,6 +423,11 @@ export const MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL = `nullif(trim(both from coalesc
   nullif(trim(ar.raw_payload->>'consultor'), ''),
   nullif(trim(ar.consultor_responsavel_nome), '')
 )), '')`;
+
+/** Consultor exibido: CAA com nome fora de Wesley/Danubia aparece em branco. */
+export const MEU_PAINEL_DISPLAY_CONSULTOR_SQL = sqlCaaMeuPainelDisplayConsultor(
+  MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL
+);
 
 const MEU_PAINEL_DLC_JOIN = `
 left join datacrazy_lead_cache dlc
@@ -502,10 +507,10 @@ const MEU_PAINEL_WHERE_SQL = `
   (
     $1::text is null
     or (
-      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
+      ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} is not null
       and (
-        ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} ilike '%' || $1::text || '%'
-        or $1::text ilike '%' || ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} || '%'
+        ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} ilike '%' || $1::text || '%'
+        or $1::text ilike '%' || ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} || '%'
       )
     )
   )
@@ -615,7 +620,7 @@ export async function listMeuPainel(filters = {}) {
       )                                as rgm,
       nullif(trim(ar.rgm), '')         as response_rgm,
       ar.telefone                      as telefone,
-      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} as consultor_responsavel_nome,
+      ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} as consultor_responsavel_nome,
       ar.origem_ativacao               as origem_ativacao,
       ar.response_kind                 as response_kind,
       ar.message_text                  as message_text,
@@ -807,10 +812,10 @@ export async function meuPainelOrigemCounts(filters = {}) {
     where (
       $1::text is null
       or (
-        ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
+        ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} is not null
         and (
-          ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} ilike '%' || $1::text || '%'
-          or $1::text ilike '%' || ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} || '%'
+          ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} ilike '%' || $1::text || '%'
+          or $1::text ilike '%' || ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} || '%'
         )
       )
     )
@@ -818,7 +823,6 @@ export async function meuPainelOrigemCounts(filters = {}) {
       and ($3::timestamptz is null or ar.received_at < $3)
       and ($4::text is null or ar.category = $4)
       ${sqlOrigemAtivacaoCond('ar', origemAtivacao)}
-      and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}
     group by ar.category, coalesce(nullif(trim(ar.origem_ativacao), ''), '')
     order by total desc, ar.category, origem_ativacao
     `,

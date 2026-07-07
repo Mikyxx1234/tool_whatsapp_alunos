@@ -1,7 +1,6 @@
 import { query } from '../db/client.js';
-import { MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL } from '../repositories/manualOutcomesRepository.js';
+import { MEU_PAINEL_DISPLAY_CONSULTOR_SQL } from '../repositories/manualOutcomesRepository.js';
 import { aggregateMeuPainelOrigemCounts, getMeuPainelBaseLabel, getMeuPainelOrigemGroupKey } from '../utils/meuPainelLabels.js';
-import { sqlCaaMeuPainelConsultorAllowlist } from '../utils/caaConsultorAllowlist.js';
 import {
   normalizeOrigemAtivacaoFilter,
   sqlOrigemAtivacaoCond,
@@ -87,7 +86,7 @@ export async function fetchPendentesInsights(ctx) {
   const { rows } = await query(
     `
     select
-      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} as consultor_nome,
+      ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} as consultor_nome,
       count(*)::int as pendentes,
       count(*) filter (
         where ar.received_at >= now() - interval '4 hours'
@@ -105,13 +104,11 @@ export async function fetchPendentesInsights(ctx) {
       )::int as age_3d_plus
     from activation_responses ar
     where ar.category = 'processos-caa'
-      and ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
-      and ${sqlCaaMeuPainelConsultorAllowlist(MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL)}
       and ${PENDENTE_ENGAGED_SQL}
       and not (${OUTCOME_EXISTS})
       ${origemCond}
-    group by ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL}
-    order by pendentes desc, consultor_nome
+    group by ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL}
+    order by pendentes desc, consultor_nome nulls last
     `
   );
 
@@ -119,11 +116,12 @@ export async function fetchPendentesInsights(ctx) {
 
   const byKey = new Map();
   for (const r of rows) {
-    const key = ctx.resolver.resolveKey(r.consultor_nome);
-    if (!key) continue;
-    if (metaKeys && metaKeys.size > 0 && !metaKeys.has(key)) continue;
+    const rawNome = r.consultor_nome ? String(r.consultor_nome).trim() : '';
+    const key = rawNome ? ctx.resolver.resolveKey(rawNome) : '__sem_consultor__';
+    if (metaKeys && metaKeys.size > 0 && rawNome && !metaKeys.has(key)) continue;
+    const displayNome = rawNome || '(sem consultor)';
     const prev = byKey.get(key) || {
-      consultor_nome: ctx.resolver.displayName(key),
+      consultor_nome: rawNome ? ctx.resolver.displayName(key) : displayNome,
       pendentes: 0,
       age_0_4h: 0,
       age_4_24h: 0,
@@ -131,7 +129,7 @@ export async function fetchPendentesInsights(ctx) {
       age_3d_plus: 0,
     };
     byKey.set(key, {
-      consultor_nome: ctx.resolver.displayName(key),
+      consultor_nome: rawNome ? ctx.resolver.displayName(key) : displayNome,
       pendentes: prev.pendentes + Number(r.pendentes || 0),
       age_0_4h: prev.age_0_4h + Number(r.age_0_4h || 0),
       age_4_24h: prev.age_4_24h + Number(r.age_4_24h || 0),
