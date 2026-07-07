@@ -98,6 +98,7 @@ export interface MeuPainelFilters {
   category?: MeuPainelCategory | null;
   from?: string | null;
   to?: string | null;
+  search?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -134,6 +135,7 @@ function buildQuery(filters: MeuPainelFilters): string {
   if (filters.category) params.set('category', filters.category);
   if (filters.from) params.set('from', filters.from);
   if (filters.to) params.set('to', filters.to);
+  if (filters.search) params.set('search', filters.search);
   if (filters.limit != null) params.set('limit', String(filters.limit));
   if (filters.offset != null) params.set('offset', String(filters.offset));
   const qs = params.toString();

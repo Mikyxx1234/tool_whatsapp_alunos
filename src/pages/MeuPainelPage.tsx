@@ -124,6 +124,7 @@ export default function MeuPainelPage() {
   const [range, setRange] = useState<RangeKey>('today');
   const [category, setCategory] = useState<MeuPainelCategory | ''>('processos-caa');
   const [search, setSearch] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
   const [stats, setStats] = useState<MeuPainelStats>(EMPTY_STATS);
   const [origemCounts, setOrigemCounts] = useState<MeuPainelOrigemCount[]>([]);
   const [items, setItems] = useState<MeuPainelItem[]>([]);
@@ -165,6 +166,14 @@ export default function MeuPainelPage() {
     setPage(1);
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setAppliedSearch(search.trim());
+      setPage(1);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
   const listFiltersBase = useMemo(() => {
     const preset = presetDateRange(range);
     const from = usingCustomRange ? appliedFrom : preset.from;
@@ -176,6 +185,7 @@ export default function MeuPainelPage() {
       category: (category || null) as MeuPainelCategory | null,
       from,
       to,
+      search: appliedSearch || null,
     };
   }, [
     consultorParaApi,
@@ -189,6 +199,7 @@ export default function MeuPainelPage() {
     usingCustomRange,
     appliedFrom,
     appliedTo,
+    appliedSearch,
   ]);
 
   const reloadSummary = useCallback(async () => {
@@ -304,22 +315,13 @@ export default function MeuPainelPage() {
     }
   }
 
-  const filteredItems = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) =>
-      [it.nome, it.rgm, it.cpf, it.telefone, it.protocolo, it.curso, it.polo, it.message_text]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(q))
-    );
-  }, [items, search]);
+  const totalPages = Math.max(1, Math.ceil(listTotal / pageSize));
 
   const origemCountsTotal = useMemo(
     () => origemCounts.reduce((sum, row) => sum + row.total, 0),
     [origemCounts]
   );
 
-  const totalPages = Math.max(1, Math.ceil(listTotal / pageSize));
   const safePage = Math.min(page, totalPages);
   const rangeStart = listTotal === 0 ? 0 : (safePage - 1) * pageSize + 1;
   const rangeEnd = listTotal === 0 ? 0 : Math.min(safePage * pageSize, listTotal);
@@ -563,8 +565,8 @@ export default function MeuPainelPage() {
             <span className="text-xs text-gray-500">
               {listLoading && items.length === 0
                 ? 'Carregando…'
-                : search.trim()
-                  ? `${filteredItems.length} nesta página · ${fmtInt(listTotal)} total`
+                : appliedSearch
+                  ? `${fmtInt(listTotal)} encontrado${listTotal === 1 ? '' : 's'}`
                   : listTotal === 0
                     ? '0 leads'
                     : `${fmtInt(rangeStart)}–${fmtInt(rangeEnd)} de ${fmtInt(listTotal)}`}
@@ -593,16 +595,16 @@ export default function MeuPainelPage() {
                       Carregando…
                     </td>
                   </tr>
-                ) : filteredItems.length === 0 ? (
+                ) : items.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-3 py-10 text-center text-gray-500">
-                      {items.length === 0
-                        ? 'Nenhum lead atribuído ao seu nome no período selecionado.'
-                        : 'Nenhum lead corresponde à busca nesta página.'}
+                      {appliedSearch
+                        ? 'Nenhum lead encontrado para esta busca.'
+                        : 'Nenhum lead atribuído ao seu nome no período selecionado.'}
                     </td>
                   </tr>
                 ) : (
-                  filteredItems.map((it) => (
+                  items.map((it) => (
                     <tr key={it.response_id} className="hover:bg-gray-50/60">
                       <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
                         {fmtDateTime(it.received_at)}

@@ -403,7 +403,9 @@ function meuPainelFilterParams(filters = {}) {
   }
   const category = filters.category ? String(filters.category).trim() : null;
   const origemAtivacao = normalizeOrigemAtivacaoFilter(filters.origem_ativacao);
-  return { consultorTrim, fromDate, toDate, category, origemAtivacao };
+  const searchRaw = filters.search ? String(filters.search).trim().slice(0, 120) : '';
+  const search = searchRaw || null;
+  return { consultorTrim, fromDate, toDate, category, origemAtivacao, search };
 }
 
 /** WHERE base do Meu Painel + filtro opcional de origem_ativacao. */
@@ -504,6 +506,61 @@ const MEU_PAINEL_WHERE_SQL = `
   and ($4::text is null or ar.category = $4)
 `;
 
+/** Busca no servidor (nome, RGM, CPF, telefone, protocolo…) — param $5. */
+const MEU_PAINEL_SEARCH_SQL = `
+  and (
+    $5::text is null
+    or (
+      ar.rgm ilike '%' || $5 || '%'
+      or ar.telefone ilike '%' || $5 || '%'
+      or ar.master_key ilike '%' || $5 || '%'
+      or coalesce(ar.consultor_responsavel_nome, '') ilike '%' || $5 || '%'
+      or coalesce(ar.raw_payload->>'nome', '') ilike '%' || $5 || '%'
+      or coalesce(ar.raw_payload->>'cpf', '') ilike '%' || $5 || '%'
+      or coalesce(ar.raw_payload->>'protocolo', '') ilike '%' || $5 || '%'
+      or coalesce(ar.raw_payload->>'curso', '') ilike '%' || $5 || '%'
+      or coalesce(ar.raw_payload->>'polo', '') ilike '%' || $5 || '%'
+      or coalesce(ar.message_text, '') ilike '%' || $5 || '%'
+      or ${EFFECTIVE_RGM_EXPR} ilike '%' || $5 || '%'
+      or coalesce(mat.nome, '') ilike '%' || $5 || '%'
+      or coalesce(dlc.nome, '') ilike '%' || $5 || '%'
+      or coalesce(lk.nome, '') ilike '%' || $5 || '%'
+      or coalesce(cp.protocolo, '') ilike '%' || $5 || '%'
+      or (
+        length(regexp_replace($5, '[^0-9]', '', 'g')) >= 5
+        and regexp_replace(coalesce(${EFFECTIVE_RGM_EXPR}, ar.rgm, ''), '[^0-9]', '', 'g')
+            like '%' || regexp_replace($5, '[^0-9]', '', 'g') || '%'
+      )
+    )
+  )
+`;
+
+const MEU_PAINEL_CP_LATERAL = `
+left join lateral (
+  select protocolo, nome, cpf, curso, polo, status, last_status_change_at
+  from caa_protocols c
+  where (
+    ${EFFECTIVE_RGM_EXPR} is not null
+    and c.rgm = ${EFFECTIVE_RGM_EXPR}
+  )
+     or (
+    dlc.cpf is not null
+    and c.cpf is not null
+    and regexp_replace(c.cpf, '[^0-9]', '', 'g') = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+  )
+  order by c.last_status_change_at desc nulls last
+  limit 1
+) cp on true
+`;
+
+const MEU_PAINEL_CORE_FROM = `
+  from activation_responses ar
+  ${MEU_PAINEL_DLC_JOIN}
+  ${MEU_PAINEL_LK_JOIN}
+  ${MEU_PAINEL_MAT_LATERAL}
+  ${MEU_PAINEL_CP_LATERAL}
+`;
+
 export const MEU_PAINEL_PAGE_SIZES = [50, 100, 200, 300];
 
 /** @param {unknown} raw */
@@ -517,19 +574,24 @@ export function parseMeuPainelPageSize(raw) {
  * @param {Parameters<typeof listMeuPainel>[0]} filters
  */
 export async function countMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search } =
+    meuPainelFilterParams(filters);
   const { rows } = await query(
-    `select count(*)::int as total from activation_responses ar where ${meuPainelWhereSql(origemAtivacao)}`,
-    [consultorTrim, fromDate, toDate, category]
+    `select count(*)::int as total
+     ${MEU_PAINEL_CORE_FROM}
+     where ${meuPainelWhereSql(origemAtivacao)}
+     ${MEU_PAINEL_SEARCH_SQL}`,
+    [consultorTrim, fromDate, toDate, category, search]
   );
   return Number(rows[0]?.total || 0);
 }
 
 export async function listMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category, origemAtivacao } = meuPainelFilterParams(filters);
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search } =
+    meuPainelFilterParams(filters);
   const limit = parseMeuPainelPageSize(filters.limit);
   const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
-  const whereParams = [consultorTrim, fromDate, toDate, category];
+  const whereParams = [consultorTrim, fromDate, toDate, category, search];
 
   const [listResult, total] = await Promise.all([
     query(
@@ -593,29 +655,12 @@ export async function listMeuPainel(filters = {}) {
         ar.external_id like 'manual:%'
         or coalesce((ar.raw_payload->>'manual')::boolean, false)
       )                                as is_manual
-    from activation_responses ar
-    ${MEU_PAINEL_DLC_JOIN}
-    ${MEU_PAINEL_LK_JOIN}
-    ${MEU_PAINEL_MAT_LATERAL}
-    left join lateral (
-      select protocolo, nome, cpf, curso, polo, status, last_status_change_at
-      from caa_protocols c
-      where (
-        ${EFFECTIVE_RGM_EXPR} is not null
-        and c.rgm = ${EFFECTIVE_RGM_EXPR}
-      )
-         or (
-        dlc.cpf is not null
-        and c.cpf is not null
-        and regexp_replace(c.cpf, '[^0-9]', '', 'g') = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
-      )
-      order by c.last_status_change_at desc nulls last
-      limit 1
-    ) cp on true
+    ${MEU_PAINEL_CORE_FROM}
     ${MEU_PAINEL_OUTCOME_LATERAL}
- where ${meuPainelWhereSql(origemAtivacao)}
- order by ar.received_at desc
-    limit $5 offset $6
+    where ${meuPainelWhereSql(origemAtivacao)}
+    ${MEU_PAINEL_SEARCH_SQL}
+    order by ar.received_at desc
+    limit $6 offset $7
     `,
       [...whereParams, limit, offset]
     ),
@@ -869,13 +914,22 @@ export async function createManualMeuPainelLead(input) {
     await client.query('BEGIN');
 
     const { rows: dup } = await client.query(
-      `select id from activation_responses
+      `select id, consultor_responsavel_nome, received_at, origem_ativacao, external_id
+         from activation_responses
         where category = $1 and rgm = $2
         limit 1`,
       [category, rgm]
     );
     if (dup.length) {
-      const err = new Error('Ja existe um lead com este RGM em Processos CAA.');
+      const existing = dup[0];
+      const when = existing.received_at
+        ? new Date(existing.received_at).toLocaleDateString('pt-BR')
+        : '—';
+      const consultor = existing.consultor_responsavel_nome || '—';
+      const err = new Error(
+        `Ja existe um lead com este RGM em Processos CAA (consultor: ${consultor}, recebido em ${when}). ` +
+          'Use a busca com periodo "Tudo" para localiza-lo.'
+      );
       err.status = 409;
       throw err;
     }

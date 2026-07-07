@@ -187,11 +187,13 @@ router.get('/meu-painel/list', async (req, res) => {
     const { from, to } = parseDateRange(req.query.from, req.query.to);
     const limit = manualOutcomesRepo.parseMeuPainelPageSize(req.query.limit);
     const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+    const search = req.query.search ? String(req.query.search).trim() : undefined;
     const { items, total } = await manualOutcomesRepo.listMeuPainel({
       consultor,
       from,
       to,
       category,
+      search,
       limit,
       offset,
     });
