@@ -5,6 +5,12 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-07 — Meu Painel: consultor efetivo do payload + sync CRM periódico
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** Coluna `consultor_responsavel_nome` ficava null (41 leads/7d) ou desatualizada (90 divergências vs `raw_payload.Consultor`) — ex.: Renata com "Julia" no payload mas "—" na UI. Causa: gravação antiga não propagava payload; ON CONFLICT priorizava coluna antiga; 30 leads com chave `Consultor` vazia no webhook.
+- **Decisão:** (1) `MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL` — exibição/filtro usam `COALESCE(payload.Consultor, coluna)`. (2) Backfill corrige null **e** divergências. (3) `syncConsultorFromCrmForResponses` lê `DATACRAZY_CONSULTOR_RESPONSAVEL_FIELD_ID` quando payload vazio; cron 2h + `POST /api/maintenance/sync-response-consultores`. (4) ON CONFLICT prefere consultor do webhook.
+- **Alternativas descartadas:** só backfill manual (não escala); confiar só no CRM (payload do n8n já traz consultor na maioria ATM/IA).
+
 ### 2026-07-06 — Painel CAA ATM/IA: sem métricas de disparo WhatsApp
 - **Modelo usado:** Opus 4.7 (principal).
 - **Problema:** Filtros `caa_atm`/`caa_ia` exibiam "Disparos enviados" (ex.: 36) porque `getActivationConversion` cruzava `activation_dispatch_events` com `activation_responses` da mesma origem via `EXISTS` — leads que receberam disparo CAA normal e depois entraram via movimentação DataCrazy (ou vice-versa) contaminavam o KPI.

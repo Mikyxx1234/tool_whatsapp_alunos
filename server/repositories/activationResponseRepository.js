@@ -104,6 +104,79 @@ function rgmFromRawPayload(raw) {
 }
 
 /**
+ * Resolve telefone a partir do raw_payload do webhook.
+ * Aceita vários nomes de chave usados por diferentes origens (DataCrazy, n8n, CAA).
+ * @param {Record<string, unknown>|null|undefined} raw
+ * @returns {string|null}
+ */
+export function telefoneFromRawPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const candidates = [
+    raw['Telefone do Lead'],
+    raw['Telefone'],
+    raw['telefone'],
+    raw['phone'],
+    raw['Phone'],
+    raw['numero'],
+    raw['Numero'],
+    raw['celular'],
+    raw['Celular'],
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+    if (typeof c === 'number' && c) return String(c);
+  }
+  return null;
+}
+
+/**
+ * Resolve datacrazy_lead_id a partir do raw_payload do webhook.
+ * @param {Record<string, unknown>|null|undefined} raw
+ * @returns {string|null}
+ */
+export function leadIdFromRawPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const candidates = [
+    raw['Id do Lead'],
+    raw['id_do_lead'],
+    raw['lead_id'],
+    raw['leadId'],
+    raw['datacrazy_lead_id'],
+    raw['datacrazyLeadId'],
+  ];
+  for (const c of candidates) {
+    const s = c != null ? String(c).trim() : '';
+    if (s) return s;
+  }
+  return null;
+}
+
+/**
+ * Resolve origem_ativacao a partir do raw_payload do webhook.
+ * Aceita o campo "Origem Ativação" (com ou sem acento) e variantes snake_case.
+ * Retorna só valores reconhecidos pelo enum do sistema.
+ * @param {Record<string, unknown>|null|undefined} raw
+ * @returns {string|null}
+ */
+export function origemAtivacaoFromRawPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const VALID = new Set(['caa', 'caa_atm', 'caa_ia']);
+  const candidates = [
+    raw['Origem Ativação'],
+    raw['Origem Ativacao'],
+    raw['origem_ativacao'],
+    raw['origemAtivacao'],
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) {
+      const v = c.trim().toLowerCase();
+      if (VALID.has(v)) return v;
+    }
+  }
+  return null;
+}
+
+/**
  * @param {string|null|undefined} telefone
  * @returns {Promise<string|null>}
  */
@@ -132,20 +205,39 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
   const params = [days];
   if (category) params.push(category);
 
+  // Step 0 — backfill datacrazy_lead_id de raw_payload->'Id do Lead' quando ausente
+  const leadIdPayload = await query(
+    `update activation_responses ar
+        set datacrazy_lead_id = nullif(trim(ar.raw_payload->>'Id do Lead'), '')
+      where ar.datacrazy_lead_id is null
+        and nullif(trim(ar.raw_payload->>'Id do Lead'), '') is not null
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}`,
+    params
+  );
+
+  // Step 1 — backfill consultor de raw_payload (corrige null e coluna desatualizada)
   const consultor = await query(
     `update activation_responses ar
         set consultor_responsavel_nome = trim(both from coalesce(
               nullif(trim(ar.raw_payload->>'Consultor'), ''),
               nullif(trim(ar.raw_payload->>'consultor'), '')
             ))
-      where nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is null
-        and nullif(trim(coalesce(
+      where nullif(trim(coalesce(
               ar.raw_payload->>'Consultor',
               ar.raw_payload->>'consultor',
               ''
             )), '') is not null
         and ar.received_at >= now() - ($1::int * interval '1 day')
-        ${categoryFilter}`,
+        ${categoryFilter}
+        and (
+          nullif(trim(coalesce(ar.consultor_responsavel_nome, '')), '') is null
+          or lower(trim(ar.consultor_responsavel_nome)) <> lower(trim(coalesce(
+                ar.raw_payload->>'Consultor',
+                ar.raw_payload->>'consultor',
+                ''
+              )))
+        )`,
     params
   );
 
@@ -210,17 +302,52 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
     params
   );
 
+  // Step 5 — backfill rgm via datacrazy_lead_cache (lookup por lead_id → CPF → matriculados)
+  const rgmCacheLeadId = await query(
+    `with matched as (
+       select ar.id,
+              nullif(trim(coalesce(
+                mr.data->>'RGM', mr.data->>'Rgm', mr.data->>'Matricula', mr.data->>'matricula', ''
+              )), '') as rgm
+         from activation_responses ar
+         join datacrazy_lead_cache dlc
+           on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
+         join matriculados_rows mr
+           on mr.snapshot_id = (
+                select id from matriculados_snapshots order by created_at desc limit 1
+              )
+          and regexp_replace(coalesce(mr.data->>'CPF', mr.data->>'Cpf', mr.data->>'Cpf Aluno', ''), '[^0-9]', '', 'g')
+              = regexp_replace(dlc.cpf, '[^0-9]', '', 'g')
+        where nullif(trim(coalesce(ar.rgm, '')), '') is null
+          and ar.datacrazy_lead_id is not null
+          and ar.received_at >= now() - ($1::int * interval '1 day')
+          ${categoryFilter}
+        order by ar.id, mr.data->>'Data Matrícula' desc nulls last
+     )
+     update activation_responses ar
+        set rgm = m.rgm,
+            master_key = coalesce(nullif(trim(ar.master_key), ''), 'RGM:' || m.rgm)
+       from (select distinct on (id) id, rgm from matched where rgm is not null) m
+      where ar.id = m.id`,
+    params
+  );
+
   return {
+    lead_id_payload: leadIdPayload.rowCount ?? 0,
     consultor: consultor.rowCount ?? 0,
     rgm_payload: rgmPayload.rowCount ?? 0,
     rgm_lk: rgmLk.rowCount ?? 0,
     rgm_dispatch: rgmDispatch.rowCount ?? 0,
+    rgm_cache_lead_id: rgmCacheLeadId.rowCount ?? 0,
   };
 }
 
 /**
- * Insere uma resposta (idempotente via external_id).
- * Quando master_key/lead_id/phone faltam, tenta resolver pelo último dispatch.
+ * Insere uma resposta (idempotente via external_id + category + dia).
+ * Quando master_key/lead_id/phone faltam, tenta resolver pelo payload e pelo
+ * último dispatch. Em conflito (mesmo external_id+category+dia), faz DO UPDATE
+ * para enriquecer campos nulos (consultor, rgm, master_key, origem_ativacao,
+ * datacrazy_lead_id) e mescla raw_payload via jsonb merge.
  *
  * @param {{
  *   category?: string|null,
@@ -229,6 +356,7 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
  *   telefone?: string|null,
  *   rgm?: string|null,
  *   cpf?: string|null,
+ *   origemAtivacao?: string|null,
  *   responseKind?: 'click'|'message'|'opt_out'|'other',
  *   buttonPayload?: string|null,
  *   messageText?: string|null,
@@ -239,7 +367,20 @@ export async function backfillResponsesMissingIdentity(opts = {}) {
  * }} input
  */
 export async function recordResponse(input) {
-  const telNorm = normalizePhoneOrRaw(input.telefone);
+  const rawPayload = input.rawPayload ?? null;
+
+  // Resolve telefone: input explícito → raw_payload
+  const telRaw = input.telefone ?? telefoneFromRawPayload(rawPayload);
+  const telNorm = normalizePhoneOrRaw(telRaw);
+
+  // Resolve datacrazy_lead_id: input explícito → raw_payload
+  const datacrazyLeadId =
+    (input.datacrazyLeadId != null
+      ? String(input.datacrazyLeadId).trim()
+      : null) ||
+    leadIdFromRawPayload(rawPayload) ||
+    null;
+
   const cpfDigits = normalizeCpfDigits(input.cpf);
 
   // Matriculados é fonte de verdade do RGM quando há CPF (matrícula mais recente).
@@ -251,7 +392,7 @@ export async function recordResponse(input) {
     rgm = normalizeRgmCanonical(input.rgm);
   }
   if (!rgm) {
-    rgm = rgmFromRawPayload(input.rawPayload);
+    rgm = rgmFromRawPayload(rawPayload);
   }
   if (!rgm && telNorm) {
     rgm = await findRgmByPhoneInLk(telNorm);
@@ -269,7 +410,7 @@ export async function recordResponse(input) {
   if (!masterKey) {
     const resolved = await resolveDispatchContext({
       category,
-      datacrazyLeadId: input.datacrazyLeadId ?? null,
+      datacrazyLeadId,
       telefone: telNorm,
     });
     if (resolved) {
@@ -282,30 +423,54 @@ export async function recordResponse(input) {
   const consultorNome =
     (typeof input.consultorResponsavelNome === 'string' && input.consultorResponsavelNome.trim()
       ? input.consultorResponsavelNome.trim().slice(0, 200)
-      : null) ?? consultorFromRawPayload(input.rawPayload);
+      : null) ?? consultorFromRawPayload(rawPayload);
+
+  // Resolve origem_ativacao: input explícito → raw_payload
+  const origemAtivacao =
+    (input.origemAtivacao && String(input.origemAtivacao).trim()) ||
+    origemAtivacaoFromRawPayload(rawPayload) ||
+    null;
 
   const params = [
     category,
     masterKey,
-    input.datacrazyLeadId ?? null,
+    datacrazyLeadId,
     telNorm,
     rgm,
     input.responseKind ?? 'click',
     input.buttonPayload ?? null,
     input.messageText ?? null,
     input.externalId ?? null,
-    input.rawPayload ? JSON.stringify(input.rawPayload) : null,
+    rawPayload ? JSON.stringify(rawPayload) : null,
     input.receivedAt ? new Date(input.receivedAt) : new Date(),
     consultorNome,
+    origemAtivacao,
   ];
 
   const { rows } = await query(
     `insert into activation_responses (
        category, master_key, datacrazy_lead_id, telefone, rgm,
        response_kind, button_payload, message_text, external_id,
-       raw_payload, received_at, consultor_responsavel_nome
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
-     on conflict (external_id) where external_id is not null do nothing
+       raw_payload, received_at, consultor_responsavel_nome, origem_ativacao
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
+     on conflict (external_id, category, ((received_at at time zone 'UTC')::date))
+     where external_id is not null
+     do update set
+       consultor_responsavel_nome = coalesce(
+         nullif(trim(excluded.consultor_responsavel_nome), ''),
+         nullif(trim(excluded.raw_payload->>'Consultor'), ''),
+         nullif(trim(excluded.raw_payload->>'consultor'), ''),
+         nullif(trim(activation_responses.consultor_responsavel_nome), '')
+       ),
+       rgm = coalesce(activation_responses.rgm, excluded.rgm),
+       master_key = coalesce(activation_responses.master_key, excluded.master_key),
+       datacrazy_lead_id = coalesce(activation_responses.datacrazy_lead_id, excluded.datacrazy_lead_id),
+       origem_ativacao = coalesce(activation_responses.origem_ativacao, excluded.origem_ativacao),
+       raw_payload = case
+         when activation_responses.raw_payload is null then excluded.raw_payload
+         when excluded.raw_payload is null then activation_responses.raw_payload
+         else activation_responses.raw_payload || excluded.raw_payload
+       end
      returning id, category, master_key, datacrazy_lead_id, telefone,
                response_kind, received_at, consultor_responsavel_nome`,
     params
@@ -468,6 +633,90 @@ export async function updateConsultorResponsavel(id, consultorNome) {
   return rows[0] ?? null;
 }
 
+const CONSULTOR_CRM_FIELD_ID = process.env.DATACRAZY_CONSULTOR_RESPONSAVEL_FIELD_ID || '';
+
+/**
+ * Preenche consultor_responsavel_nome via campo customizado do DataCrazy CRM
+ * para leads que ainda não têm consultor no payload nem na coluna.
+ *
+ * @param {{ days?: number, limit?: number, category?: string|null }} [opts]
+ */
+export async function syncConsultorFromCrmForResponses(opts = {}) {
+  const days = Math.max(1, Math.floor(Number(opts.days) || 14));
+  const limit = Math.min(Math.max(Number(opts.limit) || 500, 1), 2000);
+  const category = opts.category ? String(opts.category).trim() : null;
+
+  if (!CONSULTOR_CRM_FIELD_ID) {
+    return {
+      scanned: 0,
+      updated: 0,
+      failed: 0,
+      skipped_no_config: true,
+      field_id: null,
+      days,
+      category,
+    };
+  }
+
+  const categoryFilter = category ? 'and ar.category = $3' : '';
+  const params = category ? [days, limit, category] : [days, limit];
+
+  const { rows } = await query(
+    `select ar.id, ar.datacrazy_lead_id
+       from activation_responses ar
+      where ar.datacrazy_lead_id is not null
+        and nullif(trim(coalesce(
+          ar.raw_payload->>'Consultor',
+          ar.raw_payload->>'consultor',
+          ar.consultor_responsavel_nome,
+          ''
+        )), '') is null
+        and ar.received_at >= now() - ($1::int * interval '1 day')
+        ${categoryFilter}
+      order by ar.received_at desc
+      limit $2`,
+    params
+  );
+
+  const { datacrazyClient } = await import('../services/datacrazyClient.js');
+  const { datacrazyCrmLimiter } = await import('../utils/datacrazyCrmLimiter.js');
+
+  let updated = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    try {
+      await datacrazyCrmLimiter.acquire();
+      const raw = await datacrazyClient.getLeadAdditionalFieldValue(
+        row.datacrazy_lead_id,
+        CONSULTOR_CRM_FIELD_ID
+      );
+      const nome =
+        typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : null;
+      if (!nome) continue;
+      await query(
+        `update activation_responses
+            set consultor_responsavel_nome = $2
+          where id = $1`,
+        [row.id, nome]
+      );
+      updated += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    scanned: rows.length,
+    updated,
+    failed,
+    skipped_no_config: false,
+    field_id: CONSULTOR_CRM_FIELD_ID,
+    days,
+    category,
+  };
+}
+
 /**
  * Lista valores distintos de consultor_responsavel_nome ja gravados no banco.
  * Usado pelo autocomplete do modal de atribuicao manual.
@@ -476,12 +725,22 @@ export async function updateConsultorResponsavel(id, consultorNome) {
  */
 export async function listDistinctConsultores() {
   const { rows } = await query(
-    `select distinct consultor_responsavel_nome as nome
-       from activation_responses
-      where consultor_responsavel_nome is not null
-        and trim(consultor_responsavel_nome) <> ''
-      order by nome asc
-      limit 500`
+    `select distinct nome from (
+       select nullif(trim(consultor_responsavel_nome), '') as nome
+         from activation_responses
+        where consultor_responsavel_nome is not null
+       union
+       select nullif(trim(raw_payload->>'Consultor'), '') as nome
+         from activation_responses
+        where nullif(trim(raw_payload->>'Consultor'), '') is not null
+       union
+       select nullif(trim(raw_payload->>'consultor'), '') as nome
+         from activation_responses
+        where nullif(trim(raw_payload->>'consultor'), '') is not null
+     ) t
+     where nome is not null and nome <> ''
+     order by nome asc
+     limit 500`
   );
   return rows.map((r) => r.nome).filter(Boolean);
 }

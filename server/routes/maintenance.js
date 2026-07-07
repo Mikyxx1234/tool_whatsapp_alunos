@@ -6,8 +6,10 @@ import { Router } from 'express';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 import { cleanStaleOrigemAtivacao } from '../services/activationOrigemCleanupService.js';
 import { syncCaaDesfechos } from '../services/crmDesfechoSyncService.js';
+import { syncResponseConsultores } from '../services/crmConsultorSyncService.js';
 import { runFullSync, startFullSyncBackground } from '../services/datacrazyLeadCacheSyncService.js';
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
+import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -163,6 +165,52 @@ router.post('/invalidate-datacrazy-cache', requireApiKey, async (req, res) => {
     res.status(400).json({ error: 'cpf or all=1 required' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/maintenance/backfill-response-identity
+ *
+ * Preenche consultor_responsavel_nome, rgm, master_key, datacrazy_lead_id e
+ * origem_ativacao faltantes em `activation_responses` usando raw_payload,
+ * mv_aluno_por_telefone, datacrazy_lead_cache e activation_dispatch_events.
+ *
+ * Query:
+ *   ?days=N       → janela em dias (default 30)
+ *   ?category=X   → filtra por categoria (ex: processos-caa)
+ *
+ * Response:
+ *   { ok, lead_id_payload, consultor, rgm_payload, rgm_lk, rgm_dispatch,
+ *     rgm_cache_lead_id, days, category, ran_at }
+ */
+router.post('/backfill-response-identity', requireApiKey, async (req, res, next) => {
+  try {
+    const days = req.query.days ? Math.max(1, parseInt(String(req.query.days), 10) || 30) : 30;
+    const category = req.query.category ? String(req.query.category).trim() : null;
+    const result = await activationResponseRepo.backfillResponsesMissingIdentity({ days, category });
+    res.json({ ok: true, ...result, days, category, ran_at: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/maintenance/sync-response-consultores
+ *
+ * Backfill consultor de raw_payload + leitura do campo CRM quando vazio.
+ * Query: ?days=N (default 30), ?category=processos-caa, ?crm_limit=500
+ */
+router.post('/sync-response-consultores', requireApiKey, async (req, res, next) => {
+  try {
+    const days = req.query.days ? Math.max(1, parseInt(String(req.query.days), 10) || 30) : 30;
+    const category = req.query.category ? String(req.query.category).trim() : 'processos-caa';
+    const crmLimit = req.query.crm_limit
+      ? Math.min(Math.max(parseInt(String(req.query.crm_limit), 10) || 500, 1), 2000)
+      : 500;
+    const result = await syncResponseConsultores({ days, category, crm_limit: crmLimit });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    next(err);
   }
 });
 

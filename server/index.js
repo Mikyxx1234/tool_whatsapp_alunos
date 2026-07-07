@@ -181,6 +181,26 @@ app.listen(PORT, '0.0.0.0', () => {
         });
     }, CRM_DESFECHO_SYNC_INTERVAL_HOURS * 60 * 60 * 1000);
 
+    // Cron interno: backfill consultor do payload + CRM para leads sem consultor.
+    // Endpoint manual: POST /api/maintenance/sync-response-consultores.
+    const CRM_CONSULTOR_SYNC_INTERVAL_HOURS = Math.max(
+      1,
+      parseFloat(process.env.CRM_CONSULTOR_SYNC_INTERVAL_HOURS || '2') || 2
+    );
+    setInterval(() => {
+      import('./services/crmConsultorSyncService.js')
+        .then((m) => m.syncResponseConsultores({ days: 30, category: 'processos-caa' }))
+        .then((r) => {
+          if (r.crm?.skipped_no_config && r.backfill?.consultor === 0) return;
+          console.log(
+            `[crm-consultor-sync] backfill_consultor=${r.backfill?.consultor ?? 0} crm_updated=${r.crm?.updated ?? 0} crm_scanned=${r.crm?.scanned ?? 0}`
+          );
+        })
+        .catch((err) => {
+          console.error('[crm-consultor-sync] FAIL:', err.message);
+        });
+    }, CRM_CONSULTOR_SYNC_INTERVAL_HOURS * 60 * 60 * 1000);
+
     // Cron diário de sync do cache persistente cpf → datacrazy_lead_id.
     // Hora configurada em DATACRAZY_CACHE_SYNC_HOUR_UTC (default 03:00 UTC).
     // Endpoint manual: POST /api/maintenance/sync-datacrazy-cache.

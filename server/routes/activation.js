@@ -107,8 +107,19 @@ router.post('/responses', requireApiKey, async (req, res) => {
       externalId: String(externalId),
       rgm: body.rgm ?? body.RGM ?? null,
       cpf: body.cpf ?? body.CPF ?? null,
-      telefone: body.telefone ?? body.phone ?? null,
+      telefone:
+        body.telefone ??
+        body.phone ??
+        body['Telefone do Lead'] ??
+        body['Telefone'] ??
+        null,
       category: body.category ?? null,
+      origemAtivacao:
+        body.origem_ativacao ??
+        body.origemAtivacao ??
+        body['Origem Ativação'] ??
+        body['Origem Ativacao'] ??
+        null,
       responseKind: body.response_kind ?? body.responseKind ?? 'message',
       messageText: body.message_text ?? body.messageText ?? null,
       buttonPayload: body.button_payload ?? body.buttonPayload ?? null,

@@ -416,6 +416,13 @@ function meuPainelWhereSql(origemAtivacao) {
 /** RGM efetivo: resposta + matriculados + MV telefone */
 const EFFECTIVE_RGM_EXPR = `nullif(trim(coalesce(ar.rgm, mat.rgm, lk.rgm)), '')`;
 
+/** Consultor efetivo: webhook (payload) tem precedência sobre coluna desatualizada. */
+export const MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL = `nullif(trim(both from coalesce(
+  nullif(trim(ar.raw_payload->>'Consultor'), ''),
+  nullif(trim(ar.raw_payload->>'consultor'), ''),
+  nullif(trim(ar.consultor_responsavel_nome), '')
+)), '')`;
+
 const MEU_PAINEL_DLC_JOIN = `
 left join datacrazy_lead_cache dlc
   on dlc.datacrazy_lead_id = ar.datacrazy_lead_id
@@ -494,10 +501,10 @@ const MEU_PAINEL_WHERE_SQL = `
   (
     $1::text is null
     or (
-      ar.consultor_responsavel_nome is not null
+      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} is not null
       and (
-        ar.consultor_responsavel_nome ilike '%' || $1::text || '%'
-        or $1::text ilike '%' || ar.consultor_responsavel_nome || '%'
+        ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} ilike '%' || $1::text || '%'
+        or $1::text ilike '%' || ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} || '%'
       )
     )
   )
@@ -607,7 +614,7 @@ export async function listMeuPainel(filters = {}) {
       )                                as rgm,
       nullif(trim(ar.rgm), '')         as response_rgm,
       ar.telefone                      as telefone,
-      ar.consultor_responsavel_nome    as consultor_responsavel_nome,
+      ${MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL} as consultor_responsavel_nome,
       ar.origem_ativacao               as origem_ativacao,
       ar.response_kind                 as response_kind,
       ar.message_text                  as message_text,
