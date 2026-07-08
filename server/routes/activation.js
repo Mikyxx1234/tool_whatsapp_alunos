@@ -199,12 +199,15 @@ router.get('/meu-painel/list', async (req, res) => {
     const limit = manualOutcomesRepo.parseMeuPainelPageSize(req.query.limit);
     const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
     const search = req.query.search ? String(req.query.search).trim() : undefined;
+    const somenteAtribuidos =
+      req.query.somente_atribuidos === '1' || req.query.somente_atribuidos === 'true';
     const { items, total } = await manualOutcomesRepo.listMeuPainel({
       consultor,
       from,
       to,
       category,
       search,
+      somente_atribuidos: somenteAtribuidos,
       limit,
       offset,
     });

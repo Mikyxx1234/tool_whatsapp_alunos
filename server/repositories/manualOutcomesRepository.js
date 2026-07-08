@@ -406,7 +406,12 @@ function meuPainelFilterParams(filters = {}) {
   const origemAtivacao = normalizeOrigemAtivacaoFilter(filters.origem_ativacao);
   const searchRaw = filters.search ? String(filters.search).trim().slice(0, 120) : '';
   const search = searchRaw || null;
-  return { consultorTrim, fromDate, toDate, category, origemAtivacao, search };
+  const somenteAtribuidos =
+    filters.somente_atribuidos === true ||
+    filters.somente_atribuidos === 1 ||
+    filters.somente_atribuidos === '1' ||
+    filters.somente_atribuidos === 'true';
+  return { consultorTrim, fromDate, toDate, category, origemAtivacao, search, somenteAtribuidos };
 }
 
 /** WHERE base do Meu Painel + filtro opcional de origem_ativacao. */
@@ -428,6 +433,13 @@ export const MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL = `nullif(trim(both from coalesc
 export const MEU_PAINEL_DISPLAY_CONSULTOR_SQL = sqlCaaMeuPainelDisplayConsultor(
   MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL
 );
+
+const MEU_PAINEL_SOMENTE_ATRIBUIDOS_SQL = `and ${MEU_PAINEL_DISPLAY_CONSULTOR_SQL} is not null`;
+
+/** WHERE completo do Meu Painel + filtro opcional somente_atribuidos (Wesley/Danubia em CAA). */
+function meuPainelListWhereSql(origemAtivacao, somenteAtribuidos) {
+  return `${meuPainelWhereSql(origemAtivacao)}${somenteAtribuidos ? MEU_PAINEL_SOMENTE_ATRIBUIDOS_SQL : ''}`;
+}
 
 const MEU_PAINEL_DLC_JOIN = `
 left join datacrazy_lead_cache dlc
@@ -587,12 +599,12 @@ export function parseMeuPainelPageSize(raw) {
  * @param {Parameters<typeof listMeuPainel>[0]} filters
  */
 export async function countMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search } =
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search, somenteAtribuidos } =
     meuPainelFilterParams(filters);
   const { rows } = await query(
     `select count(*)::int as total
      ${MEU_PAINEL_CORE_FROM}
-     where ${meuPainelWhereSql(origemAtivacao)}
+     where ${meuPainelListWhereSql(origemAtivacao, somenteAtribuidos)}
      ${MEU_PAINEL_SEARCH_SQL}`,
     [consultorTrim, fromDate, toDate, category, search]
   );
@@ -600,7 +612,7 @@ export async function countMeuPainel(filters = {}) {
 }
 
 export async function listMeuPainel(filters = {}) {
-  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search } =
+  const { consultorTrim, fromDate, toDate, category, origemAtivacao, search, somenteAtribuidos } =
     meuPainelFilterParams(filters);
   const limit = parseMeuPainelPageSize(filters.limit);
   const offset = Math.max(parseInt(String(filters.offset ?? '0'), 10) || 0, 0);
@@ -670,7 +682,7 @@ export async function listMeuPainel(filters = {}) {
       )                                as is_manual
     ${MEU_PAINEL_CORE_FROM}
     ${MEU_PAINEL_OUTCOME_LATERAL}
-    where ${meuPainelWhereSql(origemAtivacao)}
+    where ${meuPainelListWhereSql(origemAtivacao, somenteAtribuidos)}
     ${MEU_PAINEL_SEARCH_SQL}
     order by ar.received_at desc
     limit $6 offset $7

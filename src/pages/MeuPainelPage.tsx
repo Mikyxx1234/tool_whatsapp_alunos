@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Eye,
+  EyeOff,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -139,6 +141,8 @@ export default function MeuPainelPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [origemDetalhado, setOrigemDetalhado] = useState(false);
+  /** false = todos os leads; true = só Wesley/Danubia (consultor preenchido). */
+  const [somenteAtribuidos, setSomenteAtribuidos] = useState(false);
 
   // Custom date range — input state (tracks what user typed, not yet applied)
   const [customFrom, setCustomFrom] = useState('');
@@ -228,6 +232,7 @@ export default function MeuPainelPage() {
       const offset = (page - 1) * pageSize;
       const l = await fetchMeuPainelList({
         ...listFiltersBase,
+        somente_atribuidos: somenteAtribuidos,
         limit: pageSize,
         offset,
       });
@@ -241,7 +246,7 @@ export default function MeuPainelPage() {
     } finally {
       setListLoading(false);
     }
-  }, [consultorParaApi, listFiltersBase, page, pageSize]);
+  }, [consultorParaApi, listFiltersBase, page, pageSize, somenteAtribuidos]);
 
   const reload = useCallback(async () => {
     if (!consultorParaApi) {
@@ -562,15 +567,46 @@ export default function MeuPainelPage() {
             <h3 className="text-sm font-semibold text-gray-900">
               Leads para marcar
             </h3>
-            <span className="text-xs text-gray-500">
-              {listLoading && items.length === 0
-                ? 'Carregando…'
-                : appliedSearch
-                  ? `${fmtInt(listTotal)} encontrado${listTotal === 1 ? '' : 's'}`
-                  : listTotal === 0
-                    ? '0 leads'
-                    : `${fmtInt(rangeStart)}–${fmtInt(rangeEnd)} de ${fmtInt(listTotal)}`}
-            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSomenteAtribuidos((v) => !v);
+                  setPage(1);
+                }}
+                title={
+                  somenteAtribuidos
+                    ? 'Exibir todos os leads, com ou sem consultor'
+                    : 'Exibir apenas leads com Wesley Guerreiro ou Danubia'
+                }
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
+                  somenteAtribuidos
+                    ? 'text-whatsapp-800 bg-whatsapp-50 border-whatsapp-200 hover:bg-whatsapp-100'
+                    : 'text-gray-700 bg-white border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {somenteAtribuidos ? (
+                  <>
+                    <Eye className="w-3.5 h-3.5" />
+                    Mostrar todos
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="w-3.5 h-3.5" />
+                    Ocultar sem consultor
+                  </>
+                )}
+              </button>
+              <span className="text-xs text-gray-500">
+                {listLoading && items.length === 0
+                  ? 'Carregando…'
+                  : appliedSearch
+                    ? `${fmtInt(listTotal)} encontrado${listTotal === 1 ? '' : 's'}`
+                    : listTotal === 0
+                      ? '0 leads'
+                      : `${fmtInt(rangeStart)}–${fmtInt(rangeEnd)} de ${fmtInt(listTotal)}`}
+              </span>
+            </div>
           </div>
 
           <div className="overflow-x-auto">

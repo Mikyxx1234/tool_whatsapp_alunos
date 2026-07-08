@@ -99,6 +99,8 @@ export interface MeuPainelFilters {
   from?: string | null;
   to?: string | null;
   search?: string | null;
+  /** Lista: só leads com consultor atribuído (Wesley/Danubia em CAA). */
+  somente_atribuidos?: boolean | string | number | null;
   limit?: number;
   offset?: number;
 }
@@ -136,6 +138,7 @@ function buildQuery(filters: MeuPainelFilters): string {
   if (filters.from) params.set('from', filters.from);
   if (filters.to) params.set('to', filters.to);
   if (filters.search) params.set('search', filters.search);
+  if (filters.somente_atribuidos) params.set('somente_atribuidos', '1');
   if (filters.limit != null) params.set('limit', String(filters.limit));
   if (filters.offset != null) params.set('offset', String(filters.offset));
   const qs = params.toString();
