@@ -422,11 +422,26 @@ function meuPainelWhereSql(origemAtivacao) {
 /** RGM efetivo: resposta + matriculados + MV telefone */
 const EFFECTIVE_RGM_EXPR = `nullif(trim(coalesce(ar.rgm, mat.rgm, lk.rgm)), '')`;
 
-/** Consultor efetivo: webhook (payload) tem precedência sobre coluna desatualizada. */
-export const MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL = `nullif(trim(both from coalesce(
-  nullif(trim(ar.raw_payload->>'Consultor'), ''),
-  nullif(trim(ar.raw_payload->>'consultor'), ''),
-  nullif(trim(ar.consultor_responsavel_nome), '')
+/**
+ * Consultor efetivo para Meu Painel.
+ * Em processos-caa: se a coluna já for Wesley/Danubia, prioriza a coluna
+ * (webhook pode trazer Joyce/Beatriz etc. e não deve esconder atribuição válida).
+ * Demais casos: payload > coluna (comportamento anterior).
+ */
+export const MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL = `nullif(trim(both from (
+  case
+    when ar.category = 'processos-caa'
+     and (
+       nullif(trim(ar.consultor_responsavel_nome), '') ilike 'wesley%'
+       or nullif(trim(ar.consultor_responsavel_nome), '') ilike 'danubia%'
+     )
+    then nullif(trim(ar.consultor_responsavel_nome), '')
+    else coalesce(
+      nullif(trim(ar.raw_payload->>'Consultor'), ''),
+      nullif(trim(ar.raw_payload->>'consultor'), ''),
+      nullif(trim(ar.consultor_responsavel_nome), '')
+    )
+  end
 )), '')`;
 
 /** Consultor exibido: CAA com nome fora de Wesley/Danubia aparece em branco. */

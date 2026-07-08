@@ -5,6 +5,12 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-08 — Meu Painel CAA: coluna Wesley/Danubia prevalece sobre payload conflitante
+- **Modelo usado:** Opus 4.7 (principal).
+- **Problema:** Auditoria encontrou leads com `consultor_responsavel_nome` = Wesley/Danubia, mas `raw_payload.Consultor` = Joyce/Beatriz/etc. O efetivo priorizava o payload → coluna CONSULTOR ficava em branco e o consultor autenticado não via o lead.
+- **Decisão:** Em `processos-caa`, `MEU_PAINEL_EFFECTIVE_CONSULTOR_SQL` passa a preferir a **coluna** quando ela já é Wesley/Danubia; só então cai no coalesce payload→coluna.
+- **Alternativas descartadas:** limpar payload no sync (invasivo); exigir reatribuição manual dos 7 casos do dia.
+
 ### 2026-07-07 — Meu Painel Processos CAA: consultor inválido em branco (Wesley + Danubia)
 - **Modelo usado:** Opus 4.7 (principal).
 - **Problema:** Leads CAA apareciam com consultores errados (Joyce, Beatriz, etc.). Regra operacional: só **Wesley Guerreiro** e **Danubia** atendem CAA; demais devem ficar **sem consultor na UI** até correção automática.
