@@ -1,6 +1,6 @@
-import { Send, GraduationCap, Zap } from 'lucide-react';
+import { Send, GraduationCap, Zap, Database } from 'lucide-react';
 
-export type OperationMode = 'manual' | 'journey' | 'activation';
+export type OperationMode = 'manual' | 'journey' | 'activation' | 'sync_crm';
 
 interface OperationModeSelectorProps {
   mode: OperationMode;
@@ -31,6 +31,12 @@ const OPTIONS: Array<{
     description: 'Docs, inadimplentes, Blackboard e CAA: buscar no DataCrazy e disparar templates.',
     icon: Zap,
   },
+  {
+    id: 'sync_crm',
+    title: 'Sync Novo CRM',
+    description: 'Espelho local, lacunas (CPF/RGM) e enriquecimento a partir de matriculados.',
+    icon: Database,
+  },
 ];
 
 export function OperationModeSelector({ mode, onChange }: OperationModeSelectorProps) {
@@ -42,7 +48,7 @@ export function OperationModeSelector({ mode, onChange }: OperationModeSelectorP
           Escolha o tipo de campanha que vai operar agora.
         </span>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {OPTIONS.map((opt) => {
           const Icon = opt.icon;
           const active = mode === opt.id;

@@ -1,10 +1,27 @@
 import { isNovoCrmDbConfigured } from '../db/novoCrmClient.js';
+import { isNovoCrmApiConfigured } from './novoCrmClient.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import * as sourceRepo from '../repositories/novoCrmPersonSourceRepository.js';
+import * as apiSource from '../repositories/novoCrmPersonApiSourceRepository.js';
 
 const DEFAULT_BATCH_SIZE = 300;
 const DEFAULT_BATCH_DELAY_MS = 200;
 const OVERLAP_MS = 5 * 60 * 1000;
+
+/**
+ * api = HTTP com NOVO_CRM_API_TOKEN (org do token, ex. produção EduIT)
+ * db  = Postgres NOVO_CRM_DATABASE_URL
+ * auto = api se token ok, senão db
+ */
+export function resolveCacheSource() {
+  const raw = String(process.env.NOVO_CRM_CACHE_SOURCE || 'auto')
+    .trim()
+    .toLowerCase();
+  if (raw === 'api' || raw === 'http') return 'api';
+  if (raw === 'db' || raw === 'postgres' || raw === 'database') return 'db';
+  if (isNovoCrmApiConfigured()) return 'api';
+  return 'db';
+}
 
 function batchSize() {
   return Math.min(
@@ -50,9 +67,188 @@ async function persistSnapshots(snapshots, { dryRun, syncLogId, fullSeenAt }) {
   return { upserted, skipped, dataLossEvents };
 }
 
+async function runFullSyncViaApi({ dryRun = false } = {}) {
+  apiSource.assertApiSourceReady();
+
+  const release = await cacheRepo.acquireSyncLock();
+  if (!release) {
+    const err = new Error('Sync Novo CRM já em andamento');
+    err.status = 409;
+    throw err;
+  }
+
+  let logId = null;
+  const startMs = Date.now();
+  let batches = 0;
+  let contactsSeen = 0;
+  let upserted = 0;
+  let skipped = 0;
+  let deleted = 0;
+  let dataLossEvents = 0;
+  let maxSourceUpdatedAt = null;
+  const contactPerPage = Math.min(Math.max(Number(process.env.NOVO_CRM_CACHE_API_CONTACT_PER_PAGE) || 200, 1), 200);
+
+  try {
+    const fullSeenAt = new Date().toISOString();
+    const contactsTotal = await apiSource.countAllContactsViaApi();
+    logId = await cacheRepo.recordSyncStart({ mode: 'full', contactsTotal });
+    console.log(
+      `[novo-crm-cache-sync] full via API: ${contactsTotal} contacts — indexando deals…`
+    );
+
+    const dealsByContact = await apiSource.loadAllDealsByContactId({
+      delayMs: batchDelayMs(),
+      onProgress: (p) => {
+        if (p.page % 20 === 0 || p.page === 1) {
+          console.log(
+            `[novo-crm-cache-sync] deals page ${p.page}/${p.totalPages ?? '?'} seen=${p.seen}/${p.total}`
+          );
+        }
+      },
+    });
+    console.log(
+      `[novo-crm-cache-sync] deals index: ${dealsByContact.size} contacts com negócio(s)`
+    );
+
+    let page = 1;
+    let totalPages = Math.ceil(contactsTotal / contactPerPage) || 1;
+    const fetchFields = apiSource.shouldFetchDealFields();
+
+    while (page <= totalPages) {
+      const res = await apiSource.listContactsApiPage({ page, perPage: contactPerPage });
+      if (res.totalPages) totalPages = res.totalPages;
+      if (!res.items.length) break;
+
+      batches += 1;
+      contactsSeen += res.items.length;
+
+      /** @type {string[]} */
+      const primaryIds = [];
+      for (const c of res.items) {
+        const deals = dealsByContact.get(String(c.id)) || [];
+        const primary = deals
+          .slice()
+          .sort((a, b) => {
+            const ao = String(a.status || '').toUpperCase() === 'OPEN' ? 1 : 0;
+            const bo = String(b.status || '').toUpperCase() === 'OPEN' ? 1 : 0;
+            if (ao !== bo) return bo - ao;
+            return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+          })[0];
+        if (primary?.id) primaryIds.push(String(primary.id));
+      }
+
+      const details = fetchFields
+        ? await apiSource.fetchDealDetailsByIds(primaryIds, {
+            concurrency: Number(process.env.NOVO_CRM_CACHE_API_DEAL_CONCURRENCY) || 6,
+            delayMs: Number(process.env.NOVO_CRM_CACHE_API_DEAL_DELAY_MS) || 40,
+          })
+        : new Map();
+
+      const snapshots = res.items.map((c) =>
+        apiSource.mapApiSnapshot(c, dealsByContact.get(String(c.id)) || [], details)
+      );
+
+      const persisted = await persistSnapshots(snapshots, { dryRun, syncLogId: logId, fullSeenAt });
+      upserted += persisted.upserted;
+      skipped += persisted.skipped;
+      dataLossEvents += persisted.dataLossEvents;
+      for (const s of snapshots) {
+        if (!s.sourceUpdatedAt) continue;
+        if (!maxSourceUpdatedAt || s.sourceUpdatedAt > maxSourceUpdatedAt) {
+          maxSourceUpdatedAt = s.sourceUpdatedAt;
+        }
+      }
+
+      if (!dryRun) {
+        await cacheRepo
+          .recordSyncProgress(logId, {
+            batches,
+            contactsSeen,
+            upserted,
+            skipped,
+            dataLossEvents,
+          })
+          .catch(() => {});
+      }
+
+      console.log(
+        `[novo-crm-cache-sync] contacts page ${page}/${totalPages} seen=${contactsSeen} upserted=${upserted}`
+      );
+
+      if (res.items.length < contactPerPage) break;
+      page += 1;
+      if (batchDelayMs() > 0) await sleep(batchDelayMs());
+    }
+
+    if (!dryRun) {
+      deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
+      if (maxSourceUpdatedAt) {
+        await cacheRepo.updateSyncState({
+          cursorUpdatedAt: maxSourceUpdatedAt,
+          cursorId: null,
+        });
+      }
+    }
+
+    const durationMs = Date.now() - startMs;
+    await cacheRepo.recordSyncFinish(logId, {
+      status: 'ok',
+      cursorFinishedAt: maxSourceUpdatedAt,
+      batches,
+      contactsSeen,
+      upserted,
+      skipped,
+      deleted,
+      dataLossEvents,
+    });
+    console.log(
+      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} ${durationMs}ms`
+    );
+    return {
+      ok: true,
+      mode: 'full',
+      source: 'api',
+      logId,
+      batches,
+      contactsSeen,
+      upserted,
+      skipped,
+      deleted,
+      dataLossEvents,
+      durationMs,
+      dry_run: dryRun,
+    };
+  } catch (err) {
+    if (logId) {
+      await cacheRepo
+        .recordSyncFinish(logId, {
+          status: 'error',
+          batches,
+          contactsSeen,
+          upserted,
+          skipped,
+          deleted,
+          dataLossEvents,
+          errorMessage: err?.message || String(err),
+        })
+        .catch(() => {});
+    }
+    throw err;
+  } finally {
+    await release().catch(() => {});
+  }
+}
+
 async function runFullSyncInternal({ dryRun = false } = {}) {
+  const source = resolveCacheSource();
+  if (source === 'api') {
+    return runFullSyncViaApi({ dryRun });
+  }
+
   if (!isNovoCrmDbConfigured()) {
-    const err = new Error('Novo CRM DB não configurado. Defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL.');
+    const err = new Error(
+      'Novo CRM DB não configurado. Defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL (ou NOVO_CRM_CACHE_SOURCE=api + token).'
+    );
     err.status = 503;
     throw err;
   }
@@ -142,6 +338,7 @@ async function runFullSyncInternal({ dryRun = false } = {}) {
     return {
       ok: true,
       mode: 'full',
+      source: 'db',
       logId,
       batches,
       contactsSeen,
@@ -174,6 +371,11 @@ async function runFullSyncInternal({ dryRun = false } = {}) {
 }
 
 async function runIncrementalSyncInternal({ dryRun = false, maxBatches = null } = {}) {
+  // Incremental via API ainda não tem filtro updatedAt estável — full cobre.
+  if (resolveCacheSource() === 'api') {
+    console.log('[novo-crm-cache-sync] incremental ignorado (source=api); use full.');
+    return { ok: true, skipped_api_source: true, hint: 'Use mode=full com NOVO_CRM_CACHE_SOURCE=api' };
+  }
   if (!isNovoCrmDbConfigured()) {
     return { ok: true, skipped_no_config: true };
   }
@@ -328,23 +530,34 @@ export function startNovoCrmCacheSyncCron() {
     console.log('[novo-crm-cache-sync] Cache desabilitado (NOVO_CRM_CACHE_ENABLED=0).');
     return;
   }
-  if (!isNovoCrmDbConfigured()) {
+  const source = resolveCacheSource();
+  if (source === 'db' && !isNovoCrmDbConfigured()) {
     console.log(
       '[novo-crm-cache-sync] NOVO_CRM DB não configurado — cron não iniciado (defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL).'
     );
     return;
   }
+  if (source === 'api' && !isNovoCrmApiConfigured()) {
+    console.log(
+      '[novo-crm-cache-sync] NOVO_CRM API não configurada — cron não iniciado (NOVO_CRM_API_TOKEN).'
+    );
+    return;
+  }
 
   const incMs = incrementalMinutes() * 60 * 1000;
-  const incremental = setInterval(() => {
-    startNovoCrmCacheSyncBackground({ mode: 'incremental' });
-  }, incMs);
-  if (typeof incremental?.unref === 'function') incremental.unref();
+  if (source === 'db') {
+    const incremental = setInterval(() => {
+      startNovoCrmCacheSyncBackground({ mode: 'incremental' });
+    }, incMs);
+    if (typeof incremental?.unref === 'function') incremental.unref();
+  }
 
   const hour = fullHourUtc();
   const delay = msUntilHourUtc(hour);
   console.log(
-    `[novo-crm-cache-sync] incremental a cada ${incrementalMinutes()} min; full em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC).`
+    `[novo-crm-cache-sync] source=${source}; ${
+      source === 'db' ? `incremental a cada ${incrementalMinutes()} min; ` : ''
+    }full em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC).`
   );
 
   const firstFull = setTimeout(() => {

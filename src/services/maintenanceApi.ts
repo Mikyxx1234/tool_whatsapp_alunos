@@ -104,6 +104,9 @@ export interface NovoCrmCacheStatusResponse {
   ok: boolean;
   cache_total: number;
   cache_active: number;
+  missing_cpf: number;
+  missing_rgm: number;
+  incomplete_fields: number;
   running: boolean;
   running_sync: NovoCrmCacheRunningSync | null;
   last_sync: NovoCrmCacheLastSync | null;
@@ -116,6 +119,77 @@ export interface StartNovoCrmCacheSyncResponse {
   status: 'running';
   mode: 'full' | 'incremental';
   dry_run: boolean;
+}
+
+export type NovoCrmEnrichScope = 'cpf' | 'rgm' | 'incomplete' | 'all_mapped';
+
+export interface NovoCrmEnrichPreviewResponse {
+  ok: boolean;
+  dry_run: boolean;
+  scope: NovoCrmEnrichScope | string;
+  matriculados_snapshot_id: string;
+  matriculados_file: string | null;
+  matriculados_rows: number | null;
+  index: { by_cpf: number; by_rgm: number; by_phone: number };
+  candidates: number;
+  matched: number;
+  no_match: number;
+  would_update: number;
+  skipped_no_fill: number;
+  updated: number;
+  errors: number;
+  would_fill_by_field: Record<string, number>;
+  sample: Array<{
+    contact_id: string;
+    deal_id: string | null;
+    nome: string | null;
+    fields: string[];
+    contact_patch: string[];
+  }>;
+  error_samples: Array<{ contact_id: string; error: string }>;
+}
+
+export interface NovoCrmEnrichStartResponse {
+  ok: boolean;
+  status: 'running';
+  jobId: string;
+  scope: string;
+  dry_run: boolean;
+}
+
+export interface NovoCrmEnrichJobStatusResponse {
+  ok: boolean;
+  running: boolean;
+  job: {
+    jobId: string;
+    scope: string;
+    status: string;
+    dry_run: boolean;
+    total: number;
+    processed: number;
+    sent: number;
+    failed: number;
+    skipped: number;
+    phase: string | null;
+    status_message: string | null;
+    started_at: string;
+    finished_at: string | null;
+    error: string | null;
+    result: NovoCrmEnrichPreviewResponse | null;
+  } | null;
+}
+
+export interface NovoCrmRegressionEvent {
+  id: string | number;
+  contact_id?: string;
+  detected_at?: string;
+  removed_paths?: unknown;
+  acknowledged_at?: string | null;
+}
+
+export interface NovoCrmRegressionsResponse {
+  ok: boolean;
+  events: NovoCrmRegressionEvent[];
 }
 
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
@@ -201,6 +275,45 @@ export const maintenanceApi = {
     const params = new URLSearchParams({ async: '1', mode: opts?.mode || 'full' });
     return jsonFetch<StartNovoCrmCacheSyncResponse>(
       `/api/maintenance/sync-novo-crm-cache?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  previewNovoCrmEnrich(scope: NovoCrmEnrichScope) {
+    const params = new URLSearchParams({ scope, dry_run: '1' });
+    return jsonFetch<NovoCrmEnrichPreviewResponse>(
+      `/api/maintenance/enrich-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  startNovoCrmEnrichApply(scope: NovoCrmEnrichScope) {
+    const params = new URLSearchParams({ scope, dry_run: '0', async: '1' });
+    return jsonFetch<NovoCrmEnrichStartResponse>(
+      `/api/maintenance/enrich-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getNovoCrmEnrichStatus(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<NovoCrmEnrichJobStatusResponse>(
+      `/api/maintenance/enrich-novo-crm-status${qs}`
+    );
+  },
+
+  listNovoCrmRegressions(opts?: { limit?: number }) {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const qs = params.toString() ? `?${params}` : '';
+    return jsonFetch<NovoCrmRegressionsResponse>(
+      `/api/maintenance/novo-crm-cache-regressions${qs}`
+    );
+  },
+
+  ackNovoCrmRegression(id: string | number) {
+    return jsonFetch<{ ok: boolean; event: NovoCrmRegressionEvent }>(
+      `/api/maintenance/novo-crm-cache-regressions/${encodeURIComponent(String(id))}/ack`,
       { method: 'POST', body: '{}' }
     );
   },

@@ -18,6 +18,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { CampaignHistory } from '../components/CampaignHistory';
 import { Toast, type ToastVariant } from '../components/Toast';
 import { OperationModeSelector, type OperationMode } from '../components/OperationModeSelector';
+import { NovoCrmSyncPanel } from '../components/NovoCrmSyncPanel';
 import { StudentImportPreviewTable } from '../components/StudentImportPreviewTable';
 import { JourneySummary, type JourneySummaryData } from '../components/JourneySummary';
 
@@ -108,7 +109,10 @@ export default function DisparadorPage() {
   /* ----------------------------------------------------------------- */
   const [mode, setMode] = useState<OperationMode>(() => {
     const q = new URLSearchParams(window.location.search).get('mode');
-    return q === 'activation' ? 'activation' : 'manual';
+    if (q === 'activation') return 'activation';
+    if (q === 'sync_crm') return 'sync_crm';
+    if (q === 'journey') return 'journey';
+    return 'manual';
   });
 
   // Modo manual
@@ -385,17 +389,17 @@ export default function DisparadorPage() {
 
   const handleModeChange = useCallback(
     (next: OperationMode) => {
-      if (next !== 'activation' && campaignStatus === 'running') {
+      if (next !== 'activation' && next !== 'sync_crm' && campaignStatus === 'running') {
         showToast('Aguarde o término do disparo atual antes de trocar de modo.', 'error');
         return;
       }
       setMode(next);
-      if (next === 'activation') {
-        setSearchParams({ mode: 'activation' }, { replace: true });
+      if (next === 'activation' || next === 'sync_crm' || next === 'journey') {
+        setSearchParams({ mode: next }, { replace: true });
       } else {
         setSearchParams({}, { replace: true });
       }
-      if (next !== 'activation') {
+      if (next !== 'activation' && next !== 'sync_crm') {
         handleRemoveFile();
       }
     },
@@ -542,6 +546,7 @@ export default function DisparadorPage() {
   /* ----------------------------------------------------------------- */
   const isJourneyMode = mode === 'journey';
   const isActivationMode = mode === 'activation';
+  const isSyncCrmMode = mode === 'sync_crm';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -553,6 +558,10 @@ export default function DisparadorPage() {
         {isActivationMode ? (
           <div className="mt-6">
             <ActivationPanel />
+          </div>
+        ) : isSyncCrmMode ? (
+          <div className="mt-6">
+            <NovoCrmSyncPanel />
           </div>
         ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">

@@ -366,4 +366,151 @@ export async function activateDealByCategoryTag(dealId, category) {
   return addTagToDeal(dealId, { tagName });
 }
 
+/** @type {Map<string, {id:string,name:string,label?:string,type?:string,options?:unknown[]}>|null} */
+let dealCustomFieldsByName = null;
+let dealCustomFieldsLoadedAt = 0;
+const CF_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Custom fields da entidade deal (cache 10 min).
+ * @returns {Promise<Map<string, {id:string,name:string,label?:string,type?:string,options?:unknown[]}>>}
+ */
+export async function getDealCustomFieldsByName() {
+  const now = Date.now();
+  if (dealCustomFieldsByName && now - dealCustomFieldsLoadedAt < CF_CACHE_TTL_MS) {
+    return dealCustomFieldsByName;
+  }
+  const raw = await request('/api/custom-fields?entity=deal');
+  const items = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : [];
+  /** @type {Map<string, {id:string,name:string,label?:string,type?:string,options?:unknown[]}>} */
+  const map = new Map();
+  for (const f of items) {
+    const name = String(f?.name || '')
+      .trim()
+      .toLowerCase();
+    if (!name || !f?.id) continue;
+    map.set(name, {
+      id: String(f.id),
+      name,
+      label: f.label != null ? String(f.label) : undefined,
+      type: f.type != null ? String(f.type) : undefined,
+      options: Array.isArray(f.options) ? f.options : [],
+    });
+  }
+  dealCustomFieldsByName = map;
+  dealCustomFieldsLoadedAt = now;
+  return map;
+}
+
+/**
+ * PUT /api/deals/:id/custom-fields — body { values: [{ fieldId, value }] }
+ * @param {string} dealId
+ * @param {Array<{ fieldId: string, value: string|number|null }>} values
+ */
+export async function updateDealCustomFields(dealId, values) {
+  const id = String(dealId || '').trim();
+  if (!id) {
+    const err = new Error('dealId obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  const list = Array.isArray(values) ? values.filter((v) => v?.fieldId) : [];
+  if (!list.length) {
+    const err = new Error('values obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  return request(`/api/deals/${encodeURIComponent(id)}/custom-fields`, {
+    method: 'PUT',
+    body: {
+      values: list.map((v) => ({
+        fieldId: String(v.fieldId),
+        value: v.value == null ? '' : v.value,
+      })),
+    },
+  });
+}
+
+/**
+ * @param {string} contactId
+ * @param {{ name?: string, phone?: string, email?: string }} patch
+ */
+export async function updateContact(contactId, patch) {
+  const id = String(contactId || '').trim();
+  if (!id) {
+    const err = new Error('contactId obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  const body = {};
+  if (patch?.name != null && String(patch.name).trim()) body.name = String(patch.name).trim();
+  if (patch?.phone != null && String(patch.phone).trim()) body.phone = String(patch.phone).trim();
+  if (patch?.email != null && String(patch.email).trim()) body.email = String(patch.email).trim();
+  if (!Object.keys(body).length) {
+    const err = new Error('Nenhum campo de contact para atualizar');
+    err.status = 400;
+    throw err;
+  }
+  return request(`/api/contacts/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body,
+  });
+}
+
+/**
+ * @param {{ page?: number, perPage?: number }} [opts]
+ * @returns {Promise<{ items: object[], total: number, page: number, perPage: number, totalPages: number|null }>}
+ */
+export async function listContactsPage(opts = {}) {
+  const page = Math.max(1, Number(opts.page) || 1);
+  const perPage = Math.min(Math.max(Number(opts.perPage) || 100, 1), 200);
+  const raw = await request(`/api/contacts?page=${page}&perPage=${perPage}`);
+  const items = Array.isArray(raw?.items) ? raw.items : [];
+  return {
+    items,
+    total: Number(raw?.total) || items.length,
+    page: Number(raw?.page) || page,
+    perPage: Number(raw?.perPage) || perPage,
+    totalPages: raw?.totalPages != null ? Number(raw.totalPages) : null,
+  };
+}
+
+/**
+ * @param {{ page?: number, perPage?: number, contactId?: string }} [opts]
+ */
+export async function listDealsPage(opts = {}) {
+  const page = Math.max(1, Number(opts.page) || 1);
+  const perPage = Math.min(Math.max(Number(opts.perPage) || 100, 1), 100);
+  const params = new URLSearchParams({ page: String(page), perPage: String(perPage) });
+  if (opts.contactId) params.set('contactId', String(opts.contactId));
+  const raw = await request(`/api/deals?${params.toString()}`);
+  const items = Array.isArray(raw?.items) ? raw.items : [];
+  return {
+    items,
+    total: Number(raw?.total) || items.length,
+    page: Number(raw?.page) || page,
+    perPage: Number(raw?.perPage) || perPage,
+    totalPages: raw?.totalPages != null ? Number(raw.totalPages) : null,
+  };
+}
+
+/**
+ * Detalhe do deal — inclui dealPanelFields com valores dos custom fields.
+ * @param {string} dealId
+ */
+export async function getDeal(dealId) {
+  const id = String(dealId || '').trim();
+  if (!id) return null;
+  return request(`/api/deals/${encodeURIComponent(id)}`);
+}
+
+/**
+ * @param {string} contactId
+ */
+export async function getContact(contactId) {
+  const id = String(contactId || '').trim();
+  if (!id) return null;
+  return request(`/api/contacts/${encodeURIComponent(id)}`);
+}
+
 export { tagNameForCategory, ATIVACAO_TAG_BY_CATEGORY } from '../utils/novoCrmActivationTags.js';

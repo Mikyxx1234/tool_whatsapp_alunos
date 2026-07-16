@@ -7,6 +7,7 @@ import {
   normalizePhone,
   normalizeRgm,
 } from '../utils/novoCrmCacheNormalize.js';
+import { cacheRowHasIncompleteMappedFields } from '../utils/novoCrmFieldMapping.js';
 
 const LOCK_KEY = 73201443;
 
@@ -274,45 +275,111 @@ export async function markDeletedNotSeenSince(fullSeenAt) {
 }
 
 export async function getCacheStats() {
-  const [{ rows: countRows }, { rows: lastRows }, { rows: runningRows }, { rows: eventRows }, { rows: stateRows }] =
-    await Promise.all([
-      query(
-        `select count(*)::int as total,
-                count(*) filter (where is_deleted = false)::int as active
-           from novo_crm_person_cache`
-      ),
-      query(
-        `select *
-           from novo_crm_cache_sync_log
-          where finished_at is not null
-          order by started_at desc
-          limit 1`
-      ),
-      query(
-        `select id, mode, started_at, contacts_total, contacts_seen,
-                cache_upserted, batches_scanned, progress_updated_at
-           from novo_crm_cache_sync_log
-          where status = 'running' and finished_at is null
-            and started_at > now() - interval '8 hours'
-          order by started_at desc
-          limit 1`
-      ),
-      query(
-        `select count(*)::int as open_events
-           from novo_crm_data_loss_events
-          where acknowledged_at is null`
-      ),
-      query(`select * from novo_crm_cache_sync_state where key = 'contacts_deals'`),
-    ]);
+  const [
+    { rows: countRows },
+    { rows: lastRows },
+    { rows: runningRows },
+    { rows: eventRows },
+    { rows: stateRows },
+    { rows: gapRows },
+  ] = await Promise.all([
+    query(
+      `select count(*)::int as total,
+              count(*) filter (where is_deleted = false)::int as active
+         from novo_crm_person_cache`
+    ),
+    query(
+      `select *
+         from novo_crm_cache_sync_log
+        where finished_at is not null
+        order by started_at desc
+        limit 1`
+    ),
+    query(
+      `select id, mode, started_at, contacts_total, contacts_seen,
+              cache_upserted, batches_scanned, progress_updated_at
+         from novo_crm_cache_sync_log
+        where status = 'running' and finished_at is null
+          and started_at > now() - interval '8 hours'
+        order by started_at desc
+        limit 1`
+    ),
+    query(
+      `select count(*)::int as open_events
+         from novo_crm_data_loss_events
+        where acknowledged_at is null`
+    ),
+    query(`select * from novo_crm_cache_sync_state where key = 'contacts_deals'`),
+    query(
+      `select count(*) filter (
+                where is_deleted = false
+                  and (cpf_norm is null or btrim(cpf_norm) = '')
+              )::int as missing_cpf,
+              count(*) filter (
+                where is_deleted = false
+                  and (rgm_norm is null or btrim(rgm_norm) = '')
+              )::int as missing_rgm,
+              count(*) filter (
+                where is_deleted = false
+                  and (
+                    cpf_norm is null or btrim(cpf_norm) = ''
+                    or rgm_norm is null or btrim(rgm_norm) = ''
+                    or phone_norm is null or btrim(phone_norm) = ''
+                    or email_norm is null or btrim(email_norm) = ''
+                    or nome is null or btrim(nome) = ''
+                  )
+              )::int as incomplete_fields
+         from novo_crm_person_cache`
+    ),
+  ]);
+
   return {
     total: countRows[0]?.total ?? 0,
     active: countRows[0]?.active ?? 0,
+    missing_cpf: gapRows[0]?.missing_cpf ?? 0,
+    missing_rgm: gapRows[0]?.missing_rgm ?? 0,
+    // KPI rápido (identidade/contato). O enrich scope=incomplete ainda varre os 10 campos.
+    incomplete_fields: gapRows[0]?.incomplete_fields ?? 0,
     last_sync: lastRows[0] || null,
     running: runningRows[0] || null,
     open_data_loss_events: eventRows[0]?.open_events ?? 0,
     state: stateRows[0] || null,
   };
 }
+
+/**
+ * Lista ativos do cache (para enrichment).
+ * @param {{ scope?: 'cpf'|'rgm'|'incomplete'|'all_mapped', limit?: number }} [opts]
+ */
+export async function listActiveCacheRowsForEnrichment(opts = {}) {
+  const scope = opts.scope || 'incomplete';
+  const limit = Math.min(Math.max(Number(opts.limit) || 50000, 1), 100000);
+  const { rows } = await query(
+    `select contact_id, primary_deal_id, contact_number, nome,
+            phone_norm, email_norm, cpf_norm, rgm_norm, raw_data, filled_field_count
+       from novo_crm_person_cache
+      where is_deleted = false
+      order by contact_id
+      limit $1`,
+    [limit]
+  );
+
+  if (scope === 'all_mapped') return rows;
+  if (scope === 'incomplete') {
+    return rows.filter((r) => cacheRowHasIncompleteMappedFields(r));
+  }
+  if (scope === 'cpf') {
+    return rows.filter((r) => !r.cpf_norm || String(r.cpf_norm).trim() === '');
+  }
+  if (scope === 'rgm') {
+    return rows.filter((r) => !r.rgm_norm || String(r.rgm_norm).trim() === '');
+  }
+  return rows;
+}
+
+/** @deprecated KPI incomplete agora é SQL rápido; mantido por compat. */
+export function invalidateIncompleteFieldsCache() {}
+
 
 export async function listDataLossEvents({ limit = 100, acknowledged = false } = {}) {
   const { rows } = await query(

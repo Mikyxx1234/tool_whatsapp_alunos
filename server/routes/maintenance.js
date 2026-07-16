@@ -15,6 +15,12 @@ import {
   startNovoCrmCacheSyncBackground,
 } from '../services/novoCrmPersonCacheSyncService.js';
 import * as novoCrmPersonCacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
+import {
+  previewEnrichment,
+  startEnrichmentApplyBackground,
+  getEnrichmentJob,
+  getRunningEnrichmentJob,
+} from '../services/novoCrmEnrichmentService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
 import { migrateMeuPainelLegacyFromLive } from '../repositories/meuPainelLegacyRepository.js';
@@ -182,6 +188,9 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       ok: true,
       cache_total: stats.total,
       cache_active: stats.active,
+      missing_cpf: stats.missing_cpf ?? 0,
+      missing_rgm: stats.missing_rgm ?? 0,
+      incomplete_fields: stats.incomplete_fields ?? 0,
       running: Boolean(stats.running),
       running_sync: stats.running,
       last_sync: stats.last_sync,
@@ -257,6 +266,93 @@ router.post('/novo-crm-cache-regressions/:id/ack', requireApiKey, async (req, re
     );
     if (!event) return res.status(404).json({ error: 'Evento não encontrado' });
     res.json({ ok: true, event });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/enrich-novo-crm?scope=cpf|rgm|incomplete|all_mapped&dry_run=1|0&async=1
+ *
+ * dry_run=1 (default): prévia síncrona.
+ * dry_run=0&async=1: grava em background.
+ */
+router.post('/enrich-novo-crm', requireApiKey, async (req, res) => {
+  try {
+    const scope = String(req.query.scope || req.body?.scope || 'incomplete').trim();
+    const forceWrite =
+      req.query.dry_run === '0' ||
+      req.query.dry_run === 'false' ||
+      req.body?.dry_run === false ||
+      req.body?.dryRun === false;
+    const isDry = !forceWrite;
+    const asyncMode =
+      req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+
+    if (isDry) {
+      const preview = await previewEnrichment({ scope });
+      return res.json(preview);
+    }
+
+    const running = getRunningEnrichmentJob();
+    if (running) {
+      return res.status(409).json({
+        error: 'Enriquecimento já em andamento',
+        jobId: running.jobId,
+      });
+    }
+    const started = startEnrichmentApplyBackground({ scope });
+    if (!started.started) {
+      return res.status(409).json({
+        error: started.error || 'Enriquecimento já em andamento',
+        jobId: started.jobId,
+      });
+    }
+    return res.status(202).json({
+      ok: true,
+      status: 'running',
+      jobId: started.jobId,
+      scope,
+      dry_run: false,
+      async: Boolean(asyncMode),
+    });
+  } catch (err) {
+    console.error('[enrich-novo-crm]', err);
+    const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
+    res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+/**
+ * GET /api/maintenance/enrich-novo-crm-status?jobId=
+ */
+router.get('/enrich-novo-crm-status', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId ? String(req.query.jobId) : null;
+    const job = jobId ? getEnrichmentJob(jobId) : getRunningEnrichmentJob();
+    if (!job) {
+      return res.json({ ok: true, running: false, job: null });
+    }
+    res.json({
+      ok: true,
+      running: job.status === 'running',
+      job: {
+        jobId: job.jobId,
+        scope: job.scope,
+        status: job.status,
+        dry_run: job.dry_run,
+        total: job.total,
+        processed: job.processed,
+        sent: job.sent,
+        failed: job.failed,
+        skipped: job.skipped,
+        phase: job.phase,
+        status_message: job.status_message,
+        started_at: job.started_at,
+        finished_at: job.finished_at,
+        error: job.error,
+        result: job.result,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err?.message || String(err) });
   }
