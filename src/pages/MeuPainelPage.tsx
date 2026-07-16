@@ -29,6 +29,8 @@ import {
   OUTCOME_LABEL,
   OUTCOME_SHORT_LABEL,
   OUTCOME_TONE,
+  RETENTION_SHORT_LABEL,
+  RETENTION_TONE,
   fetchMeuPainelList,
   fetchMeuPainelStats,
   fetchMeuPainelOrigemStats,
@@ -45,6 +47,8 @@ import {
   type MeuPainelStats,
   type OutcomeKind,
 } from '../services/meuPainelApi';
+import { useCrmFonte } from '../components/CrmFonteToggle';
+import { crmFonteLabel } from '../services/crmFonte';
 
 type RangeKey = 'today' | '7d' | '30d' | '90d' | 'all';
 
@@ -109,6 +113,8 @@ function presetDateRange(range: RangeKey): { from: string | null; to: string | n
 
 export default function MeuPainelPage() {
   const identity = useMemo(() => readConsultorIdentity(), []);
+  const [crmFonte] = useCrmFonte();
+  const novoCrm = crmFonte === 'novo_crm';
   // "isAdmin" aqui = poder pleno (admin OU Supervisor Acadêmico). Mantém o nome
   // legado pra não trocar 20 lugares; semântica ampliada na decisão de 10/06/2026.
   const isAdmin = hasFullAccess(identity);
@@ -263,6 +269,10 @@ export default function MeuPainelPage() {
   }, [consultorParaApi, reloadSummary, reloadList]);
 
   useEffect(() => {
+    void reload();
+  }, [crmFonte]); // eslint-disable-line react-hooks/exhaustive-deps -- troca de fonte recarrega o painel
+
+  useEffect(() => {
     setPage(1);
   }, [listFiltersBase]);
 
@@ -338,6 +348,15 @@ export default function MeuPainelPage() {
       <Header showHistoryButton={false} />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+        {novoCrm && (
+          <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+            <strong>Fonte: {crmFonteLabel('novo_crm')}</strong>
+            {' — '}
+            desfecho vem da tabulação <strong>Retido?</strong> (Sim/Não) ao fechar a conversa no CRM.
+            Não há marcação manual neste modo. Histórico DataCrazy aparece com badge Legado.
+            Para voltar ao fluxo antigo, use o toggle no Painel.
+          </div>
+        )}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 flex items-center gap-2">
@@ -353,7 +372,7 @@ export default function MeuPainelPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {category === 'processos-caa' && (
+            {!novoCrm && category === 'processos-caa' && (
               <button
                 type="button"
                 onClick={() => setCreateOpen(true)}
@@ -487,17 +506,27 @@ export default function MeuPainelPage() {
         </div>
 
         {/* KPIs */}
-        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-          <StatCard tone="sky"     Icon={Send}        label="Atribuídos"  value={fmtInt(stats.total_atribuido)} hint="recebidos no período" loading={loading} />
-          <StatCard tone="indigo"  Icon={Edit3}       label="Marcados"    value={fmtInt(stats.total_marcado)}   hint="por data da marcação" loading={loading} />
-          <StatCard tone="emerald" Icon={CheckCircle} label="Revertidos"  value={fmtInt(stats.total_revertido)} hint={`por data do revertimento · ${fmtPct(stats.taxa_reversao)}`} loading={loading} />
-          <StatCard tone="rose"    Icon={XCircle}     label="Confirmados" value={fmtInt(stats.total_confirmado)} loading={loading} />
-          <StatCard tone="amber"   Icon={PhoneOff}    label="Sem contato" value={fmtInt(stats.total_sem_contato)} loading={loading} />
-          <StatCard tone="gray"    Icon={HelpCircle}  label="Outro"       value={fmtInt(stats.total_outro)} loading={loading} />
-        </div>
+        {novoCrm ? (
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <StatCard tone="sky" Icon={Send} label="Atribuídos" value={fmtInt(stats.total_atribuido)} hint="ativação / resposta / tabulação" loading={loading} />
+            <StatCard tone="indigo" Icon={Edit3} label="Tabulados" value={fmtInt(stats.total_tabulado ?? stats.total_marcado)} hint="fecharam conversa com Retido?" loading={loading} />
+            <StatCard tone="emerald" Icon={CheckCircle} label="Retidos" value={fmtInt(stats.total_retido ?? stats.total_revertido)} hint={`Sim · ${fmtPct(stats.taxa_retencao ?? stats.taxa_reversao)}`} loading={loading} />
+            <StatCard tone="rose" Icon={XCircle} label="Não retidos" value={fmtInt(stats.total_nao_retido ?? stats.total_confirmado)} hint="Não" loading={loading} />
+            <StatCard tone="amber" Icon={HelpCircle} label="Pendentes" value={fmtInt(stats.total_pendente ?? stats.total_sem_contato)} hint="ainda sem tabulação" loading={loading} />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <StatCard tone="sky"     Icon={Send}        label="Atribuídos"  value={fmtInt(stats.total_atribuido)} hint="recebidos no período" loading={loading} />
+            <StatCard tone="indigo"  Icon={Edit3}       label="Marcados"    value={fmtInt(stats.total_marcado)}   hint="por data da marcação" loading={loading} />
+            <StatCard tone="emerald" Icon={CheckCircle} label="Revertidos"  value={fmtInt(stats.total_revertido)} hint={`por data do revertimento · ${fmtPct(stats.taxa_reversao)}`} loading={loading} />
+            <StatCard tone="rose"    Icon={XCircle}     label="Confirmados" value={fmtInt(stats.total_confirmado)} loading={loading} />
+            <StatCard tone="amber"   Icon={PhoneOff}    label="Sem contato" value={fmtInt(stats.total_sem_contato)} loading={loading} />
+            <StatCard tone="gray"    Icon={HelpCircle}  label="Outro"       value={fmtInt(stats.total_outro)} loading={loading} />
+          </div>
+        )}
 
         {/* Contagem por origem_ativacao (coluna BASE) — recolhido por padrão */}
-        {origemCounts.length > 0 && (
+        {!novoCrm && origemCounts.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
             <div
               className={`px-4 py-3 flex items-center justify-between gap-2 ${
@@ -612,33 +641,160 @@ export default function MeuPainelPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="bg-gray-50 text-gray-600">
-                <tr>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Recebido</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Base</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Aluno</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">RGM</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Consultor</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">CAA</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcação</th>
-                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcado em</th>
-                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wider">Ação</th>
-                </tr>
+                {novoCrm ? (
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Aluno</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Lead / Deal</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">RGM</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Base</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Retido?</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Tabulado por</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Tabulado em</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Estágio</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Datas</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wider">Ação</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Recebido</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Base</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Aluno</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">RGM</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Consultor</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">CAA</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcação</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wider">Marcado em</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wider">Ação</th>
+                  </tr>
+                )}
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {listLoading && items.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={novoCrm ? 10 : 9} className="px-3 py-8 text-center text-gray-500">
                       Carregando…
                     </td>
                   </tr>
                 ) : items.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-gray-500">
+                    <td colSpan={novoCrm ? 10 : 9} className="px-3 py-10 text-center text-gray-500">
                       {appliedSearch
                         ? 'Nenhum lead encontrado para esta busca.'
                         : 'Nenhum lead atribuído ao seu nome no período selecionado.'}
                     </td>
                   </tr>
+                ) : novoCrm ? (
+                  items.map((it) => (
+                    <tr key={it.response_id} className="hover:bg-gray-50/60">
+                      <td className="px-3 py-2 max-w-[200px]">
+                        <p className="font-medium text-gray-900 truncate" title={it.nome || ''}>
+                          {it.nome || '—'}
+                          {it.is_legacy && (
+                            <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-800">
+                              Legado
+                            </span>
+                          )}
+                        </p>
+                        {it.telefone && (
+                          <p className="text-[11px] text-gray-500 truncate">{it.telefone}</p>
+                        )}
+                        {it.contact_id && (
+                          <p className="text-[10px] text-gray-400 font-mono truncate" title={it.contact_id}>
+                            contact {it.contact_number ? `#${it.contact_number} · ` : ''}{it.contact_id.slice(0, 10)}…
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 max-w-[180px]">
+                        {it.deal_id ? (
+                          <>
+                            <p className="font-mono text-gray-800 whitespace-nowrap">
+                              {it.deal_number ? `#${it.deal_number}` : 'deal'}
+                            </p>
+                            <p className="text-[10px] text-gray-400 font-mono truncate" title={it.deal_id}>
+                              {it.deal_id}
+                            </p>
+                            {it.deal_title && (
+                              <p className="text-[11px] text-gray-500 truncate" title={it.deal_title}>
+                                {it.deal_title}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-gray-700 whitespace-nowrap">
+                        {it.rgm || '—'}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700 whitespace-nowrap">
+                        {getMeuPainelBaseLabel(it.category, it.origem_ativacao)}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {it.retention_outcome ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-semibold ${RETENTION_TONE[it.retention_outcome]}`}>
+                            {RETENTION_SHORT_LABEL[it.retention_outcome]}
+                            {it.tabulation_answer ? ` (${it.tabulation_answer})` : ''}
+                          </span>
+                        ) : it.outcome ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-semibold ${OUTCOME_TONE[it.outcome as OutcomeKind]}`}>
+                            {it.outcome === 'revertido' ? 'Retido' : it.outcome === 'confirmado' ? 'Não retido' : OUTCOME_SHORT_LABEL[it.outcome as OutcomeKind]}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-gray-400 italic">pendente</span>
+                        )}
+                        {it.tabulation_id && (
+                          <p className="text-[10px] text-gray-400 font-mono mt-0.5 truncate" title={it.tabulation_id}>
+                            tab {it.tabulation_id.slice(0, 12)}…
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 max-w-[160px]">
+                        {it.tabulation_closed_by_nome || it.outcome_consultor_nome ? (
+                          <>
+                            <p className="text-gray-800 truncate" title={it.tabulation_closed_by_nome || it.outcome_consultor_nome || ''}>
+                              {it.tabulation_closed_by_nome || it.outcome_consultor_nome}
+                            </p>
+                            {it.tabulation_closed_by_email && (
+                              <p className="text-[10px] text-gray-400 truncate" title={it.tabulation_closed_by_email}>
+                                {it.tabulation_closed_by_email}
+                              </p>
+                            )}
+                            {it.tabulation_closed_by_user_id && (
+                              <p className="text-[10px] text-gray-400 font-mono truncate" title={it.tabulation_closed_by_user_id}>
+                                {it.tabulation_closed_by_user_id.slice(0, 10)}…
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                        {fmtDateTime(it.tabulation_closed_at || it.outcome_occurred_at)}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700 max-w-[120px] truncate" title={it.tabulation_stage_name || ''}>
+                        {it.tabulation_stage_name || '—'}
+                      </td>
+                      <td className="px-3 py-2 text-[11px] text-gray-500 whitespace-nowrap">
+                        <div>ativ. {fmtDateTime(it.activated_at)}</div>
+                        <div>resp. {fmtDateTime(it.replied_at || null)}</div>
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        {it.crm_url ? (
+                          <a
+                            href={it.crm_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-md"
+                          >
+                            Abrir CRM
+                          </a>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
                 ) : (
                   items.map((it) => (
                     <tr key={it.response_id} className="hover:bg-gray-50/60">

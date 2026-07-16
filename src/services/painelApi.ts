@@ -1,5 +1,6 @@
 import { apiAuthHeaders } from './apiAuth';
 import { getConsultoresCatalogo, readConsultorIdentity } from './meuPainelApi';
+import type { CrmFonte } from './crmFonte';
 
 export type PainelMetaStatus = 'batendo' | 'em_risco' | 'atrasado' | 'sem_meta';
 
@@ -130,6 +131,8 @@ export interface PainelAlerta {
 }
 
 export interface PainelOverviewData {
+  crm_fonte?: 'datacrazy' | 'novo_crm';
+  crm_fonte_pronta?: boolean;
   perfil: PainelPerfil;
   perfis_disponiveis: PainelPerfilOption[];
   evolucao_tipo: 'marcados' | 'atribuidos';
@@ -233,6 +236,7 @@ export async function fetchPainelOverview(opts?: {
   perfil?: string;
   ref_dia?: string | null;
   origem_ativacao?: string | null;
+  crm_fonte?: CrmFonte | null;
 }): Promise<PainelOverviewData> {
   const p = new URLSearchParams(authQuery().replace(/^\?/, ''));
   if (opts?.from) p.set('from', opts.from);
@@ -241,6 +245,7 @@ export async function fetchPainelOverview(opts?: {
   if (opts?.perfil) p.set('perfil', opts.perfil);
   if (opts?.ref_dia) p.set('ref_dia', opts.ref_dia);
   if (opts?.origem_ativacao) p.set('origem_ativacao', opts.origem_ativacao);
+  if (opts?.crm_fonte) p.set('crm_fonte', opts.crm_fonte);
   const qs = p.toString();
   const catalogo = getConsultoresCatalogo();
   const res = await fetch(`/api/painel/overview${qs ? `?${qs}` : ''}`, {
@@ -255,6 +260,7 @@ export async function fetchPainelOverview(opts?: {
       perfil: opts?.perfil || 'caa',
       ref_dia: opts?.ref_dia || null,
       origem_ativacao: opts?.origem_ativacao || null,
+      crm_fonte: opts?.crm_fonte || 'datacrazy',
     }),
   });
   const raw = await res.text();

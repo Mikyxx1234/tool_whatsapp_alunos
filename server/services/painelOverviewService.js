@@ -21,8 +21,110 @@ import {
   fetchPendentesInsights,
 } from './painelInsightsService.js';
 import { PAINEL_PERFIS, resolvePainelPerfil } from '../utils/painelPerfis.js';
+import { isNovoCrmConfigured, normalizeCrmFonte } from '../utils/crmFonte.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Overview vazio quando Novo CRM está selecionado mas ainda sem credenciais.
+ * Mantém o shape do Painel para a UI não quebrar.
+ */
+function emptyPainelOverviewForNovoCrm(opts = {}) {
+  const { from, to } = parseRange(opts.from, opts.to);
+  const periodDays = Math.min(Math.max(Number(opts.period_days) || 30, 1), 365);
+  const perfil = resolvePainelPerfil(opts.perfil);
+  const hojeBrt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  const periodRange = periodFromOpts(from, to, periodDays, {});
+  const work = brtWorkProgress();
+
+  return {
+    crm_fonte: 'novo_crm',
+    crm_fonte_pronta: false,
+    perfil: {
+      id: perfil.id,
+      label: perfil.label,
+      category: perfil.category,
+      modo: perfil.modo,
+    },
+    perfis_disponiveis: PAINEL_PERFIS.map((p) => ({ id: p.id, label: p.label, modo: p.modo })),
+    evolucao_tipo: perfil.modo === 'caa' ? 'marcados' : 'atribuidos',
+    period: {
+      from: periodRange.from,
+      to: periodRange.to,
+      period_days: from || to ? null : periodDays,
+      ano_mes_meta: anoMesFromDate(to || from || hojeBrt),
+      meta_referencia_dia: hojeBrt,
+      ref_dia: null,
+      origem_ativacao: null,
+    },
+    conversao: {
+      total_dispatches: 0,
+      unique_dispatched: 0,
+      unique_responders: 0,
+      response_rate: 0,
+      unique_reverted: 0,
+      whatsapp_metrics: true,
+    },
+    meu_painel: {
+      total_atribuido: 0,
+      total_marcado: 0,
+      total_revertido: 0,
+      total_confirmado: 0,
+      taxa_reversao: 0,
+    },
+    equipe: [],
+    metas_resumo: {
+      consultores_com_meta: 0,
+      meta_total: 0,
+      marcado_total: 0,
+      pct_meta_global: null,
+    },
+    funil: {
+      total_atribuido: 0,
+      total_marcado: 0,
+      total_revertido: 0,
+      total_responderam: 0,
+      taxa_marcacao: null,
+      taxa_reversao: null,
+      taxa_resposta: null,
+    },
+    projecao_meta: {
+      hour: work.hour,
+      elapsed_hours: work.elapsed_hours,
+      total_hours: work.total_hours,
+      pct_dia: work.pct_dia,
+      projecao_fim_dia: null,
+      pct_projecao: null,
+    },
+    pendentes: {
+      por_consultor: [],
+      aging: { age_0_4h: 0, age_4_24h: 0, age_1_3d: 0, age_3d_plus: 0, total: 0 },
+    },
+    evolucao_diaria: [],
+    diario_ativacoes: { dias: [], resumo: null, segmentos: null },
+    calendario_meta: {
+      dias: [],
+      meta_dia: 0,
+      resumo: { dias_avaliados: 0, dias_bateram: 0, taxa_sucesso: null },
+    },
+    por_base: [],
+    alertas: [
+      {
+        tipo: 'info',
+        titulo: 'Novo CRM selecionado',
+        detalhe:
+          'Fonte operacional trocada. Aguardando credenciais e webhooks do novo CRM — histórico DataCrazy permanece disponível ao voltar o toggle.',
+      },
+      {
+        tipo: 'warning',
+        titulo: 'Conexão pendente',
+        detalhe:
+          'NOVO_CRM_ENABLED / NOVO_CRM_DATABASE_URL ainda não configurados. KPIs e marcações no Novo CRM ficam pausados até a ligação.',
+      },
+    ],
+    generated_at: new Date().toISOString(),
+  };
+}
 
 function parseRange(fromRaw, toRaw) {
   const from = fromRaw && DATE_RE.test(String(fromRaw)) ? String(fromRaw) : null;
@@ -167,6 +269,11 @@ function buildCalendarioMeta({ from, to, hojeBrt, metaDia, evolucao }) {
  * @param {{ from?: string|null, to?: string|null, period_days?: number, perfil?: string|null, ref_dia?: string|null, origem_ativacao?: string|null, catalogo?: Array<{nome?: string, username?: string}> }} opts
  */
 export async function getPainelOverview(opts = {}) {
+  const crmFonte = normalizeCrmFonte(opts.crm_fonte);
+  if (crmFonte === 'novo_crm' && !isNovoCrmConfigured()) {
+    return emptyPainelOverviewForNovoCrm(opts);
+  }
+
   const { from, to } = parseRange(opts.from, opts.to);
   const periodDays = Math.min(Math.max(Number(opts.period_days) || 30, 1), 365);
   const perfil = resolvePainelPerfil(opts.perfil);
@@ -409,6 +516,8 @@ export async function getPainelOverview(opts = {}) {
   });
 
   return {
+    crm_fonte: crmFonte,
+    crm_fonte_pronta: crmFonte === 'datacrazy' || isNovoCrmConfigured(),
     perfil: {
       id: perfil.id,
       label: perfil.label,

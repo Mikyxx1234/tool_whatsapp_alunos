@@ -5,12 +5,14 @@
 import { Router } from 'express';
 import { requireApiKey } from '../middleware/requireApiKey.js';
 import { cleanStaleOrigemAtivacao } from '../services/activationOrigemCleanupService.js';
+import { cleanStaleActivationTags } from '../services/activationNovoCrmTagCleanupService.js';
 import { syncCaaDesfechos } from '../services/crmDesfechoSyncService.js';
 import { syncResponseConsultores } from '../services/crmConsultorSyncService.js';
 import { runFullSync, startFullSyncBackground } from '../services/datacrazyLeadCacheSyncService.js';
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
+import { migrateMeuPainelLegacyFromLive } from '../repositories/meuPainelLegacyRepository.js';
 
 const router = Router();
 
@@ -34,6 +36,28 @@ router.post('/clean-stale-origem-ativacao', requireApiKey, async (req, res, next
       req.query?.dry_run === '1' ||
       req.body?.dry_run === true;
     const result = await cleanStaleOrigemAtivacao({ dryRun });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/maintenance/clean-stale-activation-tags
+ *
+ * Remove tags ativacao-* no CRM EduIT para SETs no log local há mais de
+ * `journey_settings.origem_ativacao_stale_hours` (mesma janela da origem)
+ * sem CLEAR posterior. Idempotente.
+ *
+ * Query/body: dry_run=true → só conta.
+ */
+router.post('/clean-stale-activation-tags', requireApiKey, async (req, res, next) => {
+  try {
+    const dryRun =
+      req.query?.dry_run === 'true' ||
+      req.query?.dry_run === '1' ||
+      req.body?.dry_run === true;
+    const result = await cleanStaleActivationTags({ dryRun });
     res.json(result);
   } catch (err) {
     next(err);
@@ -211,6 +235,21 @@ router.post('/sync-response-consultores', requireApiKey, async (req, res, next) 
     res.json({ ok: true, ...result });
   } catch (err) {
     next(err);
+  }
+});
+
+/**
+ * POST /api/maintenance/migrate-meu-painel-legacy
+ *
+ * Snapshot idempotente de activation_responses + outcomes manuais →
+ * meu_painel_legacy_outcomes (leitura no Meu Painel Novo CRM).
+ */
+router.post('/migrate-meu-painel-legacy', requireApiKey, async (req, res) => {
+  try {
+    const result = await migrateMeuPainelLegacyFromLive();
+    res.json({ ok: true, ...result, ran_at: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 

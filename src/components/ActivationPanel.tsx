@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BarChart3 } from 'lucide-react';
 import { ActivationListActions } from './ActivationListActions';
+import { CrmFonteToggle, useCrmFonte } from './CrmFonteToggle';
 import { DatacrazyCacheSyncCard } from './DatacrazyCacheSyncCard';
 import { ActivationRosterTable } from './ActivationRosterTable';
 import { ActivationTemplateMapping } from './ActivationTemplateMapping';
@@ -41,6 +42,7 @@ function activationQueueCount(
 }
 
 export function ActivationPanel() {
+  const [crmFonte] = useCrmFonte();
   const [category, setCategory] = useState<ActivationCategory>('docs-pendentes');
   const [intersectionByCat, setIntersectionByCat] = useState<Partial<Record<ActivationCategory, number>>>({});
   const [templateConfigVersion, setTemplateConfigVersion] = useState(0);
@@ -173,20 +175,34 @@ export function ActivationPanel() {
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-6">
-        <h2 className="text-base font-semibold text-gray-900">Ativação por bases (matriculados)</h2>
-        <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-          Cruza matrícula × planilhas importadas em{' '}
-          <Link to="/bases" className="text-whatsapp-700 hover:underline font-medium">
-            Bases
-          </Link>
-          , busca no DataCrazy e envia o template (1ª ativação, 5ª, etc.). Os números de referência vêm do{' '}
-          <Link to="/reports" className="text-whatsapp-700 hover:underline font-medium inline-flex items-center gap-0.5">
-            <BarChart3 className="w-3.5 h-3.5" />
-            Relatórios
-          </Link>{' '}
-          (somente leitura). O cruzamento usa o <strong>Ciclo</strong> das planilhas quando existir: quem só
-          coincide por RGM em ciclo antigo não entra na fila (rematrícula).
-        </p>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Ativação por bases (matriculados)</h2>
+            <p className="text-sm text-gray-500 mt-1 max-w-3xl">
+              {crmFonte === 'novo_crm' ? (
+                <>
+                  Fonte <strong>Novo CRM</strong>: o botão aplica tag de ativação (sem WhatsApp). Volte para{' '}
+                  <strong>DataCrazy</strong> no topo para disparar template normalmente.
+                </>
+              ) : (
+                <>
+                  Cruza matrícula × planilhas importadas em{' '}
+                  <Link to="/bases" className="text-whatsapp-700 hover:underline font-medium">
+                    Bases
+                  </Link>
+                  , busca no DataCrazy e envia o template (1ª ativação, 5ª, etc.). Os números de referência vêm do{' '}
+                  <Link to="/reports" className="text-whatsapp-700 hover:underline font-medium inline-flex items-center gap-0.5">
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    Relatórios
+                  </Link>{' '}
+                  (somente leitura). O cruzamento usa o <strong>Ciclo</strong> das planilhas quando existir: quem só
+                  coincide por RGM em ciclo antigo não entra na fila (rematrícula).
+                </>
+              )}
+            </p>
+          </div>
+          <CrmFonteToggle />
+        </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
           {CATEGORIES.map((c) => (

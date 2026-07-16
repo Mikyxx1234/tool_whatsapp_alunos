@@ -381,7 +381,12 @@ export const activationApi = {
 
   runDatacrazyBatch(
     category: ActivationCategory,
-    opts?: { limit?: number; masterKeys?: string[]; operatorNome?: string }
+    opts?: {
+      limit?: number;
+      masterKeys?: string[];
+      operatorNome?: string;
+      crmFonte?: 'datacrazy' | 'novo_crm';
+    }
   ) {
     const body: Record<string, unknown> = { limit: opts?.limit ?? 0 };
     if (Array.isArray(opts?.masterKeys) && opts!.masterKeys!.length > 0) {
@@ -389,6 +394,9 @@ export const activationApi = {
     }
     if (opts?.operatorNome) {
       body.operator_nome = opts.operatorNome;
+    }
+    if (opts?.crmFonte) {
+      body.crm_fonte = opts.crmFonte;
     }
     return jsonFetch<DatacrazyBatchResponse>(`/api/activation/${category}/run-datacrazy-batch`, {
       method: 'POST',
@@ -398,7 +406,11 @@ export const activationApi = {
 
   runDatacrazyBatchAsync(
     category: ActivationCategory,
-    opts?: { masterKeys?: string[]; operatorNome?: string }
+    opts?: {
+      masterKeys?: string[];
+      operatorNome?: string;
+      crmFonte?: 'datacrazy' | 'novo_crm';
+    }
   ): Promise<{ jobId: string; status: 'running' }> {
     const body: Record<string, unknown> = { limit: 0 };
     if (Array.isArray(opts?.masterKeys) && opts!.masterKeys!.length > 0) {
@@ -406,6 +418,9 @@ export const activationApi = {
     }
     if (opts?.operatorNome) {
       body.operator_nome = opts.operatorNome;
+    }
+    if (opts?.crmFonte) {
+      body.crm_fonte = opts.crmFonte;
     }
     return jsonFetch<{ jobId: string; status: 'running' }>(
       `/api/activation/${category}/run-datacrazy-batch?async=1`,

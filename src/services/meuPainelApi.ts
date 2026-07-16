@@ -1,4 +1,5 @@
 import { apiAuthHeaders } from './apiAuth';
+import { readCrmFonte } from './crmFonte';
 
 /** Categorias aceitas no backend (espelha VALID_MEU_PAINEL_CATEGORIES). */
 export const MEU_PAINEL_CATEGORIES = [
@@ -14,6 +15,8 @@ export type MeuPainelCategory = (typeof MEU_PAINEL_CATEGORIES)[number];
 
 export type OutcomeKind = 'revertido' | 'confirmado' | 'sem_contato' | 'outro';
 
+export type RetentionOutcome = 'retido' | 'nao_retido';
+
 export interface MeuPainelStats {
   total_atribuido: number;
   total_opt_out: number;
@@ -23,6 +26,12 @@ export interface MeuPainelStats {
   total_sem_contato: number;
   total_outro: number;
   taxa_reversao: number;
+  /** Novo CRM (tabulação Retido?) */
+  total_tabulado?: number;
+  total_retido?: number;
+  total_nao_retido?: number;
+  total_pendente?: number;
+  taxa_retencao?: number;
 }
 
 export interface MeuPainelItem {
@@ -54,6 +63,29 @@ export interface MeuPainelItem {
   outcome_consultor_nome: string | null;
   outcome_has_proof: boolean | null;
   is_manual?: boolean;
+  /** Novo CRM: retido | nao_retido (tabulação Retido?). */
+  retention_outcome?: RetentionOutcome | null;
+  is_legacy?: boolean;
+  source?: 'datacrazy' | 'novo_crm' | 'legacy' | null;
+  contact_id?: string | null;
+  contact_number?: string | null;
+  deal_id?: string | null;
+  deal_number?: string | null;
+  deal_title?: string | null;
+  deal_status?: string | null;
+  conversation_id?: string | null;
+  tabulation_id?: string | null;
+  tabulation_question?: string | null;
+  tabulation_answer?: string | null;
+  tabulation_stage_name?: string | null;
+  tabulation_stage_id?: string | null;
+  tabulation_closed_at?: string | null;
+  tabulation_closed_by_user_id?: string | null;
+  tabulation_closed_by_nome?: string | null;
+  tabulation_closed_by_email?: string | null;
+  replied_at?: string | null;
+  activated_at?: string | null;
+  crm_url?: string | null;
 }
 
 export interface MeuPainelListResponse {
@@ -103,6 +135,7 @@ export interface MeuPainelFilters {
   somente_atribuidos?: boolean | string | number | null;
   limit?: number;
   offset?: number;
+  crm_fonte?: 'datacrazy' | 'novo_crm' | null;
 }
 
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
@@ -141,6 +174,8 @@ function buildQuery(filters: MeuPainelFilters): string {
   if (filters.somente_atribuidos) params.set('somente_atribuidos', '1');
   if (filters.limit != null) params.set('limit', String(filters.limit));
   if (filters.offset != null) params.set('offset', String(filters.offset));
+  const crmFonte = filters.crm_fonte || readCrmFonte();
+  if (crmFonte) params.set('crm_fonte', crmFonte);
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }
@@ -175,12 +210,17 @@ export interface CreateOutcomePayload {
   role?: string | null;
   categoria?: string | null;
   occurred_at?: string | null;
+  /** Fonte operacional: datacrazy | novo_crm (default = preferência local). */
+  crm_fonte?: 'datacrazy' | 'novo_crm' | null;
 }
 
 export async function createOutcome(payload: CreateOutcomePayload) {
   return jsonFetch<{ ok: true; outcome: unknown }>('/api/activation/meu-painel/outcomes', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      crm_fonte: payload.crm_fonte || readCrmFonte(),
+    }),
   });
 }
 
@@ -520,6 +560,16 @@ export const OUTCOME_TONE: Record<OutcomeKind, string> = {
   confirmado: 'bg-rose-50 text-rose-800 border-rose-200',
   sem_contato: 'bg-amber-50 text-amber-800 border-amber-200',
   outro: 'bg-slate-50 text-slate-800 border-slate-200',
+};
+
+export const RETENTION_SHORT_LABEL: Record<RetentionOutcome, string> = {
+  retido: 'Retido',
+  nao_retido: 'Não retido',
+};
+
+export const RETENTION_TONE: Record<RetentionOutcome, string> = {
+  retido: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  nao_retido: 'bg-rose-50 text-rose-800 border-rose-200',
 };
 
 export const CATEGORY_LABEL: Record<string, string> = {

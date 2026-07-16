@@ -13,6 +13,7 @@ import { academicTermApi, type AcademicTermDTO } from '../services/academicTermA
 import {
   maintenanceApi,
   type CleanStaleOrigemAtivacaoResponse,
+  type CleanStaleActivationTagsResponse,
   type SyncCrmDesfechosResponse,
 } from '../services/maintenanceApi';
 
@@ -50,6 +51,8 @@ export default function JourneyRulesPage() {
 
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanStaleOrigemAtivacaoResponse | null>(null);
+  const [tagCleanupRunning, setTagCleanupRunning] = useState(false);
+  const [tagCleanupResult, setTagCleanupResult] = useState<CleanStaleActivationTagsResponse | null>(null);
 
   const [syncRunning, setSyncRunning] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncCrmDesfechosResponse | null>(null);
@@ -94,6 +97,30 @@ export default function JourneyRulesPage() {
     },
     []
   );
+
+  const runTagCleanup = useCallback(async (dryRun: boolean) => {
+    setTagCleanupRunning(true);
+    try {
+      const r = await maintenanceApi.cleanStaleActivationTags({ dryRun });
+      setTagCleanupResult(r);
+      if (r.skipped_no_config) {
+        showToast(
+          'Limpeza de tags ignorada: NOVO_CRM_ENABLED / NOVO_CRM_API_TOKEN não configurados.',
+          'error'
+        );
+        return;
+      }
+      const verb = dryRun ? 'Simulação tags' : 'Limpeza tags';
+      const detail = dryRun
+        ? `${r.scanned} tag(s) seria(m) removida(s).`
+        : `${r.cleaned} removidas, ${r.failed} falhas (de ${r.scanned} encontradas).`;
+      showToast(`${verb}: ${detail}`, r.failed > 0 ? 'error' : 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erro no cleanup de tags', 'error');
+    } finally {
+      setTagCleanupRunning(false);
+    }
+  }, []);
 
   const fetchTerms = useCallback(async () => {
     try {
@@ -630,6 +657,13 @@ export default function JourneyRulesPage() {
                   Auditoria em{' '}
                   <code className="bg-gray-100 px-1 rounded">activation_responses</code> é
                   preservada — só não conta nas métricas.
+                  <span className="block mt-2">
+                    A <strong>mesma janela</strong> também limpa tags{' '}
+                    <code className="bg-gray-100 px-1 rounded">ativacao-*</code> no CRM EduIT
+                    (Novo CRM), via log{' '}
+                    <code className="bg-gray-100 px-1 rounded">activation_novo_crm_tag_log</code>
+                    — para a pessoa não ficar tagueada para sempre após ativação por tag.
+                  </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
@@ -663,12 +697,19 @@ export default function JourneyRulesPage() {
                       <code className="bg-gray-100 px-1 rounded">
                         POST /api/maintenance/clean-stale-origem-ativacao
                       </code>{' '}
-                      — agendável também via n8n Schedule Trigger.
+                      (DataCrazy) e{' '}
+                      <code className="bg-gray-100 px-1 rounded">
+                        POST /api/maintenance/clean-stale-activation-tags
+                      </code>{' '}
+                      (Novo CRM tags).
                     </p>
                   </div>
                 </div>
 
                 <div className="border-t border-gray-100 pt-4 mt-4 space-y-3">
+                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    DataCrazy — origem_ativacao
+                  </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
@@ -742,6 +783,92 @@ export default function JourneyRulesPage() {
                             {cleanupResult.errors.slice(0, 10).map((e, i) => (
                               <li key={i} className="font-mono">
                                 <span className="opacity-60">{e.lead_id.slice(0, 8)}…</span>{' '}
+                                {e.error}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-gray-100 pt-4 mt-4 space-y-3">
+                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                    Novo CRM — tags ativacao-*
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={tagCleanupRunning}
+                      onClick={() => runTagCleanup(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Conta quantas tags seriam removidas sem chamar o CRM"
+                    >
+                      <PlayCircle className="w-4 h-4" />
+                      Simular tags
+                    </button>
+                    <button
+                      type="button"
+                      disabled={tagCleanupRunning}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Remover agora tags ativacao-* aplicadas há mais de ${effective.origem_ativacao_stale_hours}h no Novo CRM?`
+                          )
+                        ) {
+                          void runTagCleanup(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-sky-600 border border-sky-600 rounded-lg hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Remove tags ativacao-* stale no CRM EduIT"
+                    >
+                      {tagCleanupRunning ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                      {tagCleanupRunning ? 'Limpando tags…' : 'Limpar tags agora'}
+                    </button>
+                  </div>
+
+                  {tagCleanupResult && (
+                    <div
+                      className={`rounded-lg border p-3 text-xs space-y-1 ${
+                        tagCleanupResult.failed > 0 || tagCleanupResult.skipped_no_config
+                          ? 'bg-rose-50 border-rose-200 text-rose-900'
+                          : tagCleanupResult.dry_run
+                          ? 'bg-sky-50 border-sky-200 text-sky-900'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      }`}
+                    >
+                      <p className="font-medium">
+                        {tagCleanupResult.skipped_no_config
+                          ? 'Config ausente'
+                          : tagCleanupResult.dry_run
+                          ? 'Simulação tags'
+                          : 'Limpeza tags'}{' '}
+                        — {new Date(tagCleanupResult.ran_at).toLocaleString('pt-BR')}
+                      </p>
+                      <p className="tabular-nums">
+                        <strong>Encontrados:</strong> {tagCleanupResult.scanned} ·{' '}
+                        <strong>Limpos:</strong> {tagCleanupResult.cleaned} ·{' '}
+                        <strong>Falhas:</strong> {tagCleanupResult.failed}
+                      </p>
+                      <p className="opacity-75">
+                        Janela: {tagCleanupResult.stale_window_hours}h (mesma da origem)
+                      </p>
+                      {tagCleanupResult.errors.length > 0 && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer font-medium">
+                            Ver {tagCleanupResult.errors.length} erro(s)
+                          </summary>
+                          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                            {tagCleanupResult.errors.slice(0, 10).map((e, i) => (
+                              <li key={i} className="font-mono">
+                                <span className="opacity-60">
+                                  {e.tag_name} / {e.contact_id.slice(0, 8)}…
+                                </span>{' '}
                                 {e.error}
                               </li>
                             ))}

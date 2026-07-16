@@ -61,6 +61,8 @@ import {
   rematFinanceiroSubgrupoFromRow,
 } from '../utils/rematriculaEligibility.js';
 import { isMatriculadosActivationEligible } from '../utils/matriculadosTipoMatricula.js';
+import { normalizeCrmFonte } from '../utils/crmFonte.js';
+import { runNovoCrmTagActivationBatch } from './novoCrmTagActivationService.js';
 
 export const URGENCY_HIGH_DAYS = 30;
 export const URGENCY_MEDIUM_DAYS = 14;
@@ -1694,10 +1696,18 @@ async function runDatacrazyActivationMultiChunk(category, toProcess, opts, callb
 
 /**
  * Busca no DataCrazy, envia template conforme tier (1ª / 5ª…) e registra histórico.
+ * Se opts.crmFonte === 'novo_crm', aplica tag no CRM EduIT (sem WhatsApp).
  */
 export async function runDatacrazyActivationBatch(category, opts = {}, callbacks = {}) {
   const onTotal = typeof callbacks.onTotal === 'function' ? callbacks.onTotal : () => {};
   const toProcess = await resolveActivationBatchItems(category, opts);
+  const crmFonte = normalizeCrmFonte(opts.crmFonte);
+
+  if (crmFonte === 'novo_crm') {
+    onTotal({ total: toProcess.length });
+    return runNovoCrmTagActivationBatch(category, toProcess, opts, callbacks);
+  }
+
   const chunkSize = getActivationAutoChunkSize(opts);
   if (opts.autoChunk !== false && toProcess.length > chunkSize) {
     return runDatacrazyActivationMultiChunk(category, toProcess, opts, callbacks, chunkSize);

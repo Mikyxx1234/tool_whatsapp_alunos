@@ -19,6 +19,7 @@ import {
   hasFullAccess,
   readConsultorIdentity,
 } from '../services/meuPainelApi';
+import { CrmFonteToggle } from './CrmFonteToggle';
 
 interface HeaderProps {
   onShowHistory?: () => void;
@@ -124,17 +125,19 @@ export function Header({ onShowHistory, showHistoryButton = true }: HeaderProps)
             </div>
           </Link>
 
-          {showHistoryButton && onShowHistory && (
-            <button
-              type="button"
-              onClick={onShowHistory}
-              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shrink-0"
-            >
-              <History className="w-4 h-4" />
-              <span className="hidden sm:inline">Histórico</span>
-            </button>
-          )}
-        </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <CrmFonteToggle />
+            {showHistoryButton && onShowHistory && (
+              <button
+                type="button"
+                onClick={onShowHistory}
+                className="inline-flex items-center gap-2 px-3 py-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors"
+              >
+                <History className="w-4 h-4" />
+                <span className="hidden sm:inline">Histórico</span>
+              </button>
+            )}
+          </div>        </div>
 
         <nav
           className="flex items-center gap-1 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-thin"

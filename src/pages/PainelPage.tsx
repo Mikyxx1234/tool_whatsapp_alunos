@@ -38,6 +38,8 @@ import {
   isAbaPermitida,
   readConsultorIdentity,
 } from '../services/meuPainelApi';
+import { CrmFonteToggle, useCrmFonte } from '../components/CrmFonteToggle';
+import { crmFonteLabel } from '../services/crmFonte';
 
 type RangeKey = 'today' | '7d' | '30d' | '90d';
 const PAINEL_PERFIL_STORAGE = 'painel_perfil_v1';
@@ -812,6 +814,7 @@ export default function PainelPage() {
   const [range, setRange] = useState<RangeKey>('30d');
   const [perfil, setPerfil] = useState(readStoredPerfil);
   const [origemCaa, setOrigemCaa] = useState<PainelOrigemCaa>(readStoredOrigemCaa);
+  const [crmFonte, setCrmFonte] = useCrmFonte();
   const [selectedDia, setSelectedDia] = useState<string | null>(null);
   const [data, setData] = useState<PainelOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -829,6 +832,7 @@ export default function PainelPage() {
         ...baseOpts,
         ref_dia: selectedDia,
         origem_ativacao: perfil === 'caa' && origemCaa !== 'geral' ? origemCaa : null,
+        crm_fonte: crmFonte,
       });
       setData(d);
     } catch (e) {
@@ -836,7 +840,7 @@ export default function PainelPage() {
     } finally {
       setLoading(false);
     }
-  }, [range, perfil, origemCaa, selectedDia]);
+  }, [range, perfil, origemCaa, crmFonte, selectedDia]);
 
   const handlePerfilChange = (id: string) => {
     setPerfil(id);
@@ -917,6 +921,7 @@ export default function PainelPage() {
               {isCaa
                 ? `Gestão CAA — metas e respostas sem marcação${origemAtivo && origemLabel ? ` · ${origemLabel}` : ''}${isMovimentacaoInterna ? ' · movimentação DataCrazy' : ''}`
                 : `${perfilLabel} — disparos e taxa de resposta`}
+              {` · fonte ${crmFonteLabel(crmFonte)}`}
               {refDia
                 ? ` · dia ${refDia.split('-').reverse().join('/')}`
                 : data?.period.meta_referencia_dia
@@ -925,6 +930,7 @@ export default function PainelPage() {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <CrmFonteToggle size="md" />
             <PerfilSwitcher
               perfilId={perfil}
               perfilLabel={perfilLabel}

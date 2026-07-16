@@ -31,8 +31,14 @@ import {
 } from '../services/activationTemplateConfigService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import * as manualOutcomesRepo from '../repositories/manualOutcomesRepository.js';
+import {
+  listMeuPainelNovoCrm,
+  meuPainelStatsNovoCrm,
+} from '../services/meuPainelNovoCrmService.js';
+import { isNovoCrmDbConfigured } from '../db/novoCrmClient.js';
 import { normalizeRgmCanonical } from '../utils/rgmDisplay.js';
 import { requireApiKey } from '../middleware/requireApiKey.js';
+import { assertCrmFonteReady, normalizeCrmFonte } from '../utils/crmFonte.js';
 
 const VALID_OUTCOMES = new Set(['revertido', 'confirmado', 'sem_contato', 'outro']);
 const VALID_MEU_PAINEL_CATEGORIES = new Set([
@@ -201,6 +207,40 @@ router.get('/meu-painel/list', async (req, res) => {
     const search = req.query.search ? String(req.query.search).trim() : undefined;
     const somenteAtribuidos =
       req.query.somente_atribuidos === '1' || req.query.somente_atribuidos === 'true';
+    const crmFonte = normalizeCrmFonte(req.query.crm_fonte);
+
+    if (crmFonte === 'novo_crm') {
+      const ready = assertCrmFonteReady(crmFonte);
+      if (!ready.ok) {
+        return res.status(ready.status).json({ error: ready.error, crm_fonte: crmFonte });
+      }
+      if (!isNovoCrmDbConfigured()) {
+        return res.status(503).json({
+          error:
+            'Novo CRM selecionado: defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL para o Meu Painel.',
+          crm_fonte: crmFonte,
+        });
+      }
+      const { items, total } = await listMeuPainelNovoCrm({
+        consultor,
+        from,
+        to,
+        category,
+        search,
+        limit,
+        offset,
+      });
+      return res.json({
+        consultor: consultor || null,
+        is_admin: isAdmin,
+        total,
+        limit,
+        offset,
+        items,
+        crm_fonte: crmFonte,
+      });
+    }
+
     const { items, total } = await manualOutcomesRepo.listMeuPainel({
       consultor,
       from,
@@ -218,6 +258,7 @@ router.get('/meu-painel/list', async (req, res) => {
       limit,
       offset,
       items,
+      crm_fonte: crmFonte,
     });
   } catch (err) {
     handleError(res, err);
@@ -240,6 +281,8 @@ router.get('/meu-painel/stats', async (req, res) => {
           total_atribuido: 0, total_opt_out: 0, total_marcado: 0,
           total_revertido: 0, total_confirmado: 0, total_sem_contato: 0,
           total_outro: 0, taxa_reversao: 0,
+          total_tabulado: 0, total_retido: 0, total_nao_retido: 0, total_pendente: 0,
+          taxa_retencao: 0,
         },
       });
     }
@@ -248,13 +291,36 @@ router.get('/meu-painel/stats', async (req, res) => {
       return res.status(400).json({ error: `category invalida: ${category}` });
     }
     const { from: statsFrom, to: statsTo } = parseDateRange(req.query.from, req.query.to);
+    const crmFonte = normalizeCrmFonte(req.query.crm_fonte);
+
+    if (crmFonte === 'novo_crm') {
+      const ready = assertCrmFonteReady(crmFonte);
+      if (!ready.ok) {
+        return res.status(ready.status).json({ error: ready.error, crm_fonte: crmFonte });
+      }
+      if (!isNovoCrmDbConfigured()) {
+        return res.status(503).json({
+          error:
+            'Novo CRM selecionado: defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL para o Meu Painel.',
+          crm_fonte: crmFonte,
+        });
+      }
+      const stats = await meuPainelStatsNovoCrm({
+        consultor,
+        from: statsFrom,
+        to: statsTo,
+        category,
+      });
+      return res.json({ consultor: consultor || null, is_admin: isAdmin, stats, crm_fonte: crmFonte });
+    }
+
     const stats = await manualOutcomesRepo.meuPainelStats({
       consultor,
       from: statsFrom,
       to: statsTo,
       category,
     });
-    res.json({ consultor: consultor || null, is_admin: isAdmin, stats });
+    res.json({ consultor: consultor || null, is_admin: isAdmin, stats, crm_fonte: crmFonte });
   } catch (err) {
     handleError(res, err);
   }
@@ -397,6 +463,19 @@ router.post('/meu-painel/outcomes', async (req, res) => {
       return res.status(503).json({ error: 'DATABASE_URL não configurada.' });
     }
     const body = req.body ?? {};
+    const crmFonte = normalizeCrmFonte(body.crm_fonte);
+    if (crmFonte === 'novo_crm') {
+      const fonteReady = assertCrmFonteReady(crmFonte);
+      if (!fonteReady.ok) {
+        return res.status(fonteReady.status).json({ error: fonteReady.error, crm_fonte: crmFonte });
+      }
+      // Credenciais ok, mas write-path do Novo CRM ainda não foi ligado (fase 2).
+      return res.status(503).json({
+        error:
+          'Novo CRM selecionado: gravação de marcações no CRM novo ainda será ligada após mapear webhooks/tabelas.',
+        crm_fonte: crmFonte,
+      });
+    }
     const category = String(body.category || '').trim();
     const outcome = String(body.outcome || '').trim();
     const consultorNome =
@@ -443,7 +522,7 @@ router.post('/meu-painel/outcomes', async (req, res) => {
         master_key: body.master_key ?? (rgm ? `RGM:${rgm}` : null),
       });
     }
-    res.status(201).json({ ok: true, outcome: row });
+    res.status(201).json({ ok: true, outcome: row, crm_fonte: crmFonte });
   } catch (err) {
     handleError(res, err);
   }
@@ -615,15 +694,21 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
       ? req.body.master_keys.map(String).filter((k) => k.length > 0)
       : undefined;
     const operatorNome = (req.body?.operator_nome ?? '').toString().trim() || null;
+    const crmFonte = normalizeCrmFonte(req.body?.crm_fonte ?? req.query?.crm_fonte);
+    const fonteReady = assertCrmFonteReady(crmFonte);
+    if (crmFonte === 'novo_crm' && !fonteReady.ok) {
+      return res.status(fonteReady.status).json({ error: fonteReady.error, crm_fonte: crmFonte });
+    }
+    const batchOpts = { limit, masterKeys, operatorNome, crmFonte };
 
     if (req.query.async === '1') {
       const { jobId } = createJob({ category, total: 0 });
-      res.status(202).json({ jobId, status: 'running' });
+      res.status(202).json({ jobId, status: 'running', crm_fonte: crmFonte });
       (async () => {
         try {
           const data = await runDatacrazyActivationBatch(
             category,
-            { limit, masterKeys, operatorNome, jobId },
+            { ...batchOpts, jobId },
             {
               onTotal: ({ total }) => updateProgress(jobId, { total: total ?? 0 }),
               onProgress: (patch) => updateProgress(jobId, patch),
@@ -646,7 +731,7 @@ router.post('/:category/run-datacrazy-batch', requireApiKey, async (req, res) =>
       return;
     }
 
-    const data = await runDatacrazyActivationBatch(category, { limit, masterKeys, operatorNome });
+    const data = await runDatacrazyActivationBatch(category, batchOpts);
     res.json(data);
   } catch (err) {
     handleError(res, err);

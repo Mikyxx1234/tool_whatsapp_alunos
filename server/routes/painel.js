@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { isDbConfigured } from '../db/client.js';
 import { requireFullAccess } from '../middleware/requireFullAccess.js';
 import { getPainelOverview } from '../services/painelOverviewService.js';
+import { normalizeCrmFonte } from '../utils/crmFonte.js';
 
 const router = Router();
 
@@ -20,6 +21,7 @@ async function handleOverview(req, res) {
       perfil: q.perfil || 'caa',
       ref_dia: q.ref_dia || null,
       origem_ativacao: q.origem_ativacao || null,
+      crm_fonte: normalizeCrmFonte(q.crm_fonte),
       catalogo,
     });
     res.json({ ok: true, data });

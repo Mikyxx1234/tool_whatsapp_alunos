@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const backendPort = env.PORT || '3001';
+  // process.env.PORT sobrescreve .env (ex.: PORT=3011 quando 3001 está ocupada pelo CRM)
+  const backendPort = process.env.PORT || env.PORT || '3001';
 
   return {
     plugins: [react()],

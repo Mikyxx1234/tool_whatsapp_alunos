@@ -5,6 +5,45 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-15 — Meu Painel Novo CRM: desfecho via tabulação `Retido?`
+- **Modelo usado:** Composer (principal).
+- **Decisão:** No modo `crm_fonte=novo_crm`, o Meu Painel **não marca desfecho manualmente**. Consultor tabula ao fechar a conversa no CRM EduIT; o app lê `conversation_close_tabulations`.
+- **Regra v1 (só retenção):** `question` ≈ `Retido?` → `answer=Sim` = Retido; `answer=Não` = Não retido; sem linha = Pendente. Outras questions ignoradas (extensível depois via filtro).
+- **Lista:** união de (1) ativações em `activation_novo_crm_tag_log`, (2) `campaign_recipients.repliedAt`, (3) contacts com tabulação de retenção no período + (4) snapshot legado `meu_painel_legacy_outcomes` (badge Histórico).
+- **Env:** `NOVO_CRM_DATABASE_URL` + `NOVO_CRM_ENABLED=1`; opcional `NOVO_CRM_RETENCAO_QUESTION=Retido?`.
+- **Migração:** `POST /api/maintenance/migrate-meu-painel-legacy` (requireApiKey) → tabela `042_meu_painel_legacy_outcomes`.
+- **Arquivos:** `server/db/novoCrmClient.js`, `conversationCloseTabulationsRepository.js`, `meuPainelNovoCrmService.js`, `MeuPainelPage.tsx`.
+- **Fora de escopo:** Painel Geral/Conversão full no Novo CRM; dual-write de outcome → CRM; outras tabulações além de retenção.
+
+### 2026-07-14 — Ativação no Novo CRM por tag no deal/contact + limpeza stale
+- **Modelo usado:** Composer (principal).
+- **Contexto:** Disparo WhatsApp migrará pro CRM EduIT (campanhas). O app Disparador mantém painéis; no cutover a ação deixa de enviar template e passa a **taggear**.
+- **Decisões:**
+  - Tag visível na UI do CRM fica no **contact** (`POST/DELETE /api/contacts/:id/tags`). Quando houver `dealId`, aplica/remove também no deal.
+  - Preferir body `{ tagName }` (API aceita `tagId` ou `tagName`).
+  - Mapa fixo categoria → tag: `ativacao-caa`, `ativacao-financeiro`, `ativacao-docs`, …
+  - **Horário da ativação:** log local `activation_novo_crm_tag_log` (`tag_value` = nome no SET, `''` no CLEAR) — espelho de `activation_origem_ativacao_log`.
+  - **Limpeza:** mesma janela `origem_ativacao_stale_hours` (default 72h). Job `cleanStaleActivationTags` + `POST /api/maintenance/clean-stale-activation-tags` + cron 24h. Só remove tags registradas pelo log (não tags manuais soltas).
+  - Automação CRM pós-tag: fora de escopo por enquanto.
+  - UI cutover: botão vira **“Ativar (tag)”**; aba Disparador **não some ainda**.
+  - **Enquanto cutover não ligado:** fluxo DataCrazy + WhatsApp permanece idêntico.
+  - **Batch “Ativar (tag)”:** com `crm_fonte=novo_crm` (toggle do Painel), `POST /api/activation/:category/run-datacrazy-batch` deriva para `runNovoCrmTagActivationBatch` (lookup contact/deal por tel/CPF/email → tag; grava `activation_dispatch_events` com `channel=novo_crm_tag`). Body aceita `crm_fonte`. DataCrazy continua default se omitido/`datacrazy`.
+- **Arquivos:** `novoCrmClient.js`, `novoCrmTagActivationService.js`, `novoCrmActivationTags.js`, `activationNovoCrmTagRepository.js`, `activationNovoCrmTagCleanupService.js`, migration `041_activation_novo_crm_tag_log.sql`, `ActivationListActions.tsx`, `activationApi.ts`.
+- **Alternativas descartadas:** tag só no deal (UI lateral não mostra); setting separado de janela (duplicaria Regras); limpar qualquer `ativacao-*` sem log (apagaria tags manuais); endpoint novo separado do batch (mantém job/async/progresso iguais).
+
+### 2026-07-13 — Toggle DataCrazy ↔ Novo CRM (fonte operacional na migração)
+- **Modelo usado:** Composer (principal).
+- **Problema:** disparador/painel hoje lê e marca 100% no fluxo DataCrazy; na migração de CRM precisamos (1) preservar histórico DataCrazy, (2) a partir de um gesto explícito passar a operar (KPIs + marcações + webhooks de resposta) no CRM novo.
+- **Decisão (fase 1 — infraestrutura, sem credenciais ainda):**
+  - Preferência global `crm_fonte` ∈ `{datacrazy, novo_crm}` em `localStorage` (`crm_fonte_v1`), compartilhada entre Painel e Meu Painel.
+  - Toggle UI no header do **Painel** (`DataCrazy` | `Novo CRM`).
+  - API `POST /api/painel/overview` aceita `crm_fonte`; backend normaliza via `server/utils/crmFonte.js`.
+  - `datacrazy` → comportamento atual (zero regressão).
+  - `novo_crm` sem config → overview stub (KPIs zerados + alertas) e POST outcomes retorna 503 até fase 2.
+  - Env reservados: `NOVO_CRM_ENABLED=1` + `NOVO_CRM_DATABASE_URL` (e demais credenciais a definir com o usuário).
+- **Fase 2 (quando houver acessos):** plugar leitura/escrita no banco/webhooks do novo CRM; migrar histórico DataCrazy para leitura unificada; marcações com `crm_fonte=novo_crm` gravam só no novo.
+- **Alternativas descartadas:** feature flag só server-side sem UI (operador não controla o cutover); dual-write automático sem toggle (risco de misturar fontes no meio da migração).
+
 ### 2026-07-08 — Meu Painel CAA: coluna Wesley/Danubia prevalece sobre payload conflitante
 - **Modelo usado:** Opus 4.7 (principal).
 - **Problema:** Auditoria encontrou leads com `consultor_responsavel_nome` = Wesley/Danubia, mas `raw_payload.Consultor` = Joyce/Beatriz/etc. O efetivo priorizava o payload → coluna CONSULTOR ficava em branco e o consultor autenticado não via o lead.

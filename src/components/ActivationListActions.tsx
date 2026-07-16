@@ -6,6 +6,7 @@ import {
   type DatacrazyBatchNotFoundItem,
 } from '../services/activationApi';
 import { readConsultorIdentity } from '../services/meuPainelApi';
+import { useCrmFonte } from './CrmFonteToggle';
 import { LoadingOverlay } from './LoadingOverlay';
 
 interface Props {
@@ -43,6 +44,8 @@ export function ActivationListActions({
   const selectedCount = selectedMasterKeys?.length ?? 0;
   const hasSelection = selectedCount > 0;
   const consultorNome = useMemo(() => readConsultorIdentity().nome ?? undefined, []);
+  const [crmFonte] = useCrmFonte();
+  const novoCrmUi = crmFonte === 'novo_crm';
   const [running, setRunning] = useState(false);
   const [overlayMinimized, setOverlayMinimized] = useState(false);
   const eligible = total;
@@ -87,14 +90,19 @@ export function ActivationListActions({
   const runSearchAndActivate = useCallback(async () => {
     const targetCount = hasSelection ? selectedCount : eligible;
     if (!targetCount) return;
-    const confirmMsg = hasSelection
-      ? selectedCount > 500
-        ? `Disparar template para ${selectedCount.toLocaleString('pt-BR')} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nO sistema divide automaticamente em blocos de 500 e processa um após o outro (pode levar horas em bases grandes).\n\nEsta ação envia mensagens WhatsApp reais.`
-        : `Disparar template para ${selectedCount} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nEsta ação envia mensagens WhatsApp reais.`
-      : eligible > 500
-        ? `Buscar no DataCrazy e enviar mensagem para ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\nSerão processados em blocos automáticos de 500 (com pausa entre blocos). Você pode acompanhar o progresso no overlay — não precisa ficar disparando manualmente a cada 10 min.\n\nQuem não for encontrado entra na lista para CSV.`
-        : `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
-          'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
+    const novoCrm = crmFonte === 'novo_crm';
+    const confirmMsg = novoCrm
+      ? hasSelection
+        ? `Aplicar tag de ativação (Novo CRM) em ${selectedCount.toLocaleString('pt-BR')} selecionado(s) em «${CATEGORY_LABEL[category]}»?\n\nNão envia WhatsApp — só taggea contact/deal no CRM EduIT.`
+        : `Aplicar tag de ativação (Novo CRM) em até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\nNão envia WhatsApp — só taggea no CRM EduIT. Quem não for encontrado entra na lista para CSV.`
+      : hasSelection
+        ? selectedCount > 500
+          ? `Disparar template para ${selectedCount.toLocaleString('pt-BR')} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nO sistema divide automaticamente em blocos de 500 e processa um após o outro (pode levar horas em bases grandes).\n\nEsta ação envia mensagens WhatsApp reais.`
+          : `Disparar template para ${selectedCount} aluno(s) SELECIONADO(S) em «${CATEGORY_LABEL[category]}»?\n\nEsta ação envia mensagens WhatsApp reais.`
+        : eligible > 500
+          ? `Buscar no DataCrazy e enviar mensagem para ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\nSerão processados em blocos automáticos de 500 (com pausa entre blocos). Você pode acompanhar o progresso no overlay — não precisa ficar disparando manualmente a cada 10 min.\n\nQuem não for encontrado entra na lista para CSV.`
+          : `Buscar no DataCrazy e enviar mensagem de ativação para até ${eligible.toLocaleString('pt-BR')} pessoa(s) em «${CATEGORY_LABEL[category]}»?\n\n` +
+            'A mensagem muda na 1ª ativação e na 5ª (templates no .env). Quem não for encontrado entra na lista para CSV.';
     const ok = window.confirm(confirmMsg);
     if (!ok) return;
 
@@ -110,8 +118,8 @@ export function ActivationListActions({
       const { jobId } = await activationApi.runDatacrazyBatchAsync(
         category,
         hasSelection
-          ? { masterKeys: selectedMasterKeys, operatorNome: consultorNome }
-          : { operatorNome: consultorNome }
+          ? { masterKeys: selectedMasterKeys, operatorNome: consultorNome, crmFonte }
+          : { operatorNome: consultorNome, crmFonte }
       );
       jobIdRef.current = jobId;
 
@@ -139,7 +147,9 @@ export function ActivationListActions({
               : '';
           const statsLine = job.status_message
             ? job.status_message
-            : `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`;
+            : novoCrm
+              ? `${job.sent} tagueados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`
+              : `${job.sent} enviados · ${job.not_found} não encontrados · ${job.failed} falhas${chunkLabel}`;
           setProgress({
             processed: inPrefetch ? (job.prefetch_done ?? 0) : job.processed,
             total: inPrefetch ? (job.prefetch_total ?? 0) : job.total,
@@ -213,7 +223,7 @@ export function ActivationListActions({
       setRunning(false);
       setProgress(null);
     }
-  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection, stopPolling, consultorNome]);
+  }, [category, eligible, hasSelection, selectedCount, selectedMasterKeys, onFilaChanged, onClearSelection, stopPolling, consultorNome, crmFonte]);
 
   const cancelRunningJob = useCallback(async () => {
     const id = jobIdRef.current;
@@ -297,20 +307,36 @@ export function ActivationListActions({
       <p className="text-xs font-semibold text-gray-700 dark:text-slate-300 flex items-center gap-1">
         <Zap className="w-3.5 h-3.5" />
         Ativação — {label}
+        {novoCrmUi ? (
+          <span className="ml-1 font-normal text-[10px] text-sky-700 dark:text-sky-300">
+            (Novo CRM · tag)
+          </span>
+        ) : null}
       </p>
       <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
         <strong className="text-gray-900 dark:text-slate-100 font-semibold">{eligible.toLocaleString('pt-BR')}</strong> na interseção
         (matrícula × base, conforme Relatórios). A tabela abaixo pode levar ~1 min na 1ª abertura.
       </p>
-      <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
-        Docs, inadimplentes, Blackboard e CAA são independentes. Na <strong className="text-gray-900 dark:text-slate-100 font-semibold">mesma</strong> campanha, a mensagem muda na 1ª
-        ativação e na 5ª (não envia o mesmo template duas vezes).
-      </p>
-      <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
-        Escolha os templates na seção acima (mesma lista do Disparo manual). «Buscar e ativar» localiza
-        no DataCrazy e dispara o template na hora. Acima de 500 pessoas, o sistema divide em blocos
-        automáticos (estimativa ~{estMinutes} min para filas grandes).
-      </p>
+      {novoCrmUi ? (
+        <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
+          Fonte <strong className="text-gray-900 dark:text-slate-100 font-semibold">Novo CRM</strong>: o
+          botão aplica a tag de ativação no contact (e no deal quando houver), sem WhatsApp. Campanhas
+          de mensagem ficam no CRM EduIT.
+        </p>
+      ) : (
+        <>
+          <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
+            Docs, inadimplentes, Blackboard e CAA são independentes. Na{' '}
+            <strong className="text-gray-900 dark:text-slate-100 font-semibold">mesma</strong> campanha, a
+            mensagem muda na 1ª ativação e na 5ª (não envia o mesmo template duas vezes).
+          </p>
+          <p className="text-[10px] text-gray-600 dark:text-slate-400 leading-snug">
+            Escolha os templates na seção acima (mesma lista do Disparo manual). «Buscar e ativar»
+            localiza no DataCrazy e dispara o template na hora. Acima de 500 pessoas, o sistema divide
+            em blocos automáticos (estimativa ~{estMinutes} min para filas grandes).
+          </p>
+        </>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
@@ -328,7 +354,13 @@ export function ActivationListActions({
           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-whatsapp-600 rounded-lg hover:bg-whatsapp-700 disabled:opacity-50"
         >
           {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-          {hasSelection ? `Ativar selecionados (${selectedCount})` : 'Buscar e ativar'}
+          {novoCrmUi
+            ? hasSelection
+              ? `Ativar (tag) (${selectedCount})`
+              : 'Ativar (tag)'
+            : hasSelection
+              ? `Ativar selecionados (${selectedCount})`
+              : 'Buscar e ativar'}
         </button>
         {hasSelection && (
           <button
@@ -406,9 +438,14 @@ export function ActivationListActions({
       />
       {batch && !running && (
         <p className="text-[10px] text-emerald-700">
-          Concluído: {batch.sent.toLocaleString('pt-BR')} enviada(s),{' '}
-          {batch.not_found.toLocaleString('pt-BR')} não encontrada(s), {batch.failed.toLocaleString('pt-BR')}{' '}
-          falha(s), {batch.skipped.toLocaleString('pt-BR')} ignorada(s) (template já enviado)
+          Concluído:{' '}
+          {novoCrmUi
+            ? `${batch.sent.toLocaleString('pt-BR')} tagueado(s)`
+            : `${batch.sent.toLocaleString('pt-BR')} enviada(s)`}
+          , {batch.not_found.toLocaleString('pt-BR')} não encontrada(s),{' '}
+          {batch.failed.toLocaleString('pt-BR')} falha(s), {batch.skipped.toLocaleString('pt-BR')}{' '}
+          ignorada(s)
+          {novoCrmUi ? ' (já tagueado / fora da fila)' : ' (template já enviado)'}
           {batch.pages != null && (
             <>
               {' '}

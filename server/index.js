@@ -148,6 +148,24 @@ app.listen(PORT, '0.0.0.0', () => {
         });
     }, CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS);
 
+    // Cron interno: limpeza de tags ativacao-* no Novo CRM (mesma janela stale).
+    setInterval(() => {
+      import('./services/activationNovoCrmTagCleanupService.js')
+        .then((m) => m.cleanStaleActivationTags())
+        .then((r) => {
+          if (r.skipped_no_config) {
+            console.log('[cleanup activation-tags] skip: NOVO_CRM não configurado');
+            return;
+          }
+          console.log(
+            `[cleanup activation-tags] scanned=${r.scanned} cleaned=${r.cleaned} failed=${r.failed} window=${r.stale_window_hours}h`
+          );
+        })
+        .catch((err) => {
+          console.error('[cleanup activation-tags] FAIL:', err.message);
+        });
+    }, CLEANUP_ORIGEM_ATIVACAO_INTERVAL_MS);
+
     // Snapshot diário rematrícula (evolução EM CURSO / adimplente / inadimplente).
     const REMAT_TRACKING_INTERVAL_MS = 24 * 60 * 60 * 1000;
     setTimeout(() => {

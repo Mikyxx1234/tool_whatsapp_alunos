@@ -13,6 +13,17 @@ export interface CleanStaleOrigemAtivacaoResponse {
   ran_at: string;
 }
 
+export interface CleanStaleActivationTagsResponse {
+  scanned: number;
+  cleaned: number;
+  failed: number;
+  errors: Array<{ contact_id: string; tag_name: string; error: string }>;
+  stale_window_hours: number;
+  dry_run: boolean;
+  skipped_no_config?: boolean;
+  ran_at: string;
+}
+
 export interface SyncCrmDesfechosResponse {
   scanned: number;
   synced_revertido: number;
@@ -92,6 +103,14 @@ export const maintenanceApi = {
     const qs = opts?.dryRun ? '?dry_run=true' : '';
     return jsonFetch<CleanStaleOrigemAtivacaoResponse>(
       `/api/maintenance/clean-stale-origem-ativacao${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  cleanStaleActivationTags(opts?: { dryRun?: boolean }) {
+    const qs = opts?.dryRun ? '?dry_run=true' : '';
+    return jsonFetch<CleanStaleActivationTagsResponse>(
+      `/api/maintenance/clean-stale-activation-tags${qs}`,
       { method: 'POST', body: '{}' }
     );
   },
