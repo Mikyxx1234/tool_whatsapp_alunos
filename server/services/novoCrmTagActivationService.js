@@ -7,16 +7,54 @@ import { isJobCancelled } from './activationJobsRegistry.js';
 import {
   activateByCategoryTag,
   isNovoCrmApiConfigured,
-  resolveContactAndDealForActivationItem,
   tagNameForCategory,
 } from './novoCrmClient.js';
 import { createRateLimiter } from '../utils/rateLimiter.js';
+import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
+import * as sourceRepo from '../repositories/novoCrmPersonSourceRepository.js';
+import {
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+  normalizeRgm,
+} from '../utils/novoCrmCacheNormalize.js';
 
 const TAG_OPS_PER_SECOND = Math.max(
   1,
   Math.floor(Number(process.env.NOVO_CRM_TAG_OPS_PER_SECOND) || 8)
 );
 const tagOpLimiter = createRateLimiter(TAG_OPS_PER_SECOND, 1000);
+
+async function resolveBatchFromCacheWithDbFallback(items) {
+  let resolved = await cacheRepo.resolveActivationBatch(items);
+  const misses = [];
+  for (let i = 0; i < items.length; i++) {
+    const r = resolved.get(i);
+    if (!r || r.status === 'not_found') misses.push({ item: items[i], index: i });
+  }
+  if (!misses.length) return resolved;
+
+  const phones = misses.map((m) => normalizePhone(m.item?.telefone || m.item?.phone)).filter(Boolean);
+  const emails = misses.map((m) => normalizeEmail(m.item?.email)).filter(Boolean);
+  const cpfs = misses.map((m) => normalizeCpf(m.item?.cpf)).filter(Boolean);
+  const rgms = misses.map((m) => normalizeRgm(m.item?.rgm)).filter(Boolean);
+
+  try {
+    const contactIds = await sourceRepo.findContactIdsByLookup({ phones, emails, cpfs, rgms });
+    if (contactIds.length) {
+      const snapshots = await sourceRepo.loadSnapshotsByContactIds(contactIds);
+      for (const snapshot of snapshots) {
+        await cacheRepo.upsertSnapshot(snapshot, { syncLogId: null, fullSeenAt: null });
+      }
+      resolved = await cacheRepo.resolveActivationBatch(items);
+    }
+  } catch (err) {
+    // Fallback não deve derrubar o lote: se o CRM DB estiver indisponível, segue
+    // com o estado atual do cache local e reporta not_found nos misses.
+    console.warn('[novo-crm-tag] fallback DB lookup indisponível:', err?.message || String(err));
+  }
+  return resolved;
+}
 
 /**
  * @param {string} category
@@ -54,7 +92,7 @@ export async function runNovoCrmTagActivationBatch(category, toProcess, opts = {
   onProgress({
     processed: 0,
     phase: 'lookup',
-    status_message: 'Localizando contacts no Novo CRM…',
+    status_message: 'Localizando contacts no cache do Novo CRM…',
   });
 
   let sent = 0;
@@ -66,16 +104,18 @@ export async function runNovoCrmTagActivationBatch(category, toProcess, opts = {
   /** @type {object[]} */
   const results = [];
 
+  const resolvedByIndex = await resolveBatchFromCacheWithDbFallback(toProcess);
+
   for (let i = 0; i < toProcess.length; i++) {
     throwIfCancelled();
     const item = toProcess[i];
     const masterKey = item.master_key || null;
 
     try {
-      await tagOpLimiter.acquire();
-      const resolved = await resolveContactAndDealForActivationItem(item);
-      if (!resolved?.contactId) {
+      const resolved = resolvedByIndex.get(i);
+      if (!resolved || resolved.status !== 'ok' || !resolved.contactId) {
         notFound += 1;
+        const reason = resolved?.reason || 'contact_not_found_novo_crm_cache';
         notFoundItems.push({
           master_key: masterKey,
           nome: item.nome ?? null,
@@ -83,7 +123,8 @@ export async function runNovoCrmTagActivationBatch(category, toProcess, opts = {
           email: item.email ?? null,
           rgm: item.rgm ?? null,
           cpf: item.cpf ?? null,
-          reason: 'contact_not_found_novo_crm',
+          reason,
+          candidates: resolved?.candidates || undefined,
         });
         await activationDispatchRepo.recordDispatchEvent({
           category,
@@ -94,10 +135,14 @@ export async function runNovoCrmTagActivationBatch(category, toProcess, opts = {
           telefone: item.telefone ?? null,
           email: item.email ?? null,
           rgm: item.rgm ?? null,
-          errorMessage: 'Contact não encontrado no Novo CRM',
+          errorMessage:
+            String(reason).startsWith('ambiguous_match')
+              ? 'Match ambíguo no cache do Novo CRM'
+              : `Contact não encontrado no cache do Novo CRM (${reason})`,
         });
         results.push({ master_key: masterKey, status: 'not_found' });
       } else {
+        await tagOpLimiter.acquire();
         const act = await activateByCategoryTag({
           contactId: resolved.contactId,
           dealId: resolved.dealId,

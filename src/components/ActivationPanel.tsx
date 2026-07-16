@@ -4,6 +4,7 @@ import { BarChart3 } from 'lucide-react';
 import { ActivationListActions } from './ActivationListActions';
 import { CrmFonteToggle, useCrmFonte } from './CrmFonteToggle';
 import { DatacrazyCacheSyncCard } from './DatacrazyCacheSyncCard';
+import { NovoCrmCacheSyncCard } from './NovoCrmCacheSyncCard';
 import { ActivationRosterTable } from './ActivationRosterTable';
 import { ActivationTemplateMapping } from './ActivationTemplateMapping';
 import type { ActivationCategory } from '../services/activationApi';
@@ -228,7 +229,7 @@ export function ActivationPanel() {
         />
 
         <div className="mt-4">
-          <DatacrazyCacheSyncCard />
+          {crmFonte === 'novo_crm' ? <NovoCrmCacheSyncCard /> : <DatacrazyCacheSyncCard />}
         </div>
 
         <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-3">

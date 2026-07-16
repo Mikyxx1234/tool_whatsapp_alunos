@@ -74,6 +74,50 @@ export interface StartDatacrazyCacheSyncResponse {
   dry_run: boolean;
 }
 
+export interface NovoCrmCacheRunningSync {
+  id: string;
+  mode: 'full' | 'incremental';
+  started_at: string;
+  contacts_total: number | null;
+  contacts_seen: number | null;
+  cache_upserted: number | null;
+  batches_scanned: number | null;
+  progress_updated_at: string | null;
+}
+
+export interface NovoCrmCacheLastSync {
+  id: string;
+  mode: 'full' | 'incremental';
+  started_at: string;
+  finished_at: string | null;
+  contacts_total: number | null;
+  contacts_seen: number;
+  cache_upserted: number;
+  cache_skipped: number;
+  contacts_deleted: number;
+  data_loss_events: number;
+  status: string;
+  error_message: string | null;
+}
+
+export interface NovoCrmCacheStatusResponse {
+  ok: boolean;
+  cache_total: number;
+  cache_active: number;
+  running: boolean;
+  running_sync: NovoCrmCacheRunningSync | null;
+  last_sync: NovoCrmCacheLastSync | null;
+  state: { cursor_updated_at: string | null } | null;
+  open_data_loss_events: number;
+}
+
+export interface StartNovoCrmCacheSyncResponse {
+  ok: boolean;
+  status: 'running';
+  mode: 'full' | 'incremental';
+  dry_run: boolean;
+}
+
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     ...init,
@@ -144,6 +188,19 @@ export const maintenanceApi = {
     const qs = opts?.dryRun ? '?dryRun=1' : '';
     return jsonFetch<SyncDatacrazyCacheResponse>(
       `/api/maintenance/sync-datacrazy-cache${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getNovoCrmCacheStatus() {
+    return jsonFetch<NovoCrmCacheStatusResponse>('/api/maintenance/novo-crm-cache-status');
+  },
+
+  /** Sync do espelho Novo CRM em background — retorna 202; acompanhe com getNovoCrmCacheStatus(). */
+  startNovoCrmCacheSync(opts?: { mode?: 'full' | 'incremental' }) {
+    const params = new URLSearchParams({ async: '1', mode: opts?.mode || 'full' });
+    return jsonFetch<StartNovoCrmCacheSyncResponse>(
+      `/api/maintenance/sync-novo-crm-cache?${params.toString()}`,
       { method: 'POST', body: '{}' }
     );
   },

@@ -1,0 +1,424 @@
+import { getPool, query } from '../db/client.js';
+import {
+  collectFilledBusinessPaths,
+  hashObject,
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+  normalizeRgm,
+} from '../utils/novoCrmCacheNormalize.js';
+
+const LOCK_KEY = 73201443;
+
+export async function acquireSyncLock() {
+  const client = await getPool().connect();
+  try {
+    const { rows } = await client.query('select pg_try_advisory_lock($1) as locked', [LOCK_KEY]);
+    if (!rows[0]?.locked) {
+      client.release();
+      return null;
+    }
+    return async () => {
+      try {
+        await client.query('select pg_advisory_unlock($1)', [LOCK_KEY]);
+      } finally {
+        client.release();
+      }
+    };
+  } catch (err) {
+    client.release();
+    throw err;
+  }
+}
+
+export async function recordSyncStart({ mode, cursorStartedAt = null, contactsTotal = null }) {
+  const { rows } = await query(
+    `insert into novo_crm_cache_sync_log (mode, cursor_started_at, contacts_total)
+     values ($1, $2, $3)
+     returning id`,
+    [mode, cursorStartedAt, contactsTotal]
+  );
+  return String(rows[0].id);
+}
+
+export async function recordSyncProgress(
+  id,
+  { batches = 0, contactsSeen = 0, upserted = 0, skipped = 0, dataLossEvents = 0 }
+) {
+  await query(
+    `update novo_crm_cache_sync_log
+        set batches_scanned = $2,
+            contacts_seen = $3,
+            cache_upserted = $4,
+            cache_skipped = $5,
+            data_loss_events = $6,
+            progress_updated_at = now()
+      where id = $1`,
+    [id, batches, contactsSeen, upserted, skipped, dataLossEvents]
+  );
+}
+
+export async function recordSyncFinish(
+  id,
+  {
+    status = 'ok',
+    cursorFinishedAt = null,
+    batches = 0,
+    contactsSeen = 0,
+    upserted = 0,
+    skipped = 0,
+    deleted = 0,
+    dataLossEvents = 0,
+    errorMessage = null,
+  }
+) {
+  await query(
+    `update novo_crm_cache_sync_log
+        set finished_at = now(),
+            cursor_finished_at = $2,
+            batches_scanned = $3,
+            contacts_seen = $4,
+            cache_upserted = $5,
+            cache_skipped = $6,
+            contacts_deleted = $7,
+            data_loss_events = $8,
+            status = $9,
+            error_message = $10
+      where id = $1`,
+    [
+      id,
+      cursorFinishedAt,
+      batches,
+      contactsSeen,
+      upserted,
+      skipped,
+      deleted,
+      dataLossEvents,
+      status,
+      errorMessage,
+    ]
+  );
+}
+
+/**
+ * Fecha syncs órfãos. Não mata sync que ainda reporta progresso recente
+ * (full noturno pode passar de 1h; orçamento aceito ~2–3h).
+ */
+export async function closeStaleRunningSyncs() {
+  const { rowCount } = await query(
+    `update novo_crm_cache_sync_log
+        set status = 'error',
+            finished_at = now(),
+            error_message = 'sync interrompido (timeout/restart)'
+      where status = 'running'
+        and finished_at is null
+        and started_at < now() - interval '8 hours'
+        and coalesce(progress_updated_at, started_at) < now() - interval '30 minutes'`
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function getSyncState() {
+  const { rows } = await query(
+    `select key, cursor_updated_at, cursor_id, updated_at
+       from novo_crm_cache_sync_state
+      where key = 'contacts_deals'`
+  );
+  return rows[0] || null;
+}
+
+export async function updateSyncState({ cursorUpdatedAt, cursorId = null }) {
+  await query(
+    `insert into novo_crm_cache_sync_state (key, cursor_updated_at, cursor_id, updated_at)
+     values ('contacts_deals', $1, $2, now())
+     on conflict (key) do update set
+       cursor_updated_at = excluded.cursor_updated_at,
+       cursor_id = excluded.cursor_id,
+       updated_at = now()`,
+    [cursorUpdatedAt, cursorId]
+  );
+}
+
+async function loadExisting(contactId) {
+  const { rows } = await query(
+    `select contact_id, primary_deal_id, raw_data, filled_field_count, content_hash, is_deleted
+       from novo_crm_person_cache
+      where contact_id = $1`,
+    [contactId]
+  );
+  return rows[0] || null;
+}
+
+function diffRemovedFields(oldRaw, nextRaw) {
+  const before = collectFilledBusinessPaths(oldRaw || {});
+  const after = collectFilledBusinessPaths(nextRaw || {});
+  const removed = [];
+  const previousValues = {};
+  for (const [path, value] of before.entries()) {
+    if (!after.has(path)) {
+      removed.push(path);
+      previousValues[path] = value;
+    }
+  }
+  return { removed, previousValues, beforeCount: before.size, afterCount: after.size };
+}
+
+async function recordDataLossEvent({ snapshot, existing, diff, syncLogId }) {
+  if (!diff.removed.length) return false;
+  const fingerprint = hashObject({
+    contactId: snapshot.contactId,
+    dealId: snapshot.primaryDealId || existing?.primary_deal_id || null,
+    removed: diff.removed.slice().sort(),
+    previousHash: existing?.content_hash || null,
+    nextHash: snapshot.contentHash,
+  });
+  const { rowCount } = await query(
+    `insert into novo_crm_data_loss_events
+       (contact_id, deal_id, field_paths, previous_values, filled_count_before,
+        filled_count_after, previous_hash, next_hash, sync_log_id, fingerprint)
+     values ($1, $2, $3::text[], $4::jsonb, $5, $6, $7, $8, $9, $10)
+     on conflict (fingerprint) do nothing`,
+    [
+      snapshot.contactId,
+      snapshot.primaryDealId || existing?.primary_deal_id || null,
+      diff.removed,
+      JSON.stringify(diff.previousValues),
+      diff.beforeCount,
+      diff.afterCount,
+      existing?.content_hash || null,
+      snapshot.contentHash,
+      syncLogId ? Number(syncLogId) : null,
+      fingerprint,
+    ]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function upsertSnapshot(snapshot, { syncLogId = null, fullSeenAt = null } = {}) {
+  const existing = await loadExisting(snapshot.contactId);
+  let dataLossInserted = 0;
+  if (existing?.raw_data) {
+    const diff = diffRemovedFields(existing.raw_data, snapshot.rawData);
+    if (diff.removed.length) {
+      dataLossInserted = (await recordDataLossEvent({ snapshot, existing, diff, syncLogId })) ? 1 : 0;
+    }
+  }
+
+  if (existing?.content_hash === snapshot.contentHash && existing?.is_deleted === false) {
+    await query(
+      `update novo_crm_person_cache
+          set last_synced_at = now(),
+              last_full_seen_at = coalesce($2, last_full_seen_at),
+              source_updated_at = coalesce($3, source_updated_at)
+        where contact_id = $1`,
+      [snapshot.contactId, fullSeenAt, snapshot.sourceUpdatedAt]
+    );
+    return { upserted: 0, skipped: 1, dataLossInserted };
+  }
+
+  await query(
+    `insert into novo_crm_person_cache
+       (contact_id, primary_deal_id, contact_number, nome, phone_norm, email_norm,
+        cpf_norm, rgm_norm, raw_data, filled_field_count, content_hash,
+        source_updated_at, last_full_seen_at, is_deleted)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, false)
+     on conflict (contact_id) do update set
+       primary_deal_id = excluded.primary_deal_id,
+       contact_number = excluded.contact_number,
+       nome = excluded.nome,
+       phone_norm = excluded.phone_norm,
+       email_norm = excluded.email_norm,
+       cpf_norm = excluded.cpf_norm,
+       rgm_norm = excluded.rgm_norm,
+       raw_data = excluded.raw_data,
+       filled_field_count = excluded.filled_field_count,
+       content_hash = excluded.content_hash,
+       source_updated_at = excluded.source_updated_at,
+       last_synced_at = now(),
+       last_full_seen_at = coalesce(excluded.last_full_seen_at, novo_crm_person_cache.last_full_seen_at),
+       is_deleted = false`,
+    [
+      snapshot.contactId,
+      snapshot.primaryDealId,
+      snapshot.contactNumber,
+      snapshot.nome,
+      snapshot.phoneNorm,
+      snapshot.emailNorm,
+      snapshot.cpfNorm,
+      snapshot.rgmNorm,
+      JSON.stringify(snapshot.rawData),
+      snapshot.filledFieldCount,
+      snapshot.contentHash,
+      snapshot.sourceUpdatedAt,
+      fullSeenAt,
+    ]
+  );
+  return { upserted: 1, skipped: 0, dataLossInserted };
+}
+
+/**
+ * Soft-delete só quem já tinha sido visto em um full anterior e sumiu neste.
+ * Não apaga entradas só de incremental/ativação (last_full_seen_at null).
+ */
+export async function markDeletedNotSeenSince(fullSeenAt) {
+  const { rowCount } = await query(
+    `update novo_crm_person_cache
+        set is_deleted = true,
+            last_synced_at = now()
+      where is_deleted = false
+        and last_full_seen_at is not null
+        and last_full_seen_at < $1::timestamptz`,
+    [fullSeenAt]
+  );
+  return rowCount ?? 0;
+}
+
+export async function getCacheStats() {
+  const [{ rows: countRows }, { rows: lastRows }, { rows: runningRows }, { rows: eventRows }, { rows: stateRows }] =
+    await Promise.all([
+      query(
+        `select count(*)::int as total,
+                count(*) filter (where is_deleted = false)::int as active
+           from novo_crm_person_cache`
+      ),
+      query(
+        `select *
+           from novo_crm_cache_sync_log
+          where finished_at is not null
+          order by started_at desc
+          limit 1`
+      ),
+      query(
+        `select id, mode, started_at, contacts_total, contacts_seen,
+                cache_upserted, batches_scanned, progress_updated_at
+           from novo_crm_cache_sync_log
+          where status = 'running' and finished_at is null
+            and started_at > now() - interval '8 hours'
+          order by started_at desc
+          limit 1`
+      ),
+      query(
+        `select count(*)::int as open_events
+           from novo_crm_data_loss_events
+          where acknowledged_at is null`
+      ),
+      query(`select * from novo_crm_cache_sync_state where key = 'contacts_deals'`),
+    ]);
+  return {
+    total: countRows[0]?.total ?? 0,
+    active: countRows[0]?.active ?? 0,
+    last_sync: lastRows[0] || null,
+    running: runningRows[0] || null,
+    open_data_loss_events: eventRows[0]?.open_events ?? 0,
+    state: stateRows[0] || null,
+  };
+}
+
+export async function listDataLossEvents({ limit = 100, acknowledged = false } = {}) {
+  const { rows } = await query(
+    `select *
+       from novo_crm_data_loss_events
+      where (
+        ($2::boolean = false and acknowledged_at is null)
+        or ($2::boolean = true and acknowledged_at is not null)
+      )
+      order by detected_at desc
+      limit $1`,
+    [Math.min(Math.max(Number(limit) || 100, 1), 500), Boolean(acknowledged)]
+  );
+  return rows;
+}
+
+export async function acknowledgeDataLossEvent(id, acknowledgedBy = null) {
+  const { rows } = await query(
+    `update novo_crm_data_loss_events
+        set acknowledged_at = now(),
+            acknowledged_by = $2
+      where id = $1
+      returning *`,
+    [id, acknowledgedBy]
+  );
+  return rows[0] || null;
+}
+
+function candidateKeys(item) {
+  return {
+    phone: normalizePhone(item?.telefone || item?.phone),
+    cpf: normalizeCpf(item?.cpf),
+    email: normalizeEmail(item?.email),
+    rgm: normalizeRgm(item?.rgm),
+  };
+}
+
+export async function resolveActivationBatch(items) {
+  const decorated = (items || []).map((item, index) => ({ item, index, keys: candidateKeys(item) }));
+  const phones = [...new Set(decorated.map((d) => d.keys.phone).filter(Boolean))];
+  const cpfs = [...new Set(decorated.map((d) => d.keys.cpf).filter(Boolean))];
+  const emails = [...new Set(decorated.map((d) => d.keys.email).filter(Boolean))];
+  const rgms = [...new Set(decorated.map((d) => d.keys.rgm).filter(Boolean))];
+
+  const { rows } = await query(
+    `select contact_id, primary_deal_id, nome, phone_norm, email_norm, cpf_norm, rgm_norm, raw_data
+       from novo_crm_person_cache
+      where is_deleted = false
+        and (
+          (cardinality($1::text[]) > 0 and phone_norm = any($1::text[])) or
+          (cardinality($2::text[]) > 0 and cpf_norm = any($2::text[])) or
+          (cardinality($3::text[]) > 0 and email_norm = any($3::text[])) or
+          (cardinality($4::text[]) > 0 and rgm_norm = any($4::text[]))
+        )`,
+    [phones, cpfs, emails, rgms]
+  );
+
+  const out = new Map();
+  for (const d of decorated) {
+    const scored = rows
+      .map((r) => {
+        let score = 0;
+        let reason = '';
+        if (d.keys.phone && r.phone_norm === d.keys.phone) {
+          score = 40;
+          reason = 'phone';
+        } else if (d.keys.cpf && r.cpf_norm === d.keys.cpf) {
+          score = 30;
+          reason = 'cpf';
+        } else if (d.keys.email && r.email_norm === d.keys.email) {
+          score = 20;
+          reason = 'email';
+        } else if (d.keys.rgm && r.rgm_norm === d.keys.rgm) {
+          score = 10;
+          reason = 'rgm';
+        }
+        return score ? { row: r, score, reason } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score || String(a.row.contact_id).localeCompare(String(b.row.contact_id)));
+
+    if (!scored.length) {
+      out.set(d.index, { status: 'not_found', reason: 'contact_not_found_novo_crm_cache' });
+      continue;
+    }
+    const best = scored[0];
+    const tied = scored.filter((s) => s.score === best.score);
+    if (tied.length > 1) {
+      out.set(d.index, {
+        status: 'ambiguous',
+        reason: `ambiguous_match_${best.reason}`,
+        candidates: tied.map((s) => String(s.row.contact_id)).slice(0, 10),
+      });
+      continue;
+    }
+    out.set(d.index, {
+      status: 'ok',
+      reason: best.reason,
+      contactId: String(best.row.contact_id),
+      dealId: best.row.primary_deal_id ? String(best.row.primary_deal_id) : null,
+      contact: best.row.raw_data?.contact || null,
+      deal: best.row.primary_deal_id
+        ? best.row.raw_data?.dealsById?.[String(best.row.primary_deal_id)] || null
+        : null,
+      raw: best.row.raw_data || null,
+    });
+  }
+  return out;
+}

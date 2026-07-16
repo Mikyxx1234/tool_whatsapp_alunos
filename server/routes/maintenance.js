@@ -10,6 +10,11 @@ import { syncCaaDesfechos } from '../services/crmDesfechoSyncService.js';
 import { syncResponseConsultores } from '../services/crmConsultorSyncService.js';
 import { runFullSync, startFullSyncBackground } from '../services/datacrazyLeadCacheSyncService.js';
 import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepository.js';
+import {
+  runNovoCrmCacheSync,
+  startNovoCrmCacheSyncBackground,
+} from '../services/novoCrmPersonCacheSyncService.js';
+import * as novoCrmPersonCacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
 import { migrateMeuPainelLegacyFromLive } from '../repositories/meuPainelLegacyRepository.js';
@@ -160,6 +165,100 @@ router.post('/sync-datacrazy-cache', requireApiKey, async (req, res) => {
   } catch (err) {
     console.error('[sync-datacrazy-cache]', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/maintenance/novo-crm-cache-status
+ *
+ * Status do espelho local do CRM EduIT: contagem, último sync, cursor e
+ * regressões abertas.
+ */
+router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
+  try {
+    await novoCrmPersonCacheRepo.closeStaleRunningSyncs();
+    const stats = await novoCrmPersonCacheRepo.getCacheStats();
+    res.json({
+      ok: true,
+      cache_total: stats.total,
+      cache_active: stats.active,
+      running: Boolean(stats.running),
+      running_sync: stats.running,
+      last_sync: stats.last_sync,
+      state: stats.state,
+      open_data_loss_events: stats.open_data_loss_events,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/sync-novo-crm-cache?mode=full|incremental&async=1
+ *
+ * Full é intencionalmente "sem pressa" para rodar de madrugada. Use async=1
+ * na operação normal.
+ */
+router.post('/sync-novo-crm-cache', requireApiKey, async (req, res) => {
+  try {
+    const mode = req.query.mode === 'full' || req.body?.mode === 'full' ? 'full' : 'incremental';
+    const dryRun =
+      req.query.dryRun === '1' ||
+      req.query.dry_run === 'true' ||
+      req.body?.dryRun === true ||
+      req.body?.dry_run === true;
+    const asyncMode = req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+
+    if (asyncMode) {
+      await novoCrmPersonCacheRepo.closeStaleRunningSyncs();
+      const stats = await novoCrmPersonCacheRepo.getCacheStats();
+      if (stats.running) {
+        return res.status(409).json({
+          error: 'Sync Novo CRM já em andamento',
+          running_since: stats.running.started_at,
+        });
+      }
+      const started = startNovoCrmCacheSyncBackground({ mode, dryRun });
+      if (!started) return res.status(409).json({ error: 'Sync Novo CRM já em andamento' });
+      return res.status(202).json({ ok: true, status: 'running', mode, dry_run: dryRun });
+    }
+
+    const result = await runNovoCrmCacheSync({ mode, dryRun });
+    res.json(result);
+  } catch (err) {
+    console.error('[sync-novo-crm-cache]', err);
+    const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
+    res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /api/maintenance/novo-crm-cache-regressions
+ */
+router.get('/novo-crm-cache-regressions', requireApiKey, async (req, res) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const acknowledged = req.query.acknowledged === '1' || req.query.acknowledged === 'true';
+    const events = await novoCrmPersonCacheRepo.listDataLossEvents({ limit, acknowledged });
+    res.json({ ok: true, events });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/novo-crm-cache-regressions/:id/ack
+ */
+router.post('/novo-crm-cache-regressions/:id/ack', requireApiKey, async (req, res) => {
+  try {
+    const event = await novoCrmPersonCacheRepo.acknowledgeDataLossEvent(
+      req.params.id,
+      req.body?.acknowledged_by || req.body?.user || null
+    );
+    if (!event) return res.status(404).json({ error: 'Evento não encontrado' });
+    res.json({ ok: true, event });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 

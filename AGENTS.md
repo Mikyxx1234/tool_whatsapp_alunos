@@ -5,6 +5,15 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-16 — Novo CRM: cache local Postgres→Postgres para ativação por tag
+- **Modelo usado:** GPT-5.5.
+- **Problema:** ativação por tag no Novo CRM fazia lookup `GET /api/contacts?search=...` pessoa a pessoa; lotes grandes ficavam lentos e dependentes da API HTTP.
+- **Decisão:** criar espelho local `novo_crm_person_cache` com contact + deals + custom fields do Postgres CRM EduIT. A ativação resolve em lote no cache local; misses aquecem o cache com uma consulta em lote ao Postgres CRM; só a escrita da tag continua via API oficial.
+- **Operação:** full sync é noturno e **pode demorar ~1h**. Prioridade = gentileza/completude: lotes ~300, `NOVO_CRM_CACHE_BATCH_DELAY_MS`, sem paralelismo agressivo. Incremental leve roda durante o dia.
+- **Auditoria:** antes de sobrescrever snapshot, qualquer campo de negócio antes preenchido que fique vazio/ausente cria evento em `novo_crm_data_loss_events`; UI de alertas fica para etapa futura, API já existe.
+- **Endpoints:** `POST /api/maintenance/sync-novo-crm-cache?mode=full|incremental&async=1`, `GET /api/maintenance/novo-crm-cache-status`, `GET /api/maintenance/novo-crm-cache-regressions`, `POST /api/maintenance/novo-crm-cache-regressions/:id/ack`.
+- **Arquivos:** migration `043_novo_crm_person_cache.sql`, `novoCrmPersonSourceRepository.js`, `novoCrmPersonCacheRepository.js`, `novoCrmPersonCacheSyncService.js`, `novoCrmTagActivationService.js`.
+
 ### 2026-07-15 — Meu Painel Novo CRM: desfecho via tabulação `Retido?`
 - **Modelo usado:** Composer (principal).
 - **Decisão:** No modo `crm_fonte=novo_crm`, o Meu Painel **não marca desfecho manualmente**. Consultor tabula ao fechar a conversa no CRM EduIT; o app lê `conversation_close_tabulations`.

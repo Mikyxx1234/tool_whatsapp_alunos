@@ -27,6 +27,7 @@ import { isDbConfigured } from './db/client.js';
 import { startScheduler } from './services/schedulerService.js';
 import { isApiKeyEnforced } from './middleware/requireApiKey.js';
 import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
+import { startNovoCrmCacheSyncCron } from './services/novoCrmPersonCacheSyncService.js';
 import { startAlunoPhoneLookupCron } from './services/alunoPhoneLookupService.js';
 
 const app = express();
@@ -226,6 +227,14 @@ app.listen(PORT, '0.0.0.0', () => {
       startDatacrazyCacheSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron cache DataCrazy:', err.message);
+    }
+
+    // Cron do espelho local do Novo CRM: incremental leve de dia + full de madrugada.
+    // Endpoint manual: POST /api/maintenance/sync-novo-crm-cache?mode=full|incremental.
+    try {
+      startNovoCrmCacheSyncCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron cache Novo CRM:', err.message);
     }
 
     // Cron diário de refresh da MV nome-por-telefone (Meu Painel).
