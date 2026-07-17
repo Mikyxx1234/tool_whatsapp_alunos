@@ -139,8 +139,8 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
 
       const details = fetchFields
         ? await apiSource.fetchDealDetailsByIds(primaryIds, {
-            concurrency: Number(process.env.NOVO_CRM_CACHE_API_DEAL_CONCURRENCY) || 6,
-            delayMs: Number(process.env.NOVO_CRM_CACHE_API_DEAL_DELAY_MS) || 40,
+            concurrency: Number(process.env.NOVO_CRM_CACHE_API_DEAL_CONCURRENCY) || 2,
+            delayMs: Number(process.env.NOVO_CRM_CACHE_API_DEAL_DELAY_MS) || 150,
           })
         : new Map();
 

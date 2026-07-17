@@ -217,8 +217,9 @@ export async function listContactsApiPage(opts) {
  * @param {{ concurrency?: number, delayMs?: number }} [opts]
  */
 export async function fetchDealDetailsByIds(dealIds, opts = {}) {
-  const concurrency = Math.min(Math.max(Number(opts.concurrency) || 6, 1), 15);
-  const delayMs = Math.max(Number(opts.delayMs) || 40, 0);
+  // Conservador: o teto global em novoCrmClient (NOVO_CRM_API_RATE_PER_SECOND) já limita.
+  const concurrency = Math.min(Math.max(Number(opts.concurrency) || 2, 1), 6);
+  const delayMs = Math.max(Number(opts.delayMs) || 150, 0);
   /** @type {Map<string, object>} */
   const out = new Map();
   const ids = [...new Set(dealIds.filter(Boolean).map(String))];

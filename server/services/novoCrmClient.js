@@ -9,6 +9,7 @@
 
 import { tagNameForCategory } from '../utils/novoCrmActivationTags.js';
 import * as tagLogRepo from '../repositories/activationNovoCrmTagRepository.js';
+import { createRateLimiter } from '../utils/rateLimiter.js';
 
 function apiBase() {
   return String(process.env.NOVO_CRM_API_BASE_URL || 'https://crm.eduit.com.br')
@@ -19,6 +20,13 @@ function apiBase() {
 function apiToken() {
   return String(process.env.NOVO_CRM_API_TOKEN || '').trim();
 }
+
+/** Teto global de req/s para toda a API Novo CRM (sync, enrich, tags). */
+function apiRatePerSecond() {
+  return Math.max(1, Math.min(30, Number(process.env.NOVO_CRM_API_RATE_PER_SECOND) || 4));
+}
+
+const apiLimiter = createRateLimiter(apiRatePerSecond(), 1000);
 
 export function isNovoCrmApiConfigured() {
   const enabled = String(process.env.NOVO_CRM_ENABLED || '').trim() === '1';
@@ -42,9 +50,13 @@ function phoneSearchVariants(telefone) {
   return [...out];
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 /**
  * @param {string} path
- * @param {{ method?: string, body?: unknown }} [opts]
+ * @param {{ method?: string, body?: unknown, maxRetries?: number }} [opts]
  */
 async function request(path, opts = {}) {
   const token = apiToken();
@@ -54,29 +66,50 @@ async function request(path, opts = {}) {
     throw err;
   }
   const method = opts.method || 'GET';
-  const res = await fetch(`${apiBase()}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-      ...(opts.body != null ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: opts.body != null ? JSON.stringify(opts.body) : undefined,
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
+  const maxRetries = Math.max(0, Number(opts.maxRetries) || 4);
+  let attempt = 0;
+
+  while (true) {
+    await apiLimiter.acquire();
+    const res = await fetch(`${apiBase()}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        ...(opts.body != null ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: opts.body != null ? JSON.stringify(opts.body) : undefined,
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { raw: text };
+    }
+
+    if (res.status === 429 && attempt < maxRetries) {
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const backoffMs =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : Math.min(30_000, 1500 * 2 ** attempt);
+      attempt += 1;
+      console.warn(
+        `[novo-crm-api] 429 em ${path} — retry ${attempt}/${maxRetries} em ${backoffMs}ms`
+      );
+      await sleep(backoffMs);
+      continue;
+    }
+
+    if (!res.ok) {
+      const err = new Error(json?.message || json?.error || `Novo CRM HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = json;
+      throw err;
+    }
+    return json;
   }
-  if (!res.ok) {
-    const err = new Error(json?.message || json?.error || `Novo CRM HTTP ${res.status}`);
-    err.status = res.status;
-    err.body = json;
-    throw err;
-  }
-  return json;
 }
 
 function normalizeTagBody(tag) {
