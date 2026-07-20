@@ -530,18 +530,30 @@ export function startNovoCrmCacheSyncCron() {
     console.log('[novo-crm-cache-sync] Cache desabilitado (NOVO_CRM_CACHE_ENABLED=0).');
     return;
   }
+
+  const sourceRaw = String(process.env.NOVO_CRM_CACHE_SOURCE || 'auto').trim();
+  const enabled = String(process.env.NOVO_CRM_ENABLED || '').trim() === '1';
+  const hasToken = Boolean(String(process.env.NOVO_CRM_API_TOKEN || '').trim());
   const source = resolveCacheSource();
-  if (source === 'db' && !isNovoCrmDbConfigured()) {
-    console.log(
-      '[novo-crm-cache-sync] NOVO_CRM DB não configurado — cron não iniciado (defina NOVO_CRM_ENABLED=1 e NOVO_CRM_DATABASE_URL).'
-    );
-    return;
-  }
-  if (source === 'api' && !isNovoCrmApiConfigured()) {
-    console.log(
-      '[novo-crm-cache-sync] NOVO_CRM API não configurada — cron não iniciado (NOVO_CRM_API_TOKEN).'
-    );
-    return;
+
+  console.log(
+    `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}`
+  );
+
+  if (source === 'api') {
+    if (!isNovoCrmApiConfigured()) {
+      console.log(
+        '[novo-crm-cache-sync] source=api mas API incompleta — cron NÃO iniciado. Defina NOVO_CRM_ENABLED=1 e NOVO_CRM_API_TOKEN e faça redeploy.'
+      );
+      return;
+    }
+  } else if (source === 'db') {
+    if (!isNovoCrmDbConfigured()) {
+      console.log(
+        '[novo-crm-cache-sync] source=db mas NOVO_CRM_DATABASE_URL ausente — cron NÃO iniciado. Para produção EduIT use NOVO_CRM_CACHE_SOURCE=api + NOVO_CRM_ENABLED=1 + NOVO_CRM_API_TOKEN.'
+      );
+      return;
+    }
   }
 
   const incMs = incrementalMinutes() * 60 * 1000;
