@@ -21,6 +21,12 @@ import {
   getEnrichmentJob,
   getRunningEnrichmentJob,
 } from '../services/novoCrmEnrichmentService.js';
+import {
+  runMatriculadosProvision,
+  startMatriculadosProvisionBackground,
+  isMatriculadosProvisionRunning,
+  isProvisionAllowedOnThisHost,
+} from '../services/novoCrmMatriculadosProvisionService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
 import { migrateMeuPainelLegacyFromLive } from '../repositories/meuPainelLegacyRepository.js';
@@ -217,6 +223,12 @@ router.post('/sync-novo-crm-cache', requireApiKey, async (req, res) => {
       req.body?.dryRun === true ||
       req.body?.dry_run === true;
     const asyncMode = req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+    const samplePctRaw = req.query.sample_pct ?? req.query.samplePct ?? req.body?.sample_pct ?? req.body?.samplePct;
+    const maxContactsRaw = req.query.max_contacts ?? req.query.maxContacts ?? req.body?.max_contacts ?? req.body?.maxContacts;
+    const samplePct = samplePctRaw != null && String(samplePctRaw).trim() !== '' ? Number(samplePctRaw) : null;
+    const maxContacts =
+      maxContactsRaw != null && String(maxContactsRaw).trim() !== '' ? Number(maxContactsRaw) : null;
+    const syncOpts = { mode, dryRun, samplePct, maxContacts };
 
     if (asyncMode) {
       await novoCrmPersonCacheRepo.closeStaleRunningSyncs();
@@ -227,12 +239,19 @@ router.post('/sync-novo-crm-cache', requireApiKey, async (req, res) => {
           running_since: stats.running.started_at,
         });
       }
-      const started = startNovoCrmCacheSyncBackground({ mode, dryRun });
+      const started = startNovoCrmCacheSyncBackground(syncOpts);
       if (!started) return res.status(409).json({ error: 'Sync Novo CRM já em andamento' });
-      return res.status(202).json({ ok: true, status: 'running', mode, dry_run: dryRun });
+      return res.status(202).json({
+        ok: true,
+        status: 'running',
+        mode,
+        dry_run: dryRun,
+        sample_pct: samplePct,
+        max_contacts: maxContacts,
+      });
     }
 
-    const result = await runNovoCrmCacheSync({ mode, dryRun });
+    const result = await runNovoCrmCacheSync(syncOpts);
     res.json(result);
   } catch (err) {
     console.error('[sync-novo-crm-cache]', err);
@@ -318,6 +337,72 @@ router.post('/enrich-novo-crm', requireApiKey, async (req, res) => {
     });
   } catch (err) {
     console.error('[enrich-novo-crm]', err);
+    const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
+    res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/provision-matriculados-novo-crm
+ * ?dry_run=1&max=1000&async=1
+ *
+ * Cria no CRM (DEV) alunos do snapshot matriculados que ainda não existem.
+ * Aplica etapa + flags pelas regras. Conservador: delay alto, max por run.
+ */
+router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) => {
+  try {
+    if (!isProvisionAllowedOnThisHost()) {
+      return res.status(403).json({
+        error:
+          'Provision só no CRM DEV (crm-dev…). Ou NOVO_CRM_PROVISION_ALLOW_PROD=1.',
+      });
+    }
+    const forceWrite =
+      req.query.dry_run === '0' ||
+      req.query.dry_run === 'false' ||
+      req.body?.dry_run === false ||
+      req.body?.dryRun === false;
+    const reallyDry = !forceWrite;
+    const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
+    const asyncMode =
+      req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+
+    if (reallyDry) {
+      const preview = await runMatriculadosProvision({
+        dryRun: true,
+        maxCreates: maxCreates || 50,
+      });
+      return res.json(preview);
+    }
+
+    if (String(process.env.NOVO_CRM_PROVISION_ENABLED || '').trim() !== '1') {
+      return res.status(403).json({
+        error: 'NOVO_CRM_PROVISION_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
+      });
+    }
+
+    if (isMatriculadosProvisionRunning()) {
+      return res.status(409).json({ error: 'Provision já em andamento' });
+    }
+
+    if (asyncMode) {
+      const started = startMatriculadosProvisionBackground({
+        dryRun: false,
+        maxCreates,
+      });
+      if (!started) return res.status(409).json({ error: 'Provision já em andamento' });
+      return res.status(202).json({
+        ok: true,
+        status: 'running',
+        dry_run: false,
+        max_creates: maxCreates || null,
+      });
+    }
+
+    const result = await runMatriculadosProvision({ dryRun: false, maxCreates });
+    res.json(result);
+  } catch (err) {
+    console.error('[provision-matriculados-novo-crm]', err);
     const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
     res.status(status).json({ error: err?.message || String(err) });
   }

@@ -76,7 +76,9 @@ async function request(path, opts = {}) {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
-        ...(opts.body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.body != null
+          ? { 'Content-Type': 'application/json; charset=utf-8' }
+          : {}),
       },
       body: opts.body != null ? JSON.stringify(opts.body) : undefined,
     });
@@ -479,6 +481,7 @@ export async function updateContact(contactId, patch) {
   if (patch?.name != null && String(patch.name).trim()) body.name = String(patch.name).trim();
   if (patch?.phone != null && String(patch.phone).trim()) body.phone = String(patch.phone).trim();
   if (patch?.email != null && String(patch.email).trim()) body.email = String(patch.email).trim();
+  if (patch?.source != null && String(patch.source).trim()) body.source = String(patch.source).trim();
   if (!Object.keys(body).length) {
     const err = new Error('Nenhum campo de contact para atualizar');
     err.status = 400;
@@ -488,6 +491,54 @@ export async function updateContact(contactId, patch) {
     method: 'PUT',
     body,
   });
+}
+
+/**
+ * @param {{ name: string, email?: string|null, phone?: string|null, source?: string|null }} payload
+ */
+export async function createContact(payload) {
+  const name = String(payload?.name || '').trim();
+  if (!name) {
+    const err = new Error('name obrigatório para criar contact');
+    err.status = 400;
+    throw err;
+  }
+  const body = { name };
+  if (payload.email) body.email = String(payload.email).trim();
+  if (payload.phone) body.phone = String(payload.phone).trim();
+  if (payload.source) body.source = String(payload.source).trim();
+  return request('/api/contacts', { method: 'POST', body });
+}
+
+/**
+ * @param {{ title: string, contactId: string, stageId: string, value?: number }} payload
+ */
+export async function createDeal(payload) {
+  const title = String(payload?.title || '').trim();
+  const contactId = String(payload?.contactId || '').trim();
+  const stageId = String(payload?.stageId || '').trim();
+  if (!title || !contactId || !stageId) {
+    const err = new Error('title, contactId e stageId obrigatórios para criar deal');
+    err.status = 400;
+    throw err;
+  }
+  const body = { title, contactId, stageId };
+  if (payload.value != null) body.value = payload.value;
+  return request('/api/deals', { method: 'POST', body });
+}
+
+/**
+ * Busca contacts por texto (CPF, nome, telefone…).
+ * @param {string} q
+ */
+export async function searchContacts(q) {
+  const query = String(q || '').trim();
+  if (!query) return { items: [], total: 0 };
+  const raw = await request(`/api/contacts?search=${encodeURIComponent(query)}&page=1&perPage=20`);
+  return {
+    items: Array.isArray(raw?.items) ? raw.items : [],
+    total: Number(raw?.total) || 0,
+  };
 }
 
 /**

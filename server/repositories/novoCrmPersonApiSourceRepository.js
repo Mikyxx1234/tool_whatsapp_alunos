@@ -250,3 +250,15 @@ export function shouldFetchDealFields() {
   const v = String(process.env.NOVO_CRM_CACHE_FETCH_DEAL_FIELDS || '1').trim();
   return v !== '0' && v.toLowerCase() !== 'false';
 }
+
+/**
+ * Deals de um contact (amostra / sync parcial — evita indexar a org inteira).
+ * @param {string} contactId
+ */
+export async function listDealsForContactId(contactId) {
+  assertApiSourceReady();
+  const id = String(contactId || '').trim();
+  if (!id) return [];
+  const res = await listDealsPage({ page: 1, perPage: 100, contactId: id });
+  return res.items || [];
+}

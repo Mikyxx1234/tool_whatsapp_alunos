@@ -67,7 +67,21 @@ async function persistSnapshots(snapshots, { dryRun, syncLogId, fullSeenAt }) {
   return { upserted, skipped, dataLossEvents };
 }
 
-async function runFullSyncViaApi({ dryRun = false } = {}) {
+function resolveContactCap(contactsTotal, { maxContacts = null, samplePct = null } = {}) {
+  let cap = null;
+  const pct = samplePct != null ? Number(samplePct) : NaN;
+  if (Number.isFinite(pct) && pct > 0 && pct < 100) {
+    cap = Math.max(1, Math.ceil(contactsTotal * (pct / 100)));
+  }
+  const max = maxContacts != null ? Number(maxContacts) : NaN;
+  if (Number.isFinite(max) && max > 0) {
+    cap = cap == null ? Math.floor(max) : Math.min(cap, Math.floor(max));
+  }
+  if (cap != null && cap >= contactsTotal) return null;
+  return cap;
+}
+
+async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct = null } = {}) {
   apiSource.assertApiSourceReady();
 
   const release = await cacheRepo.acquireSyncLock();
@@ -91,41 +105,70 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
   try {
     const fullSeenAt = new Date().toISOString();
     const contactsTotal = await apiSource.countAllContactsViaApi();
+    const contactCap = resolveContactCap(contactsTotal, { maxContacts, samplePct });
+    const truncated = contactCap != null;
     logId = await cacheRepo.recordSyncStart({ mode: 'full', contactsTotal });
     console.log(
-      `[novo-crm-cache-sync] full via API: ${contactsTotal} contacts — indexando deals…`
+      `[novo-crm-cache-sync] full via API: ${contactsTotal} contacts${
+        truncated ? ` — AMOSTRA max=${contactCap} (sem markDeleted)` : ' — indexando deals…'
+      }`
     );
 
-    const dealsByContact = await apiSource.loadAllDealsByContactId({
-      delayMs: batchDelayMs(),
-      onProgress: (p) => {
-        if (p.page % 20 === 0 || p.page === 1) {
-          console.log(
-            `[novo-crm-cache-sync] deals page ${p.page}/${p.totalPages ?? '?'} seen=${p.seen}/${p.total}`
-          );
-        }
-      },
-    });
-    console.log(
-      `[novo-crm-cache-sync] deals index: ${dealsByContact.size} contacts com negócio(s)`
-    );
+    /** @type {Map<string, object[]>|null} */
+    let dealsByContact = null;
+    if (!truncated) {
+      dealsByContact = await apiSource.loadAllDealsByContactId({
+        delayMs: batchDelayMs(),
+        onProgress: (p) => {
+          if (p.page % 20 === 0 || p.page === 1) {
+            console.log(
+              `[novo-crm-cache-sync] deals page ${p.page}/${p.totalPages ?? '?'} seen=${p.seen}/${p.total}`
+            );
+          }
+        },
+      });
+      console.log(
+        `[novo-crm-cache-sync] deals index: ${dealsByContact.size} contacts com negócio(s)`
+      );
+    }
 
     let page = 1;
     let totalPages = Math.ceil(contactsTotal / contactPerPage) || 1;
     const fetchFields = apiSource.shouldFetchDealFields();
 
     while (page <= totalPages) {
+      if (truncated && contactsSeen >= contactCap) break;
+
       const res = await apiSource.listContactsApiPage({ page, perPage: contactPerPage });
       if (res.totalPages) totalPages = res.totalPages;
       if (!res.items.length) break;
 
+      let items = res.items;
+      if (truncated && contactsSeen + items.length > contactCap) {
+        items = items.slice(0, contactCap - contactsSeen);
+      }
+      if (!items.length) break;
+
       batches += 1;
-      contactsSeen += res.items.length;
+      contactsSeen += items.length;
+
+      /** @type {Map<string, object[]>} */
+      const pageDeals = new Map();
+      if (dealsByContact) {
+        for (const c of items) {
+          pageDeals.set(String(c.id), dealsByContact.get(String(c.id)) || []);
+        }
+      } else {
+        for (const c of items) {
+          const deals = await apiSource.listDealsForContactId(String(c.id));
+          pageDeals.set(String(c.id), deals);
+        }
+      }
 
       /** @type {string[]} */
       const primaryIds = [];
-      for (const c of res.items) {
-        const deals = dealsByContact.get(String(c.id)) || [];
+      for (const c of items) {
+        const deals = pageDeals.get(String(c.id)) || [];
         const primary = deals
           .slice()
           .sort((a, b) => {
@@ -144,8 +187,8 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
           })
         : new Map();
 
-      const snapshots = res.items.map((c) =>
-        apiSource.mapApiSnapshot(c, dealsByContact.get(String(c.id)) || [], details)
+      const snapshots = items.map((c) =>
+        apiSource.mapApiSnapshot(c, pageDeals.get(String(c.id)) || [], details)
       );
 
       const persisted = await persistSnapshots(snapshots, { dryRun, syncLogId: logId, fullSeenAt });
@@ -172,16 +215,26 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
       }
 
       console.log(
-        `[novo-crm-cache-sync] contacts page ${page}/${totalPages} seen=${contactsSeen} upserted=${upserted}`
+        `[novo-crm-cache-sync] contacts page ${page}/${totalPages} seen=${contactsSeen}${
+          truncated ? `/${contactCap}` : ''
+        } upserted=${upserted}`
       );
 
+      if (truncated && contactsSeen >= contactCap) break;
       if (res.items.length < contactPerPage) break;
       page += 1;
       if (batchDelayMs() > 0) await sleep(batchDelayMs());
     }
 
     if (!dryRun) {
-      deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
+      // Amostra NÃO pode markDeleted — apagaria os ~90% fora do sample.
+      if (!truncated) {
+        deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
+      } else {
+        console.log(
+          `[novo-crm-cache-sync] amostra: markDeleted pulado (seen=${contactsSeen}/${contactsTotal})`
+        );
+      }
       if (maxSourceUpdatedAt) {
         await cacheRepo.updateSyncState({
           cursorUpdatedAt: maxSourceUpdatedAt,
@@ -202,7 +255,7 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
       dataLossEvents,
     });
     console.log(
-      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} ${durationMs}ms`
+      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} ${durationMs}ms`
     );
     return {
       ok: true,
@@ -217,6 +270,9 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
       dataLossEvents,
       durationMs,
       dry_run: dryRun,
+      truncated,
+      contact_cap: contactCap,
+      contacts_total: contactsTotal,
     };
   } catch (err) {
     if (logId) {
@@ -239,10 +295,10 @@ async function runFullSyncViaApi({ dryRun = false } = {}) {
   }
 }
 
-async function runFullSyncInternal({ dryRun = false } = {}) {
+async function runFullSyncInternal({ dryRun = false, maxContacts = null, samplePct = null } = {}) {
   const source = resolveCacheSource();
   if (source === 'api') {
-    return runFullSyncViaApi({ dryRun });
+    return runFullSyncViaApi({ dryRun, maxContacts, samplePct });
   }
 
   if (!isNovoCrmDbConfigured()) {
@@ -497,10 +553,15 @@ export function isNovoCrmCacheSyncRunning() {
   return activeSyncPromise != null;
 }
 
-export async function runNovoCrmCacheSync({ mode = 'incremental', dryRun = false } = {}) {
+export async function runNovoCrmCacheSync({
+  mode = 'incremental',
+  dryRun = false,
+  maxContacts = null,
+  samplePct = null,
+} = {}) {
   const normalized = mode === 'full' ? 'full' : 'incremental';
   return normalized === 'full'
-    ? runFullSyncInternal({ dryRun })
+    ? runFullSyncInternal({ dryRun, maxContacts, samplePct })
     : runIncrementalSyncInternal({ dryRun });
 }
 

@@ -28,6 +28,7 @@ import { startScheduler } from './services/schedulerService.js';
 import { isApiKeyEnforced } from './middleware/requireApiKey.js';
 import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
 import { startNovoCrmCacheSyncCron } from './services/novoCrmPersonCacheSyncService.js';
+import { startMatriculadosProvisionCron } from './services/novoCrmMatriculadosProvisionService.js';
 import { startAlunoPhoneLookupCron } from './services/alunoPhoneLookupService.js';
 
 const app = express();
@@ -235,6 +236,13 @@ app.listen(PORT, '0.0.0.0', () => {
       startNovoCrmCacheSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron cache Novo CRM:', err.message);
+    }
+
+    // Cria no CRM DEV até N matriculados ausentes (etapa+flags). Só com PROVISION_ENABLED=1.
+    try {
+      startMatriculadosProvisionCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron provision matriculados:', err.message);
     }
 
     // Cron diário de refresh da MV nome-por-telefone (Meu Painel).
