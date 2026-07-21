@@ -152,7 +152,8 @@ export async function runMatriculadosProvision(opts = {}) {
   let scanned = 0;
   let skippedExisting = 0;
   let skippedNoCpf = 0;
-  let created = 0;
+  let createdContacts = 0;
+  let createdDeals = 0;
   let errors = 0;
   let aborted = false;
   let abortReason = null;
@@ -184,65 +185,90 @@ export async function runMatriculadosProvision(opts = {}) {
     ? candidates
     : candidates.filter((row) => rank(row) < 99);
 
-  // Dedup por CPF: a base tem múltiplas linhas por aluno (1 por curso/matrícula).
-  // Após o sort (EM CURSO primeiro), mantém a 1ª ocorrência de cada CPF.
-  const seenCpf = new Set();
-  let skippedDup = 0;
-  const filtered = [];
+  // Agrupa por CPF: 1 CONTATO por pessoa, 1 NEGÓCIO por RGM distinto.
+  // A base repete linhas (mesmo CPF+RGM = duplicata) e traz pessoas com 2+
+  // matrículas EM CURSO (RGMs distintos) → cada RGM vira um deal no mesmo contato.
+  /** @type {Map<string, Record<string, unknown>[]>} */
+  const groups = new Map();
+  const seenRgmByCpf = new Map();
+  let skippedDupRgm = 0;
   for (const row of preFiltered) {
-    const cpf = digits(extractMatriculadosMappedValues(row).cpf);
-    if (cpf.length < 11) {
-      filtered.push(row); // deixa o loop principal contabilizar como skippedNoCpf
-      continue;
-    }
-    if (seenCpf.has(cpf)) {
-      skippedDup += 1;
-      continue;
-    }
-    seenCpf.add(cpf);
-    filtered.push(row);
-  }
-
-  let skippedBadName = 0;
-
-  for (const row of filtered) {
-    if (created >= maxCreates) break;
-    scanned += 1;
-
-    const mapped = extractMatriculadosMappedValues(row);
-    const cpf = digits(mapped.cpf);
-    const rgm = digits(mapped.rgm);
+    const m = extractMatriculadosMappedValues(row);
+    const cpf = digits(m.cpf);
     if (cpf.length < 11) {
       skippedNoCpf += 1;
       continue;
     }
+    const rgm = digits(m.rgm) || '(sem-rgm)';
+    let seen = seenRgmByCpf.get(cpf);
+    if (!seen) {
+      seen = new Set();
+      seenRgmByCpf.set(cpf, seen);
+      groups.set(cpf, []);
+    }
+    if (seen.has(rgm)) {
+      skippedDupRgm += 1;
+      continue;
+    }
+    seen.add(rgm);
+    groups.get(cpf).push(row);
+  }
+
+  const simNao = (v) => (v ? 'Sim' : 'Não');
+  const buildValues = (mapped, row, classification) =>
+    [
+      { fieldId: fieldIds.cpf, value: digits(mapped.cpf) },
+      digits(mapped.rgm) ? { fieldId: fieldIds.rgm, value: digits(mapped.rgm) } : null,
+      mapped.curso ? { fieldId: fieldIds.curso, value: mapped.curso } : null,
+      mapped.polo
+        ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
+        : null,
+      mapped.situacao || row['Situação Matrícula']
+        ? {
+            fieldId: fieldIds.situacao,
+            value: mapped.situacao || String(row['Situação Matrícula']),
+          }
+        : null,
+      mapped._email ? { fieldId: fieldIds.email, value: mapped._email } : null,
+      mapped.e_mail_ad ? { fieldId: fieldIds.email_ad, value: mapped.e_mail_ad } : null,
+      row['Data Nascimento']
+        ? { fieldId: fieldIds.nasc, value: String(row['Data Nascimento']).slice(0, 10) }
+        : null,
+      { fieldId: fieldIds.doc_pendentes, value: simNao(classification.flags.doc_pendentes) },
+      { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
+      { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
+      { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
+    ].filter(Boolean);
+
+  let skippedBadName = 0;
+
+  // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
+  outer: for (const [cpf, personRows] of groups) {
+    if (createdContacts >= maxCreates) break;
+    scanned += 1;
+
+    const firstMapped = extractMatriculadosMappedValues(personRows[0]);
+    const nome = firstMapped._nome_full || firstMapped.primeiro_nome || 'Aluno SIAA';
 
     // Nome inválido: base SIAA às vezes traz o nome do curso na coluna Nome.
-    const nomeRaw = String(mapped._nome_full || '').trim();
-    const cursoRaw = String(mapped.curso || '').trim();
-    if (isBadStudentName(nomeRaw, cursoRaw)) {
+    if (
+      isBadStudentName(
+        String(firstMapped._nome_full || '').trim(),
+        String(firstMapped.curso || '').trim()
+      )
+    ) {
       skippedBadName += 1;
       continue;
     }
 
-    const classification = classifyMatriculado(row, {
-      inRematricula: inSet(remat, cpf, rgm),
-      inDoc: inSet(doc, cpf, rgm),
-      inInad: inSet(inad, cpf, rgm),
-      inBb: inSet(bb, cpf, rgm),
-      inEvasao: inSet(evasao, cpf, rgm),
-    });
-
-    // Anti-dupe: search CRM by CPF
+    // Anti-dupe best-effort: busca por CPF/nome/telefone no CRM.
     let existing = null;
     try {
       const found = await searchContacts(cpf);
       existing = found.items?.[0] || null;
     } catch (err) {
       errors += 1;
-      if (errorSamples.length < 15) {
-        errorSamples.push({ cpf, error: `search: ${err?.message || err}` });
-      }
+      if (errorSamples.length < 15) errorSamples.push({ cpf, error: `search: ${err?.message || err}` });
       if (errors >= errorBudget) {
         aborted = true;
         abortReason = `abort após ${errors} erros (search)`;
@@ -252,116 +278,120 @@ export async function runMatriculadosProvision(opts = {}) {
       await sleep(delayMs());
       continue;
     }
-
     if (existing?.id) {
       skippedExisting += 1;
-      if (scanned % 200 === 0) {
-        console.log(
-          `[novo-crm-provision] progress scanned=${scanned} created=${created} skippedExisting=${skippedExisting}`
-        );
-      }
-      // leve pause mesmo em skip para não martelar search
       if (scanned % 20 === 0) await sleep(Math.min(delayMs(), 800));
       continue;
     }
 
-    const nome = mapped._nome_full || mapped.primeiro_nome || 'Aluno SIAA';
-    const phone = phoneE164Br(mapped._phone || mapped.telefone_comercial);
-    const email = mapped._email || null;
-    const simNao = (v) => (v ? 'Sim' : 'Não');
-
-    const payloadPreview = {
-      cpf,
-      rgm,
-      nome,
-      stage: classification.stageName,
-      flags: classification.flags,
-    };
+    const classifications = personRows.map((r) => {
+      const m = extractMatriculadosMappedValues(r);
+      const rgm = digits(m.rgm);
+      return {
+        row: r,
+        mapped: m,
+        rgm,
+        classification: classifyMatriculado(r, {
+          inRematricula: inSet(remat, cpf, rgm),
+          inDoc: inSet(doc, cpf, rgm),
+          inInad: inSet(inad, cpf, rgm),
+          inBb: inSet(bb, cpf, rgm),
+          inEvasao: inSet(evasao, cpf, rgm),
+        }),
+      };
+    });
 
     if (dryRun) {
-      created += 1;
-      if (createdSamples.length < 15) createdSamples.push({ dry_run: true, ...payloadPreview });
+      createdContacts += 1;
+      createdDeals += classifications.length;
+      if (createdSamples.length < 15) {
+        createdSamples.push({
+          dry_run: true,
+          cpf,
+          nome,
+          deals: classifications.map((c) => ({
+            rgm: c.rgm,
+            stage: c.classification.stageName,
+            flags: c.classification.flags,
+          })),
+        });
+      }
       continue;
     }
 
+    let contact;
     try {
-      const contact = await createContact({
+      contact = await createContact({
         name: nome,
-        email,
-        phone,
+        email: firstMapped._email || null,
+        phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
         source: 'SIAA',
       });
-      const deal = await createDeal({
-        title: nome,
-        contactId: contact.id,
-        stageId: classification.stageId,
-      });
-
-      const values = [
-        { fieldId: fieldIds.cpf, value: cpf },
-        rgm ? { fieldId: fieldIds.rgm, value: rgm } : null,
-        mapped.curso ? { fieldId: fieldIds.curso, value: mapped.curso } : null,
-        mapped.polo
-          ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
-          : null,
-        mapped.situacao || row['Situação Matrícula']
-          ? {
-              fieldId: fieldIds.situacao,
-              value: mapped.situacao || String(row['Situação Matrícula']),
-            }
-          : null,
-        email ? { fieldId: fieldIds.email, value: email } : null,
-        mapped.e_mail_ad ? { fieldId: fieldIds.email_ad, value: mapped.e_mail_ad } : null,
-        row['Data Nascimento']
-          ? { fieldId: fieldIds.nasc, value: String(row['Data Nascimento']).slice(0, 10) }
-          : null,
-        { fieldId: fieldIds.doc_pendentes, value: simNao(classification.flags.doc_pendentes) },
-        { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
-        { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
-        { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
-      ].filter(Boolean);
-
-      await updateDealCustomFields(deal.id, values);
-
-      created += 1;
-      if (createdSamples.length < 15) {
-        createdSamples.push({
-          contactId: contact.id,
-          dealId: deal.id,
-          number: deal.number,
-          ...payloadPreview,
-        });
-      }
-      if (created % 25 === 0 || created === 1) {
-        console.log(
-          `[novo-crm-provision] created ${created}/${maxCreates} last=${cpf} stage=${classification.stageName}`
-        );
-      }
     } catch (err) {
       errors += 1;
-      if (errorSamples.length < 15) {
-        errorSamples.push({ cpf, error: err?.message || String(err) });
-      }
-      console.warn(`[novo-crm-provision] FAIL cpf=${cpf}:`, err?.message || err);
+      if (errorSamples.length < 15) errorSamples.push({ cpf, error: `contact: ${err?.message || err}` });
+      console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
       if (errors >= errorBudget) {
         aborted = true;
-        abortReason = `abort após ${errors} erros (create)`;
+        abortReason = `abort após ${errors} erros (contact)`;
         console.error(`[novo-crm-provision] ${abortReason}`);
         break;
       }
+      await sleep(delayMs());
+      continue;
+    }
+    createdContacts += 1;
+
+    const dealSummaries = [];
+    for (const c of classifications) {
+      try {
+        const deal = await createDeal({
+          title: nome,
+          contactId: contact.id,
+          stageId: c.classification.stageId,
+        });
+        await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
+        createdDeals += 1;
+        dealSummaries.push({
+          dealId: deal.id,
+          number: deal.number,
+          rgm: c.rgm,
+          stage: c.classification.stageName,
+        });
+      } catch (err) {
+        errors += 1;
+        if (errorSamples.length < 15)
+          errorSamples.push({ cpf, rgm: c.rgm, error: `deal: ${err?.message || err}` });
+        console.warn(`[novo-crm-provision] FAIL deal cpf=${cpf} rgm=${c.rgm}:`, err?.message || err);
+        if (errors >= errorBudget) {
+          aborted = true;
+          abortReason = `abort após ${errors} erros (deal)`;
+          console.error(`[novo-crm-provision] ${abortReason}`);
+          break outer;
+        }
+      }
+      await sleep(delayMs());
     }
 
-    await sleep(delayMs());
+    if (createdSamples.length < 15) {
+      createdSamples.push({ contactId: contact.id, cpf, nome, deals: dealSummaries });
+    }
+    if (createdContacts % 25 === 0 || createdContacts === 1) {
+      console.log(
+        `[novo-crm-provision] contatos=${createdContacts}/${maxCreates} deals=${createdDeals} last=${cpf}`
+      );
+    }
   }
 
   const result = {
     ok: !aborted,
     dry_run: dryRun,
     scanned,
-    created,
+    created_contacts: createdContacts,
+    created_deals: createdDeals,
     skipped_existing: skippedExisting,
     skipped_no_cpf: skippedNoCpf,
-    skipped_duplicate_cpf: skippedDup,
+    skipped_duplicate_rgm: skippedDupRgm,
     skipped_bad_name: skippedBadName,
     errors,
     aborted,
