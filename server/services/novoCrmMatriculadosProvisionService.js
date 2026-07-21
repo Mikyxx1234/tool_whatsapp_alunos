@@ -185,22 +185,20 @@ export async function runMatriculadosProvision(opts = {}) {
     candidates.push(row);
   });
 
-  // Prioriza quem ainda está ativo — senão os primeiros 1000 viram quase só Cancelado.
-  const includeCancelados =
-    String(process.env.NOVO_CRM_PROVISION_INCLUDE_CANCELADOS || '').trim() === '1';
+  // Prioriza quem está ativo (EM CURSO primeiro; cancelado por último) — assim
+  // o teto de pessoas pega os ativos, mas cancelados também entram (viram deals
+  // em "Perdido"). Mesmo RGM em 2 status: o EM CURSO vence o dedup (rank menor).
   const rank = (row) => {
     const sit = String(row['Situação Matrícula'] || row.Situacao || '')
       .toUpperCase()
       .normalize('NFD')
       .replace(/\p{M}/gu, '');
     if (sit.includes('CURSO')) return 0;
-    if (sit.includes('CANCEL')) return includeCancelados ? 2 : 99;
+    if (sit.includes('CANCEL')) return 2;
     return 1;
   };
   candidates.sort((a, b) => rank(a) - rank(b));
-  const preFiltered = includeCancelados
-    ? candidates
-    : candidates.filter((row) => rank(row) < 99);
+  const preFiltered = candidates;
 
   // Agrupa por CPF: 1 CONTATO por pessoa, 1 NEGÓCIO por RGM distinto.
   // A base repete linhas (mesmo CPF+RGM = duplicata) e traz pessoas com 2+

@@ -100,15 +100,17 @@ export function classifyMatriculado(matRow, ctx) {
   const stages = getNovoCrmStageIds();
   /** @type {string} */
   let stageName;
-  if (isCancelado) stageName = 'Cancelado';
+  // RGM cancelado → Perdido (gera estatística). A etapa "Cancelado" é reservada
+  // ao time de retenção (manual, até o cancelamento ser deferido) e NÃO é usada aqui.
+  if (isCancelado) stageName = 'Perdido';
   else if (ctx.inRematricula) stageName = 'Sem Rematricula';
   else if (inAcolhimento) stageName = 'Acolhimento';
   else if (isPos) stageName = 'Pós';
   else if (isGrad) stageName = 'Graduação';
   else stageName = 'Graduação';
 
-  // Retenção: só manual/IA — nunca atribuída por este job.
-  // Ganho/Perdido: intocáveis por este job.
+  // Retenção e Cancelado: só manual/IA — nunca atribuídas por este job.
+  // Ganho: intocável por este job.
 
   return {
     stageName,
