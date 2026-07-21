@@ -24,7 +24,7 @@ if (base.includes('crm.eduit.com.br')) {
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry');
-const maxCreates = Math.min(Math.max(Number(args.find((a) => /^\d+$/.test(a))) || 1000, 1), 5000);
+const maxCreates = Math.min(Math.max(Number(args.find((a) => /^\d+$/.test(a))) || 1000, 1), 20000);
 const offsetArg = args.find((a) => /^--offset=\d+$/.test(a));
 const offset = offsetArg ? Number(offsetArg.split('=')[1]) : 0;
 
