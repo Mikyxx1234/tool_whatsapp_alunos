@@ -27,10 +27,6 @@ import {
   updateDealCustomFields,
 } from './novoCrmClient.js';
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
 }
@@ -70,12 +66,14 @@ export function isProvisionAllowedOnThisHost() {
 }
 
 function maxPerRun() {
-  // Teto duro 1000 — noite sem supervisão não escala sozinha.
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_MAX_PER_RUN) || 1000, 1), 1000);
+  // Cap via env (default 1000). Teto de segurança 20000 p/ backfill fracionado.
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_MAX_PER_RUN) || 1000, 1), 20000);
 }
 
-function delayMs() {
-  return Math.max(Number(process.env.NOVO_CRM_PROVISION_DELAY_MS) || 3000, 1500);
+function provisionConcurrency() {
+  // Workers simultâneos no pool. O throughput real ainda é limitado pelo
+  // rate limiter global do client (NOVO_CRM_API_RATE_PER_SECOND).
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_CONCURRENCY) || 4, 1), 20);
 }
 
 function maxErrorsBeforeAbort() {
@@ -114,7 +112,8 @@ function inSet(set, cpf, rgm) {
  */
 export async function runMatriculadosProvision(opts = {}) {
   const dryRun = opts.dryRun === true;
-  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || maxPerRun(), 1), 5000);
+  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || maxPerRun(), 1), 20000);
+  const concurrency = provisionConcurrency();
   // offset = pula as N primeiras pessoas (grupos por CPF) na ordem determinística.
   // Usado para continuar de onde a run anterior parou sem depender de dedup/cache.
   const offset = Math.max(Number(opts.offset) || 0, 0);
@@ -141,7 +140,7 @@ export async function runMatriculadosProvision(opts = {}) {
   }
 
   console.log(
-    `[novo-crm-provision] start dry=${dryRun} max=${maxCreates} offset=${offset} delay=${delayMs()}ms errorBudget=${errorBudget} snap=${matSnap.id} host=${apiBaseHost()}`
+    `[novo-crm-provision] start dry=${dryRun} max=${maxCreates} offset=${offset} conc=${concurrency} errorBudget=${errorBudget} snap=${matSnap.id} host=${apiBaseHost()}`
   );
 
   const [remat, doc, inad, bb, evasao] = await Promise.all([
@@ -262,17 +261,30 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedCache = 0;
 
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
-  let visited = 0;
-  outer: for (const [cpf, personRows] of groups) {
-    visited += 1;
-    if (visited <= offset) continue; // retoma de onde a run anterior parou
-    if (createdContacts >= maxCreates) break;
+  // Ordem determinística (mesmo snapshot + sort estável); offset pula as N
+  // primeiras pessoas p/ continuar de onde a run anterior parou.
+  const personList = [...groups.entries()].slice(offset);
+
+  const noteError = (sample) => {
+    errors += 1;
+    if (errorSamples.length < 15) errorSamples.push(sample);
+    if (errors >= errorBudget && !aborted) {
+      aborted = true;
+      abortReason = `abort após ${errors} erros`;
+      console.error(`[novo-crm-provision] ${abortReason}`);
+    }
+  };
+
+  // Processa UMA pessoa (1 contato + N deals). Counters são compartilhados —
+  // seguro porque JS é single-thread (sem corrida entre awaits).
+  const processPerson = async ([cpf, personRows]) => {
+    if (aborted || createdContacts >= maxCreates) return;
     scanned += 1;
 
     // Idempotência via cache: já existe no CRM → pula sem gastar API.
     if (existingCpfs.has(cpf)) {
       skippedCache += 1;
-      continue;
+      return;
     }
 
     const firstMapped = extractMatriculadosMappedValues(personRows[0]);
@@ -286,30 +298,7 @@ export async function runMatriculadosProvision(opts = {}) {
       )
     ) {
       skippedBadName += 1;
-      continue;
-    }
-
-    // Anti-dupe best-effort: busca por CPF/nome/telefone no CRM.
-    let existing = null;
-    try {
-      const found = await searchContacts(cpf);
-      existing = found.items?.[0] || null;
-    } catch (err) {
-      errors += 1;
-      if (errorSamples.length < 15) errorSamples.push({ cpf, error: `search: ${err?.message || err}` });
-      if (errors >= errorBudget) {
-        aborted = true;
-        abortReason = `abort após ${errors} erros (search)`;
-        console.error(`[novo-crm-provision] ${abortReason}`);
-        break;
-      }
-      await sleep(delayMs());
-      continue;
-    }
-    if (existing?.id) {
-      skippedExisting += 1;
-      if (scanned % 20 === 0) await sleep(Math.min(delayMs(), 800));
-      continue;
+      return;
     }
 
     const classifications = personRows.map((r) => {
@@ -344,8 +333,24 @@ export async function runMatriculadosProvision(opts = {}) {
           })),
         });
       }
-      continue;
+      return;
     }
+
+    // Anti-dupe best-effort: busca por CPF no CRM.
+    let existing = null;
+    try {
+      const found = await searchContacts(cpf);
+      existing = found.items?.[0] || null;
+    } catch (err) {
+      noteError({ cpf, error: `search: ${err?.message || err}` });
+      return;
+    }
+    if (existing?.id) {
+      skippedExisting += 1;
+      return;
+    }
+
+    if (aborted || createdContacts >= maxCreates) return;
 
     let contact;
     try {
@@ -356,22 +361,15 @@ export async function runMatriculadosProvision(opts = {}) {
         source: 'SIAA',
       });
     } catch (err) {
-      errors += 1;
-      if (errorSamples.length < 15) errorSamples.push({ cpf, error: `contact: ${err?.message || err}` });
+      noteError({ cpf, error: `contact: ${err?.message || err}` });
       console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
-      if (errors >= errorBudget) {
-        aborted = true;
-        abortReason = `abort após ${errors} erros (contact)`;
-        console.error(`[novo-crm-provision] ${abortReason}`);
-        break;
-      }
-      await sleep(delayMs());
-      continue;
+      return;
     }
     createdContacts += 1;
 
     const dealSummaries = [];
     for (const c of classifications) {
+      if (aborted) break;
       try {
         const deal = await createDeal({
           title: nome,
@@ -387,29 +385,33 @@ export async function runMatriculadosProvision(opts = {}) {
           stage: c.classification.stageName,
         });
       } catch (err) {
-        errors += 1;
-        if (errorSamples.length < 15)
-          errorSamples.push({ cpf, rgm: c.rgm, error: `deal: ${err?.message || err}` });
+        noteError({ cpf, rgm: c.rgm, error: `deal: ${err?.message || err}` });
         console.warn(`[novo-crm-provision] FAIL deal cpf=${cpf} rgm=${c.rgm}:`, err?.message || err);
-        if (errors >= errorBudget) {
-          aborted = true;
-          abortReason = `abort após ${errors} erros (deal)`;
-          console.error(`[novo-crm-provision] ${abortReason}`);
-          break outer;
-        }
       }
-      await sleep(delayMs());
     }
 
     if (createdSamples.length < 15) {
       createdSamples.push({ contactId: contact.id, cpf, nome, deals: dealSummaries });
     }
-    if (createdContacts % 25 === 0 || createdContacts === 1) {
+    if (createdContacts % 50 === 0 || createdContacts === 1) {
       console.log(
         `[novo-crm-provision] contatos=${createdContacts}/${maxCreates} deals=${createdDeals} last=${cpf}`
       );
     }
-  }
+  };
+
+  // Pool de workers: cada um puxa a próxima pessoa da fila até esgotar,
+  // atingir o teto ou abortar. Pacing global vem do rate limiter do client.
+  let nextIndex = 0;
+  const worker = async () => {
+    while (true) {
+      if (aborted || createdContacts >= maxCreates) return;
+      const idx = nextIndex++;
+      if (idx >= personList.length) return;
+      await processPerson(personList[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   const result = {
     ok: !aborted,
@@ -427,7 +429,7 @@ export async function runMatriculadosProvision(opts = {}) {
     abort_reason: abortReason,
     max_creates: maxCreates,
     offset,
-    delay_ms: delayMs(),
+    concurrency,
     samples: createdSamples,
     error_samples: errorSamples,
     host: apiBaseHost(),
@@ -482,7 +484,7 @@ export function startMatriculadosProvisionCron() {
   const hour = provisionHourUtc();
   const delay = msUntilHourUtc(hour);
   console.log(
-    `[novo-crm-provision] cron: max=${maxPerRun()} delay=${delayMs()}ms; próximo em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC)`
+    `[novo-crm-provision] cron: max=${maxPerRun()} conc=${provisionConcurrency()}; próximo em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC)`
   );
 
   const first = setTimeout(() => {

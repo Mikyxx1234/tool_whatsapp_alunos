@@ -67,21 +67,43 @@ async function request(path, opts = {}) {
   }
   const method = opts.method || 'GET';
   const maxRetries = Math.max(0, Number(opts.maxRetries) || 4);
+  // Status transitórios do CRM (instância DEV costuma dar 502 sob carga).
+  const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
   let attempt = 0;
 
   while (true) {
     await apiLimiter.acquire();
-    const res = await fetch(`${apiBase()}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        ...(opts.body != null
-          ? { 'Content-Type': 'application/json; charset=utf-8' }
-          : {}),
-      },
-      body: opts.body != null ? JSON.stringify(opts.body) : undefined,
-    });
+
+    let res;
+    try {
+      res = await fetch(`${apiBase()}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(opts.body != null
+            ? { 'Content-Type': 'application/json; charset=utf-8' }
+            : {}),
+        },
+        body: opts.body != null ? JSON.stringify(opts.body) : undefined,
+      });
+    } catch (netErr) {
+      // Falha de rede (fetch failed / ECONNRESET / timeout) → retry com backoff.
+      if (attempt < maxRetries) {
+        const backoffMs = Math.min(30_000, 1500 * 2 ** attempt);
+        attempt += 1;
+        console.warn(
+          `[novo-crm-api] rede falhou em ${path} (${netErr?.message || netErr}) — retry ${attempt}/${maxRetries} em ${backoffMs}ms`
+        );
+        await sleep(backoffMs);
+        continue;
+      }
+      const err = new Error(`Novo CRM rede: ${netErr?.message || netErr}`);
+      err.status = 0;
+      err.cause = netErr;
+      throw err;
+    }
+
     const text = await res.text();
     let json = null;
     try {
@@ -90,7 +112,7 @@ async function request(path, opts = {}) {
       json = { raw: text };
     }
 
-    if (res.status === 429 && attempt < maxRetries) {
+    if (RETRIABLE_STATUS.has(res.status) && attempt < maxRetries) {
       const retryAfter = Number(res.headers.get('retry-after'));
       const backoffMs =
         Number.isFinite(retryAfter) && retryAfter > 0
@@ -98,7 +120,7 @@ async function request(path, opts = {}) {
           : Math.min(30_000, 1500 * 2 ** attempt);
       attempt += 1;
       console.warn(
-        `[novo-crm-api] 429 em ${path} — retry ${attempt}/${maxRetries} em ${backoffMs}ms`
+        `[novo-crm-api] ${res.status} em ${path} — retry ${attempt}/${maxRetries} em ${backoffMs}ms`
       );
       await sleep(backoffMs);
       continue;
