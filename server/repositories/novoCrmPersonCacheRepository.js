@@ -274,6 +274,28 @@ export async function markDeletedNotSeenSince(fullSeenAt) {
   return rowCount ?? 0;
 }
 
+/**
+ * CPFs e RGMs já presentes no cache (contatos ativos). Usado pela
+ * idempotência do provisionamento — evita recriar quem já existe no CRM.
+ * @returns {Promise<{ cpfs: Set<string>, rgms: Set<string> }>}
+ */
+export async function loadExistingCpfRgmSets() {
+  const { rows } = await query(
+    `select cpf_norm, rgm_norm
+       from novo_crm_person_cache
+      where is_deleted = false`
+  );
+  const cpfs = new Set();
+  const rgms = new Set();
+  for (const r of rows) {
+    const c = String(r.cpf_norm || '').replace(/\D/g, '');
+    const g = String(r.rgm_norm || '').replace(/\D/g, '');
+    if (c.length >= 11) cpfs.add(c);
+    if (g) rgms.add(g);
+  }
+  return { cpfs, rgms };
+}
+
 export async function getCacheStats() {
   const [
     { rows: countRows },

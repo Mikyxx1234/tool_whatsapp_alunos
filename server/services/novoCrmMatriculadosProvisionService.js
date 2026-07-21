@@ -11,6 +11,7 @@
  */
 
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
+import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
@@ -148,6 +149,22 @@ export async function runMatriculadosProvision(opts = {}) {
     loadIdSetFromBase('provavel-evasao'),
   ]);
 
+  // Idempotência: CPFs já no cache do CRM (sync noturno) → não recria.
+  // Torna a run repetível (a busca por CPF na API não acha, pois o CPF vive
+  // no deal; o cache extrai cpf_norm do deal, então é a fonte confiável).
+  const useCacheDedup =
+    String(process.env.NOVO_CRM_PROVISION_USE_CACHE_DEDUP || '1').trim() !== '0';
+  let existingCpfs = new Set();
+  if (useCacheDedup) {
+    try {
+      const sets = await cacheRepo.loadExistingCpfRgmSets();
+      existingCpfs = sets.cpfs;
+      console.log(`[novo-crm-provision] cache dedup: ${existingCpfs.size} CPFs já no cache`);
+    } catch (err) {
+      console.warn('[novo-crm-provision] cache dedup indisponível:', err?.message || err);
+    }
+  }
+
   const fieldIds = getNovoCrmDealFieldIds();
   let scanned = 0;
   let skippedExisting = 0;
@@ -241,11 +258,18 @@ export async function runMatriculadosProvision(opts = {}) {
     ].filter(Boolean);
 
   let skippedBadName = 0;
+  let skippedCache = 0;
 
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
   outer: for (const [cpf, personRows] of groups) {
     if (createdContacts >= maxCreates) break;
     scanned += 1;
+
+    // Idempotência via cache: já existe no CRM → pula sem gastar API.
+    if (existingCpfs.has(cpf)) {
+      skippedCache += 1;
+      continue;
+    }
 
     const firstMapped = extractMatriculadosMappedValues(personRows[0]);
     const nome = firstMapped._nome_full || firstMapped.primeiro_nome || 'Aluno SIAA';
@@ -390,6 +414,7 @@ export async function runMatriculadosProvision(opts = {}) {
     created_contacts: createdContacts,
     created_deals: createdDeals,
     skipped_existing: skippedExisting,
+    skipped_cache: skippedCache,
     skipped_no_cpf: skippedNoCpf,
     skipped_duplicate_rgm: skippedDupRgm,
     skipped_bad_name: skippedBadName,

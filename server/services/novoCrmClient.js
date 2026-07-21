@@ -528,6 +528,34 @@ export async function createDeal(payload) {
 }
 
 /**
+ * Remove um contact do CRM. Use com cautela (irreversível).
+ * @param {string} contactId
+ */
+export async function deleteContact(contactId) {
+  const id = String(contactId || '').trim();
+  if (!id) {
+    const err = new Error('contactId obrigatório para deletar');
+    err.status = 400;
+    throw err;
+  }
+  return request(`/api/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * Remove um deal do CRM. Use com cautela (irreversível).
+ * @param {string} dealId
+ */
+export async function deleteDeal(dealId) {
+  const id = String(dealId || '').trim();
+  if (!id) {
+    const err = new Error('dealId obrigatório para deletar');
+    err.status = 400;
+    throw err;
+  }
+  return request(`/api/deals/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
  * Busca contacts por texto (CPF, nome, telefone…).
  * @param {string} q
  */
