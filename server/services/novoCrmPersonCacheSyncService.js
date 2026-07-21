@@ -597,8 +597,18 @@ export function startNovoCrmCacheSyncCron() {
   const hasToken = Boolean(String(process.env.NOVO_CRM_API_TOKEN || '').trim());
   const source = resolveCacheSource();
 
+  let crmHost = '(n/d)';
+  try {
+    crmHost = new URL(
+      String(process.env.NOVO_CRM_API_BASE_URL || 'https://crm.eduit.com.br')
+    ).host;
+  } catch {
+    crmHost = String(process.env.NOVO_CRM_API_BASE_URL || '(vazio)');
+  }
+  const isProdHost = crmHost.includes('crm.eduit.com.br');
+
   console.log(
-    `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}`
+    `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}; CRM_HOST=${crmHost} (${isProdHost ? 'PRODUÇÃO' : 'DEV/outro'})`
   );
 
   if (source === 'api') {
