@@ -34,6 +34,26 @@ function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
 }
 
+function normName(s) {
+  return String(s ?? '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .replace(/\b(CST|EM|DE|DA|DO|E|BACHARELADO|LICENCIATURA|TECNOLOGO|SUPERIOR)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Nome inválido = vazio ou igual/contido no nome do curso (dado ruim do SIAA). */
+function isBadStudentName(nome, curso) {
+  const n = normName(nome);
+  if (!n) return true;
+  const c = normName(curso);
+  if (!c) return false;
+  return c.includes(n) || n === c;
+}
+
 function apiBaseHost() {
   return String(process.env.NOVO_CRM_API_BASE_URL || '')
     .trim()
@@ -160,9 +180,30 @@ export async function runMatriculadosProvision(opts = {}) {
     return 1;
   };
   candidates.sort((a, b) => rank(a) - rank(b));
-  const filtered = includeCancelados
+  const preFiltered = includeCancelados
     ? candidates
     : candidates.filter((row) => rank(row) < 99);
+
+  // Dedup por CPF: a base tem múltiplas linhas por aluno (1 por curso/matrícula).
+  // Após o sort (EM CURSO primeiro), mantém a 1ª ocorrência de cada CPF.
+  const seenCpf = new Set();
+  let skippedDup = 0;
+  const filtered = [];
+  for (const row of preFiltered) {
+    const cpf = digits(extractMatriculadosMappedValues(row).cpf);
+    if (cpf.length < 11) {
+      filtered.push(row); // deixa o loop principal contabilizar como skippedNoCpf
+      continue;
+    }
+    if (seenCpf.has(cpf)) {
+      skippedDup += 1;
+      continue;
+    }
+    seenCpf.add(cpf);
+    filtered.push(row);
+  }
+
+  let skippedBadName = 0;
 
   for (const row of filtered) {
     if (created >= maxCreates) break;
@@ -173,6 +214,14 @@ export async function runMatriculadosProvision(opts = {}) {
     const rgm = digits(mapped.rgm);
     if (cpf.length < 11) {
       skippedNoCpf += 1;
+      continue;
+    }
+
+    // Nome inválido: base SIAA às vezes traz o nome do curso na coluna Nome.
+    const nomeRaw = String(mapped._nome_full || '').trim();
+    const cursoRaw = String(mapped.curso || '').trim();
+    if (isBadStudentName(nomeRaw, cursoRaw)) {
+      skippedBadName += 1;
       continue;
     }
 
@@ -312,6 +361,8 @@ export async function runMatriculadosProvision(opts = {}) {
     created,
     skipped_existing: skippedExisting,
     skipped_no_cpf: skippedNoCpf,
+    skipped_duplicate_cpf: skippedDup,
+    skipped_bad_name: skippedBadName,
     errors,
     aborted,
     abort_reason: abortReason,
