@@ -110,11 +110,14 @@ function inSet(set, cpf, rgm) {
 }
 
 /**
- * @param {{ dryRun?: boolean, maxCreates?: number, jobId?: string|null }} [opts]
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, jobId?: string|null }} [opts]
  */
 export async function runMatriculadosProvision(opts = {}) {
   const dryRun = opts.dryRun === true;
-  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || maxPerRun(), 1), 1000);
+  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || maxPerRun(), 1), 5000);
+  // offset = pula as N primeiras pessoas (grupos por CPF) na ordem determinística.
+  // Usado para continuar de onde a run anterior parou sem depender de dedup/cache.
+  const offset = Math.max(Number(opts.offset) || 0, 0);
   const errorBudget = maxErrorsBeforeAbort();
 
   if (!isNovoCrmApiConfigured()) {
@@ -138,7 +141,7 @@ export async function runMatriculadosProvision(opts = {}) {
   }
 
   console.log(
-    `[novo-crm-provision] start dry=${dryRun} max=${maxCreates} delay=${delayMs()}ms errorBudget=${errorBudget} snap=${matSnap.id} host=${apiBaseHost()}`
+    `[novo-crm-provision] start dry=${dryRun} max=${maxCreates} offset=${offset} delay=${delayMs()}ms errorBudget=${errorBudget} snap=${matSnap.id} host=${apiBaseHost()}`
   );
 
   const [remat, doc, inad, bb, evasao] = await Promise.all([
@@ -259,7 +262,10 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedCache = 0;
 
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
+  let visited = 0;
   outer: for (const [cpf, personRows] of groups) {
+    visited += 1;
+    if (visited <= offset) continue; // retoma de onde a run anterior parou
     if (createdContacts >= maxCreates) break;
     scanned += 1;
 
@@ -420,6 +426,7 @@ export async function runMatriculadosProvision(opts = {}) {
     aborted,
     abort_reason: abortReason,
     max_creates: maxCreates,
+    offset,
     delay_ms: delayMs(),
     samples: createdSamples,
     error_samples: errorSamples,
