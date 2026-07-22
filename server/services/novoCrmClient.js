@@ -533,6 +533,39 @@ export async function createContact(payload) {
 }
 
 /**
+ * Atualiza deal (ex.: mover de etapa).
+ * @param {string} dealId
+ * @param {{ stageId?: string, title?: string, status?: string }} patch
+ */
+export async function updateDeal(dealId, patch) {
+  const id = String(dealId || '').trim();
+  if (!id) {
+    const err = new Error('dealId obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  const body = {};
+  if (patch?.stageId != null && String(patch.stageId).trim()) {
+    body.stageId = String(patch.stageId).trim();
+  }
+  if (patch?.title != null && String(patch.title).trim()) {
+    body.title = String(patch.title).trim();
+  }
+  if (patch?.status != null && String(patch.status).trim()) {
+    body.status = String(patch.status).trim();
+  }
+  if (!Object.keys(body).length) {
+    const err = new Error('Nenhum campo de deal para atualizar');
+    err.status = 400;
+    throw err;
+  }
+  return request(`/api/deals/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body,
+  });
+}
+
+/**
  * @param {{ title: string, contactId: string, stageId: string, value?: number }} payload
  */
 export async function createDeal(payload) {

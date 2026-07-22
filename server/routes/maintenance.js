@@ -27,6 +27,13 @@ import {
   isMatriculadosProvisionRunning,
   isProvisionAllowedOnThisHost,
 } from '../services/novoCrmMatriculadosProvisionService.js';
+import {
+  runFlagsStageSync,
+  startFlagsStageSyncBackground,
+  isFlagsStageSyncRunning,
+  getFlagsStageSyncJob,
+  getRunningFlagsStageSyncJob,
+} from '../services/novoCrmFlagsStageSyncService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
 import { migrateMeuPainelLegacyFromLive } from '../repositories/meuPainelLegacyRepository.js';
@@ -407,6 +414,109 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
     res.status(status).json({ error: err?.message || String(err) });
   }
 });
+
+/**
+ * POST /api/maintenance/sync-flags-stage-novo-crm
+ * ?dry_run=1|0&mode=flags_stage|fields|both&async=1&max=
+ *
+ * Atualiza flags (Sim/Não) e/ou move etapa dos deals existentes.
+ * Intocáveis: Ganho, Retenção, Cancelado (não move etapa).
+ * Preferir dry_run=1 primeiro. Botão manual na UI Sync Novo CRM.
+ */
+router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
+  try {
+    if (!isProvisionAllowedOnThisHost()) {
+      return res.status(403).json({
+        error: 'Sync flags/etapa só no CRM DEV (crm-dev…). Ou NOVO_CRM_PROVISION_ALLOW_PROD=1.',
+      });
+    }
+    const forceWrite =
+      req.query.dry_run === '0' ||
+      req.query.dry_run === 'false' ||
+      req.body?.dry_run === false ||
+      req.body?.dryRun === false;
+    const reallyDry = !forceWrite;
+    const modeRaw = String(req.query.mode || req.body?.mode || 'flags_stage').trim();
+    const mode = ['flags_stage', 'fields', 'both'].includes(modeRaw) ? modeRaw : 'flags_stage';
+    const maxDeals = Number(req.query.max || req.body?.max || req.body?.maxDeals) || undefined;
+    const asyncMode =
+      req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+
+    if (reallyDry) {
+      const preview = await runFlagsStageSync({
+        dryRun: true,
+        mode,
+        maxDeals: maxDeals || 500,
+      });
+      return res.json(preview);
+    }
+
+    if (isFlagsStageSyncRunning()) {
+      return res.status(409).json({ error: 'Sync de flags/etapa já em andamento' });
+    }
+
+    if (asyncMode) {
+      const started = startFlagsStageSyncBackground({
+        dryRun: false,
+        mode,
+        maxDeals,
+      });
+      if (!started.started) {
+        return res.status(409).json({ error: started.error || 'Já em andamento', jobId: started.jobId });
+      }
+      return res.status(202).json({
+        ok: true,
+        status: 'running',
+        jobId: started.jobId,
+        dry_run: false,
+        mode,
+      });
+    }
+
+    const result = await runFlagsStageSync({ dryRun: false, mode, maxDeals });
+    res.json(result);
+  } catch (err) {
+    console.error('[sync-flags-stage-novo-crm]', err);
+    const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
+    res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /api/maintenance/sync-flags-stage-novo-crm-status?jobId=
+ */
+router.get('/sync-flags-stage-novo-crm-status', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId ? String(req.query.jobId) : null;
+    const job = jobId ? getFlagsStageSyncJob(jobId) : getRunningFlagsStageSyncJob();
+    if (!job) {
+      return res.json({ ok: true, running: false, job: null });
+    }
+    res.json({
+      ok: true,
+      running: job.status === 'running',
+      job: {
+        jobId: job.jobId,
+        mode: job.mode,
+        status: job.status,
+        dry_run: job.dry_run,
+        total: job.total,
+        processed: job.processed,
+        sent: job.sent,
+        phase: job.phase,
+        status_message: job.status_message,
+        started_at: job.started_at,
+        finished_at: job.finished_at,
+        result: job.result,
+        error: job.error,
+      },
+    });
+  } catch (err) {
+    console.error('[sync-flags-stage-novo-crm-status]', err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 /**
  * GET /api/maintenance/enrich-novo-crm-status?jobId=
  */

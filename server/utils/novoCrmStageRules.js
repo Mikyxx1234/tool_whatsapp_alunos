@@ -21,6 +21,28 @@ export function getNovoCrmStageIds() {
   };
 }
 
+/** Etapas que o job NÃO move (humano/IA). Flags ainda podem ser atualizadas. */
+export function getUntouchableStageIds() {
+  const s = getNovoCrmStageIds();
+  return new Set([s.Ganho, s.Retenção, s.Cancelado].filter(Boolean));
+}
+
+export function isUntouchableStageId(stageId) {
+  const id = String(stageId || '').trim();
+  if (!id) return false;
+  return getUntouchableStageIds().has(id);
+}
+
+export function stageNameFromId(stageId) {
+  const id = String(stageId || '').trim();
+  if (!id) return null;
+  const stages = getNovoCrmStageIds();
+  for (const [name, sid] of Object.entries(stages)) {
+    if (sid === id) return name;
+  }
+  return null;
+}
+
 /** Custom fields deal (DEV). */
 export function getNovoCrmDealFieldIds() {
   return {

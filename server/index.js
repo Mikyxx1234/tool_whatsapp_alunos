@@ -29,6 +29,7 @@ import { isApiKeyEnforced } from './middleware/requireApiKey.js';
 import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
 import { startNovoCrmCacheSyncCron } from './services/novoCrmPersonCacheSyncService.js';
 import { startMatriculadosProvisionCron } from './services/novoCrmMatriculadosProvisionService.js';
+import { startExistingFieldsSyncCron } from './services/novoCrmFlagsStageSyncService.js';
 import { startAlunoPhoneLookupCron } from './services/alunoPhoneLookupService.js';
 
 const app = express();
@@ -243,6 +244,13 @@ app.listen(PORT, '0.0.0.0', () => {
       startMatriculadosProvisionCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron provision matriculados:', err.message);
+    }
+
+    // Atualiza campos SIAA dos deals existentes (curso/polo/situação…). Só com FIELDS_SYNC_ENABLED=1.
+    try {
+      startExistingFieldsSyncCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron fields sync Novo CRM:', err.message);
     }
 
     // Cron diário de refresh da MV nome-por-telefone (Meu Painel).

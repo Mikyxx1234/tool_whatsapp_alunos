@@ -179,6 +179,63 @@ export interface NovoCrmEnrichJobStatusResponse {
   } | null;
 }
 
+export type NovoCrmFlagsStageMode = 'flags_stage' | 'fields' | 'both';
+
+export interface NovoCrmFlagsStagePreviewResponse {
+  ok: boolean;
+  dry_run: boolean;
+  mode: NovoCrmFlagsStageMode | string;
+  scanned: number;
+  matched: number;
+  flags_updated: number;
+  fields_updated: number;
+  stages_moved: number;
+  stages_skipped_untouchable: number;
+  skipped_no_match: number;
+  skipped_no_deal: number;
+  errors: number;
+  samples: Array<{
+    dealId?: string;
+    cpf?: string;
+    rgm?: string;
+    from?: string | null;
+    to?: string;
+    move?: boolean;
+    moved?: boolean;
+    untouchable?: boolean;
+    flags?: Record<string, boolean>;
+  }>;
+  error_samples: Array<{ dealId?: string; cpf?: string; error: string }>;
+}
+
+export interface NovoCrmFlagsStageStartResponse {
+  ok: boolean;
+  status: 'running';
+  jobId: string;
+  dry_run: boolean;
+  mode: string;
+}
+
+export interface NovoCrmFlagsStageJobStatusResponse {
+  ok: boolean;
+  running: boolean;
+  job: {
+    jobId: string;
+    mode: string;
+    status: string;
+    dry_run: boolean;
+    total: number;
+    processed: number;
+    sent: number;
+    phase: string | null;
+    status_message: string | null;
+    started_at: string;
+    finished_at: string | null;
+    error: string | null;
+    result: NovoCrmFlagsStagePreviewResponse | null;
+  } | null;
+}
+
 export interface NovoCrmRegressionEvent {
   id: string | number;
   contact_id?: string;
@@ -315,6 +372,40 @@ export const maintenanceApi = {
     return jsonFetch<{ ok: boolean; event: NovoCrmRegressionEvent }>(
       `/api/maintenance/novo-crm-cache-regressions/${encodeURIComponent(String(id))}/ack`,
       { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Prévia: flags + etapas (dry_run). */
+  previewNovoCrmFlagsStage(opts?: { mode?: 'flags_stage' | 'fields' | 'both'; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '1',
+      mode: opts?.mode || 'flags_stage',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<NovoCrmFlagsStagePreviewResponse>(
+      `/api/maintenance/sync-flags-stage-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Aplica flags + etapas em background. */
+  startNovoCrmFlagsStage(opts?: { mode?: 'flags_stage' | 'fields' | 'both'; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '0',
+      async: '1',
+      mode: opts?.mode || 'flags_stage',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<NovoCrmFlagsStageStartResponse>(
+      `/api/maintenance/sync-flags-stage-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getNovoCrmFlagsStageStatus(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<NovoCrmFlagsStageJobStatusResponse>(
+      `/api/maintenance/sync-flags-stage-novo-crm-status${qs}`
     );
   },
 };

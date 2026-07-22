@@ -53,6 +53,9 @@ export function NovoCrmSyncPanel() {
   const [applying, setApplying] = useState(false);
   const [enrichJobId, setEnrichJobId] = useState<string | null>(null);
   const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+  const [flagsJobId, setFlagsJobId] = useState<string | null>(null);
+  const [flagsMsg, setFlagsMsg] = useState<string | null>(null);
+  const [flagsBusy, setFlagsBusy] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   const stopPoll = useCallback(() => {
@@ -82,7 +85,7 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    if (status?.running || enrichJobId) {
+    if (status?.running || enrichJobId || flagsJobId) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
         void loadStatus();
@@ -108,12 +111,38 @@ export function NovoCrmSyncPanel() {
             })
             .catch(() => {});
         }
+        if (flagsJobId) {
+          void maintenanceApi
+            .getNovoCrmFlagsStageStatus(flagsJobId)
+            .then((r) => {
+              if (!r.job) return;
+              setFlagsMsg(r.job.status_message || r.job.phase || null);
+              if (r.job.status !== 'running') {
+                setFlagsJobId(null);
+                setFlagsBusy(false);
+                if (r.job.status === 'completed') {
+                  const res = r.job.result;
+                  setFlagsMsg(
+                    `Flags/etapas: ${res?.flags_updated ?? 0} flags · ${res?.stages_moved ?? 0} movidos` +
+                      (res?.stages_skipped_untouchable
+                        ? ` · ${res.stages_skipped_untouchable} intocáveis`
+                        : '') +
+                      (res?.errors ? ` · ${res.errors} erros` : '')
+                  );
+                } else if (r.job.status === 'failed') {
+                  setFlagsMsg(r.job.error || 'Sync de flags/etapas falhou');
+                }
+                void loadStatus();
+              }
+            })
+            .catch(() => {});
+        }
       }, 3000) as unknown as number;
     } else {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, enrichJobId, loadStatus, stopPoll]);
+  }, [status?.running, enrichJobId, flagsJobId, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastDurationMs =
@@ -201,6 +230,38 @@ export function NovoCrmSyncPanel() {
     const scope: NovoCrmEnrichScope =
       tile === 'cpf' ? 'cpf' : tile === 'rgm' ? 'rgm' : 'incomplete';
     void openEnrichPreview(tile, scope);
+  };
+
+  const runFlagsStageSync = async () => {
+    if (flagsBusy || flagsJobId) return;
+    setFlagsBusy(true);
+    setFlagsMsg('Calculando prévia de flags/etapas…');
+    try {
+      const preview = await maintenanceApi.previewNovoCrmFlagsStage({
+        mode: 'flags_stage',
+        max: 2000,
+      });
+      const ok = window.confirm(
+        `Sync flags + etapas (prévia em até 2.000 deals)\n\n` +
+          `Match: ${preview.matched.toLocaleString('pt-BR')}\n` +
+          `Flags a atualizar: ${preview.flags_updated.toLocaleString('pt-BR')}\n` +
+          `Etapas a mover: ${preview.stages_moved.toLocaleString('pt-BR')}\n` +
+          `Intocáveis (Ganho/Retenção/Cancelado): ${preview.stages_skipped_untouchable.toLocaleString('pt-BR')}\n\n` +
+          `Confirmar aplicação em TODOS os deals do espelho?\n` +
+          `(Dica: rode «Sync do espelho» antes se criou gente recentemente.)`
+      );
+      if (!ok) {
+        setFlagsMsg('Cancelado.');
+        setFlagsBusy(false);
+        return;
+      }
+      const started = await maintenanceApi.startNovoCrmFlagsStage({ mode: 'flags_stage' });
+      setFlagsJobId(started.jobId);
+      setFlagsMsg('Sync flags/etapas em andamento…');
+    } catch (e) {
+      setFlagsMsg(e instanceof Error ? e.message : 'Falha no sync de flags/etapas');
+      setFlagsBusy(false);
+    }
   };
 
   const applyPreview = async () => {
@@ -370,6 +431,20 @@ export function NovoCrmSyncPanel() {
               )}
               {status?.running ? 'Sincronizando…' : 'Rodar sync agora'}
             </button>
+            <button
+              type="button"
+              onClick={() => void runFlagsStageSync()}
+              disabled={flagsBusy || Boolean(flagsJobId) || applying}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Atualiza flags (Doc/Inad/BB/Evasão) e move etapa conforme regras. Não toca Ganho/Retenção/Cancelado."
+            >
+              {flagsBusy || flagsJobId ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              )}
+              {flagsJobId ? 'Flags/etapas…' : 'Sync flags + etapas'}
+            </button>
           </div>
         </div>
 
@@ -378,6 +453,12 @@ export function NovoCrmSyncPanel() {
           <p className="mt-3 text-sm text-indigo-700 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {enrichMsg}
+          </p>
+        )}
+        {flagsMsg && (
+          <p className="mt-3 text-sm text-emerald-800 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            {flagsMsg}
           </p>
         )}
 
