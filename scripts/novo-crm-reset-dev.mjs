@@ -6,31 +6,21 @@
  *   2. Full sync a partir do CRM DEV (repopula o cache limpo).
  *
  * SEGURANÇA:
- *   - Só mexe no cache LOCAL (banco `disparos`). Nenhuma escrita no CRM.
- *   - Força as credenciais de DEV no processo, independente do que estiver no .env,
- *     pra evitar repopular produção por acidente.
+ *   - Só mexe no cache LOCAL (banco `disparos`). Nenhuma escrita no CRM via create/update.
+ *   - Força URL DEV; token só via env (NOVO_CRM_DEV_API_TOKEN / NOVO_CRM_API_TOKEN).
  *
  * USO:
  *   node --env-file=.env scripts/novo-crm-reset-dev.mjs
- *   (o .env só precisa fornecer DATABASE_URL; as credenciais do CRM são forçadas p/ DEV abaixo)
  */
 
-// --- Força ambiente DEV (não depende do .env) ---
-process.env.NOVO_CRM_ENABLED = '1';
+import { forceNovoCrmDevEnv } from './_novoCrmDevEnv.mjs';
+
+const { base } = forceNovoCrmDevEnv();
 process.env.NOVO_CRM_CACHE_ENABLED = '1';
 process.env.NOVO_CRM_CACHE_SOURCE = 'api';
-process.env.NOVO_CRM_API_BASE_URL = 'https://crm-dev-frontend.ca31ey.easypanel.host';
-process.env.NOVO_CRM_API_TOKEN = 'eduit_2647db702aef5fcf2a3eacef869e0b35b985d5a20b60a5e5';
 process.env.NOVO_CRM_CACHE_FETCH_DEAL_FIELDS =
   process.env.NOVO_CRM_CACHE_FETCH_DEAL_FIELDS || '1';
 process.env.NOVO_CRM_API_RATE_PER_SECOND = process.env.NOVO_CRM_API_RATE_PER_SECOND || '4';
-
-// Trava dura: se por engano a base apontar pra produção, aborta.
-const base = String(process.env.NOVO_CRM_API_BASE_URL || '');
-if (base.includes('crm.eduit.com.br')) {
-  console.error('[reset-dev] ABORTADO: base aponta pra PRODUÇÃO. Este script é DEV-only.');
-  process.exit(2);
-}
 
 const pg = (await import('pg')).default;
 const { runNovoCrmCacheSync } = await import(

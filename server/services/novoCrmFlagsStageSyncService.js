@@ -22,6 +22,7 @@ import {
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import {
+  getDeal,
   isNovoCrmApiConfigured,
   updateDeal,
   updateDealCustomFields,
@@ -40,6 +41,27 @@ function inSet(set, cpf, rgm) {
   if (cpf && set.has(`cpf:${cpf}`)) return true;
   if (rgm && set.has(`rgm:${rgm}`)) return true;
   return false;
+}
+
+function situacaoRank(row) {
+  const sit = String(row['Situação Matrícula'] || row.Situacao || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  if (sit.includes('CURSO')) return 0;
+  if (sit.includes('CANCEL')) return 2;
+  return 1;
+}
+
+/** Mantém a melhor linha por chave (EM CURSO vence CANCELADO). */
+function keepBestRow(map, key, row) {
+  if (!key) return;
+  const prev = map.get(key);
+  if (!prev || situacaoRank(row) < situacaoRank(prev)) map.set(key, row);
+}
+
+function maxErrorsBeforeAbort() {
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 200);
 }
 
 async function loadIdSetFromBase(category) {
@@ -74,6 +96,7 @@ function dealsFromCacheRow(row) {
   const list = Object.values(byId);
   if (list.length) return list;
   if (row.primary_deal_id) {
+    // stageId null → fail-closed no move (não movemos sem saber a etapa).
     return [{ id: String(row.primary_deal_id), stageId: null, customFields: [] }];
   }
   return [];
@@ -89,9 +112,12 @@ export async function runFlagsStageSync(opts = {}) {
   const doFields = mode === 'fields' || mode === 'both';
   const maxDeals = Math.min(Math.max(Number(opts.maxDeals) || 50000, 1), 100000);
   const jobId = opts.jobId || null;
+  const errorBudget = maxErrorsBeforeAbort();
+  let aborted = false;
+  let abortReason = null;
 
   if (!isNovoCrmApiConfigured()) {
-    const err = new Error('NOVO_CRM_ENABLED/TOKEN não configurados');
+    const err = new Error('NOVO_CRM_ENABLED/TOKEN/BASE_URL não configurados');
     err.status = 503;
     throw err;
   }
@@ -132,8 +158,8 @@ export async function runFlagsStageSync(opts = {}) {
     const m = extractMatriculadosMappedValues(row);
     const cpf = digits(m.cpf);
     const rgm = digits(m.rgm);
-    if (cpf.length >= 11 && !byCpf.has(cpf)) byCpf.set(cpf, row);
-    if (rgm && !byRgm.has(rgm)) byRgm.set(rgm, row);
+    if (cpf.length >= 11) keepBestRow(byCpf, cpf, row);
+    if (rgm) keepBestRow(byRgm, rgm, row);
   });
 
   patchJob({ phase: 'loading_cache', status_message: 'Carregando espelho local…' });
@@ -148,6 +174,7 @@ export async function runFlagsStageSync(opts = {}) {
   let flagsUpdated = 0;
   let stagesMoved = 0;
   let stagesSkippedUntouchable = 0;
+  let stagesSkippedUnknown = 0;
   let fieldsUpdated = 0;
   let skippedNoMatch = 0;
   let skippedNoDeal = 0;
@@ -157,6 +184,16 @@ export async function runFlagsStageSync(opts = {}) {
   /** @type {Array<object>} */
   const errorSamples = [];
 
+  const noteError = (sample) => {
+    errors += 1;
+    if (errorSamples.length < 15) errorSamples.push(sample);
+    if (errors >= errorBudget && !aborted) {
+      aborted = true;
+      abortReason = `abort após ${errors} erros`;
+      console.error(`[novo-crm-flags-sync] ${abortReason}`);
+    }
+  };
+
   patchJob({
     phase: 'processing',
     status_message: 'Processando deals…',
@@ -164,6 +201,7 @@ export async function runFlagsStageSync(opts = {}) {
   });
 
   outer: for (const row of cacheRows) {
+    if (aborted) break;
     const deals = dealsFromCacheRow(row);
     if (!deals.length) {
       skippedNoDeal += 1;
@@ -173,7 +211,7 @@ export async function runFlagsStageSync(opts = {}) {
     const cpfCache = digits(row.cpf_norm);
 
     for (const deal of deals) {
-      if (scanned >= maxDeals) break outer;
+      if (aborted || scanned >= maxDeals) break outer;
       scanned += 1;
       if (scanned % 100 === 0) {
         patchJob({
@@ -188,7 +226,8 @@ export async function runFlagsStageSync(opts = {}) {
 
       const rgmDeal = digits(findCustom(deal, ['rgm']) || row.rgm_norm);
       const cpfDeal = digits(findCustom(deal, ['cpf']) || cpfCache);
-      const matRow = (rgmDeal && byRgm.get(rgmDeal)) || (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) || null;
+      const matRow =
+        (rgmDeal && byRgm.get(rgmDeal)) || (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) || null;
       if (!matRow) {
         skippedNoMatch += 1;
         continue;
@@ -206,13 +245,8 @@ export async function runFlagsStageSync(opts = {}) {
         inEvasao: inSet(evasao, cpf, rgm),
       });
 
-      const currentStageId = String(deal.stageId || '').trim() || null;
-      const untouchable = isUntouchableStageId(currentStageId);
-      const stageNeedsMove =
-        doFlags &&
-        classification.stageId &&
-        classification.stageId !== currentStageId &&
-        !untouchable;
+      // Cache stageId — se ausente, fail-closed (não move).
+      let currentStageId = String(deal.stageId || '').trim() || null;
 
       /** @type {Array<{fieldId:string,value:string}>} */
       const values = [];
@@ -246,13 +280,26 @@ export async function runFlagsStageSync(opts = {}) {
         }
       }
 
+      const decideMove = (stageId) => {
+        if (!doFlags || !classification.stageId) {
+          return { move: false, untouchable: false, unknown: false };
+        }
+        if (!stageId) return { move: false, untouchable: false, unknown: true };
+        const untouchable = isUntouchableStageId(stageId);
+        if (untouchable) return { move: false, untouchable: true, unknown: false };
+        if (classification.stageId === stageId) {
+          return { move: false, untouchable: false, unknown: false };
+        }
+        return { move: true, untouchable: false, unknown: false };
+      };
+
       if (dryRun) {
+        const d = decideMove(currentStageId);
         if (doFlags) flagsUpdated += 1;
         if (doFields) fieldsUpdated += 1;
-        if (stageNeedsMove) stagesMoved += 1;
-        else if (doFlags && untouchable && classification.stageId !== currentStageId) {
-          stagesSkippedUntouchable += 1;
-        }
+        if (d.move) stagesMoved += 1;
+        else if (d.untouchable) stagesSkippedUntouchable += 1;
+        else if (d.unknown) stagesSkippedUnknown += 1;
         if (samples.length < 20) {
           samples.push({
             dry_run: true,
@@ -261,8 +308,9 @@ export async function runFlagsStageSync(opts = {}) {
             rgm,
             from: stageNameFromId(currentStageId) || currentStageId,
             to: classification.stageName,
-            move: Boolean(stageNeedsMove),
-            untouchable,
+            move: d.move,
+            untouchable: d.untouchable,
+            unknown_stage: d.unknown,
             flags: classification.flags,
           });
         }
@@ -275,12 +323,32 @@ export async function runFlagsStageSync(opts = {}) {
           if (doFlags) flagsUpdated += 1;
           if (doFields) fieldsUpdated += 1;
         }
-        if (stageNeedsMove) {
+
+        // Antes de mover: revalida etapa ao vivo (cache pode estar stale).
+        let liveStageId = currentStageId;
+        if (doFlags && classification.stageId) {
+          try {
+            const live = await getDeal(dealId);
+            liveStageId = String(live?.stageId || live?.stage?.id || '').trim() || null;
+            currentStageId = liveStageId;
+          } catch (err) {
+            // Sem etapa viva → fail-closed (não move).
+            noteError({ dealId, cpf, error: `getDeal: ${err?.message || err}` });
+            stagesSkippedUnknown += 1;
+            continue;
+          }
+        }
+
+        const d = decideMove(liveStageId);
+        if (d.move) {
           await updateDeal(dealId, { stageId: classification.stageId });
           stagesMoved += 1;
-        } else if (doFlags && untouchable && classification.stageId !== currentStageId) {
+        } else if (d.untouchable) {
           stagesSkippedUntouchable += 1;
+        } else if (d.unknown) {
+          stagesSkippedUnknown += 1;
         }
+
         if (samples.length < 15) {
           samples.push({
             dealId,
@@ -288,22 +356,20 @@ export async function runFlagsStageSync(opts = {}) {
             rgm,
             from: stageNameFromId(currentStageId) || currentStageId,
             to: classification.stageName,
-            moved: Boolean(stageNeedsMove),
-            untouchable,
+            moved: d.move,
+            untouchable: d.untouchable,
+            unknown_stage: d.unknown,
           });
         }
       } catch (err) {
-        errors += 1;
-        if (errorSamples.length < 15) {
-          errorSamples.push({ dealId, cpf, error: err?.message || String(err) });
-        }
+        noteError({ dealId, cpf, error: err?.message || String(err) });
         console.warn(`[novo-crm-flags-sync] FAIL deal=${dealId}:`, err?.message || err);
       }
     }
   }
 
   const result = {
-    ok: true,
+    ok: !aborted,
     dry_run: dryRun,
     mode,
     scanned,
@@ -312,9 +378,13 @@ export async function runFlagsStageSync(opts = {}) {
     fields_updated: fieldsUpdated,
     stages_moved: stagesMoved,
     stages_skipped_untouchable: stagesSkippedUntouchable,
+    stages_skipped_unknown: stagesSkippedUnknown,
     skipped_no_match: skippedNoMatch,
     skipped_no_deal: skippedNoDeal,
     errors,
+    aborted,
+    abort_reason: abortReason,
+    error_budget: errorBudget,
     samples,
     error_samples: errorSamples,
     matriculados_snapshot_id: matSnap.id,
@@ -322,12 +392,16 @@ export async function runFlagsStageSync(opts = {}) {
 
   patchJob({
     phase: 'done',
-    status: 'completed',
+    status: aborted ? 'failed' : 'completed',
     finished_at: new Date().toISOString(),
     result,
     processed: scanned,
     sent: flagsUpdated + stagesMoved + fieldsUpdated,
-    status_message: dryRun ? 'Prévia pronta' : 'Sync concluído',
+    status_message: aborted
+      ? abortReason
+      : dryRun
+        ? 'Prévia pronta'
+        : 'Sync concluído',
   });
 
   console.log('[novo-crm-flags-sync] done', JSON.stringify({ ...result, samples: undefined }));
@@ -337,9 +411,11 @@ export async function runFlagsStageSync(opts = {}) {
 /** @type {Map<string, object>} */
 const jobs = new Map();
 let runningJobId = null;
+/** Promise ativa — cobre sync HTTP e background. */
+let activeFlagsPromise = null;
 
 export function isFlagsStageSyncRunning() {
-  return runningJobId != null && jobs.get(runningJobId)?.status === 'running';
+  return activeFlagsPromise != null || (runningJobId != null && jobs.get(runningJobId)?.status === 'running');
 }
 
 export function getFlagsStageSyncJob(jobId) {
@@ -350,6 +426,24 @@ export function getRunningFlagsStageSyncJob() {
   if (!runningJobId) return null;
   const j = jobs.get(runningJobId);
   return j?.status === 'running' ? j : null;
+}
+
+/**
+ * Mutex: impede sync HTTP + background + cron em paralelo.
+ * @param {{ dryRun?: boolean, mode?: string, maxDeals?: number, jobId?: string|null }} opts
+ */
+export async function runFlagsStageSyncLocked(opts = {}) {
+  if (activeFlagsPromise) {
+    const err = new Error('Sync de flags/etapa já em andamento');
+    err.status = 409;
+    throw err;
+  }
+  activeFlagsPromise = runFlagsStageSync(opts);
+  try {
+    return await activeFlagsPromise;
+  } finally {
+    activeFlagsPromise = null;
+  }
 }
 
 /**
@@ -378,24 +472,28 @@ export function startFlagsStageSyncBackground(opts = {}) {
   jobs.set(jobId, entry);
   runningJobId = jobId;
 
-  void runFlagsStageSync({
+  activeFlagsPromise = runFlagsStageSync({
     dryRun: Boolean(opts.dryRun),
     mode: opts.mode || 'flags_stage',
     maxDeals: opts.maxDeals,
     jobId,
   })
     .then((result) => {
-      entry.status = 'completed';
+      entry.status = result?.aborted ? 'failed' : 'completed';
       entry.result = result;
       entry.finished_at = new Date().toISOString();
+      if (result?.aborted) entry.error = result.abort_reason;
+      return result;
     })
     .catch((err) => {
       entry.status = 'failed';
       entry.error = err?.message || String(err);
       entry.finished_at = new Date().toISOString();
+      throw err;
     })
     .finally(() => {
       if (runningJobId === jobId) runningJobId = null;
+      activeFlagsPromise = null;
     });
 
   return { started: true, jobId };
@@ -442,6 +540,44 @@ export function startExistingFieldsSyncCron() {
     startFlagsStageSyncBackground({ dryRun: false, mode: 'fields' });
     const daily = setInterval(() => {
       startFlagsStageSyncBackground({ dryRun: false, mode: 'fields' });
+    }, 24 * 60 * 60 * 1000);
+    if (typeof daily?.unref === 'function') daily.unref();
+  }, delay);
+  if (typeof first?.unref === 'function') first.unref();
+}
+
+function flagsHourUtc() {
+  return Math.max(
+    0,
+    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FLAGS_SYNC_HOUR_UTC) || 6))
+  );
+}
+
+/** Cron noturno: flags Sim/Não + move etapa (respeita intocáveis). */
+export function startFlagsStageSyncCron() {
+  if (String(process.env.NOVO_CRM_FLAGS_SYNC_ENABLED || '').trim() !== '1') {
+    console.log('[novo-crm-flags-sync] cron off (NOVO_CRM_FLAGS_SYNC_ENABLED≠1)');
+    return;
+  }
+  if (!isNovoCrmApiConfigured()) {
+    console.log('[novo-crm-flags-sync] cron off — API não configurada');
+    return;
+  }
+  if (!isProvisionAllowedOnThisHost()) {
+    console.log('[novo-crm-flags-sync] cron off — host não é DEV');
+    return;
+  }
+
+  const hour = flagsHourUtc();
+  const delay = msUntilHourUtc(hour);
+  console.log(
+    `[novo-crm-flags-sync] cron: próximo em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC)`
+  );
+
+  const first = setTimeout(() => {
+    startFlagsStageSyncBackground({ dryRun: false, mode: 'flags_stage' });
+    const daily = setInterval(() => {
+      startFlagsStageSyncBackground({ dryRun: false, mode: 'flags_stage' });
     }, 24 * 60 * 60 * 1000);
     if (typeof daily?.unref === 'function') daily.unref();
   }, delay);

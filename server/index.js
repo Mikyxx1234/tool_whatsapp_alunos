@@ -29,7 +29,10 @@ import { isApiKeyEnforced } from './middleware/requireApiKey.js';
 import { startDatacrazyCacheSyncCron } from './services/datacrazyLeadCacheSyncService.js';
 import { startNovoCrmCacheSyncCron } from './services/novoCrmPersonCacheSyncService.js';
 import { startMatriculadosProvisionCron } from './services/novoCrmMatriculadosProvisionService.js';
-import { startExistingFieldsSyncCron } from './services/novoCrmFlagsStageSyncService.js';
+import {
+  startExistingFieldsSyncCron,
+  startFlagsStageSyncCron,
+} from './services/novoCrmFlagsStageSyncService.js';
 import { startAlunoPhoneLookupCron } from './services/alunoPhoneLookupService.js';
 
 const app = express();
@@ -251,6 +254,13 @@ app.listen(PORT, '0.0.0.0', () => {
       startExistingFieldsSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron fields sync Novo CRM:', err.message);
+    }
+
+    // Flags + etapas (intocáveis). Só com FLAGS_SYNC_ENABLED=1 e host DEV.
+    try {
+      startFlagsStageSyncCron();
+    } catch (err) {
+      console.error('[server] falha ao iniciar cron flags/etapa Novo CRM:', err.message);
     }
 
     // Cron diário de refresh da MV nome-por-telefone (Meu Painel).

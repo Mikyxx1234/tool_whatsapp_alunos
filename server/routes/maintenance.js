@@ -23,12 +23,14 @@ import {
 } from '../services/novoCrmEnrichmentService.js';
 import {
   runMatriculadosProvision,
+  runMatriculadosProvisionLocked,
   startMatriculadosProvisionBackground,
   isMatriculadosProvisionRunning,
   isProvisionAllowedOnThisHost,
 } from '../services/novoCrmMatriculadosProvisionService.js';
 import {
   runFlagsStageSync,
+  runFlagsStageSyncLocked,
   startFlagsStageSyncBackground,
   isFlagsStageSyncRunning,
   getFlagsStageSyncJob,
@@ -406,7 +408,7 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
       });
     }
 
-    const result = await runMatriculadosProvision({ dryRun: false, maxCreates });
+    const result = await runMatriculadosProvisionLocked({ dryRun: false, maxCreates });
     res.json(result);
   } catch (err) {
     console.error('[provision-matriculados-novo-crm]', err);
@@ -451,6 +453,21 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
       return res.json(preview);
     }
 
+    // Write gate: FLAGS_SYNC_ENABLED ou FIELDS_SYNC_ENABLED (fields mode).
+    const flagsOn = String(process.env.NOVO_CRM_FLAGS_SYNC_ENABLED || '').trim() === '1';
+    const fieldsOn = String(process.env.NOVO_CRM_FIELDS_SYNC_ENABLED || '').trim() === '1';
+    if (mode === 'fields' && !fieldsOn && !flagsOn) {
+      return res.status(403).json({
+        error:
+          'NOVO_CRM_FIELDS_SYNC_ENABLED≠1 e FLAGS_SYNC_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
+      });
+    }
+    if ((mode === 'flags_stage' || mode === 'both') && !flagsOn) {
+      return res.status(403).json({
+        error: 'NOVO_CRM_FLAGS_SYNC_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
+      });
+    }
+
     if (isFlagsStageSyncRunning()) {
       return res.status(409).json({ error: 'Sync de flags/etapa já em andamento' });
     }
@@ -473,7 +490,7 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
       });
     }
 
-    const result = await runFlagsStageSync({ dryRun: false, mode, maxDeals });
+    const result = await runFlagsStageSyncLocked({ dryRun: false, mode, maxDeals });
     res.json(result);
   } catch (err) {
     console.error('[sync-flags-stage-novo-crm]', err);

@@ -4,15 +4,9 @@
  *
  * Uso: node --env-file=.env scripts/novo-crm-cleanup-siaa.mjs [--dry]
  */
-process.env.NOVO_CRM_ENABLED = '1';
-process.env.NOVO_CRM_API_BASE_URL = 'https://crm-dev-frontend.ca31ey.easypanel.host';
-process.env.NOVO_CRM_API_TOKEN = 'eduit_2647db702aef5fcf2a3eacef869e0b35b985d5a20b60a5e5';
+import { forceNovoCrmDevEnv } from './_novoCrmDevEnv.mjs';
 
-const base = String(process.env.NOVO_CRM_API_BASE_URL || '');
-if (base.includes('crm.eduit.com.br')) {
-  console.error('[cleanup] ABORTADO: base é PRODUÇÃO. DEV-only.');
-  process.exit(2);
-}
+const { base } = forceNovoCrmDevEnv();
 
 const dryRun = process.argv.includes('--dry');
 const { listContactsPage, listDealsPage, deleteContact, deleteDeal } = await import(
@@ -35,25 +29,48 @@ while (true) {
   if (!res.items.length || (totalPages && page >= totalPages)) break;
   page += 1;
 }
-console.log(`[cleanup] contatos source=SIAA encontrados: ${siaa.length} (dry=${dryRun})`);
+console.log(`[cleanup] base=${base} contatos source=SIAA: ${siaa.length} (dry=${dryRun})`);
 
 let delDeals = 0;
 let delContacts = 0;
 let errs = 0;
 
 for (const dealId of orphanDeals) {
-  if (dryRun) { delDeals++; continue; }
-  try { await deleteDeal(dealId); delDeals++; } catch (e) { if (e.status !== 404) { errs++; console.warn('orfao', dealId, e.message); } }
+  if (dryRun) {
+    delDeals++;
+    continue;
+  }
+  try {
+    await deleteDeal(dealId);
+    delDeals++;
+  } catch (e) {
+    if (e.status !== 404) {
+      errs++;
+      console.warn('orfao', dealId, e.message);
+    }
+  }
 }
 
 for (const contactId of siaa) {
   try {
     const deals = await listDealsPage({ contactId, perPage: 100 });
     for (const d of deals.items) {
-      if (dryRun) { delDeals++; continue; }
-      try { await deleteDeal(d.id); delDeals++; } catch (e) { errs++; console.warn('deal', d.id, e.message); }
+      if (dryRun) {
+        delDeals++;
+        continue;
+      }
+      try {
+        await deleteDeal(d.id);
+        delDeals++;
+      } catch (e) {
+        errs++;
+        console.warn('deal', d.id, e.message);
+      }
     }
-    if (dryRun) { delContacts++; continue; }
+    if (dryRun) {
+      delContacts++;
+      continue;
+    }
     await deleteContact(contactId);
     delContacts++;
     if (delContacts % 50 === 0) console.log(`[cleanup] progresso: ${delContacts} contatos, ${delDeals} deals`);

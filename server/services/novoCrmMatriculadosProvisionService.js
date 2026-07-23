@@ -52,17 +52,35 @@ function isBadStudentName(nome, curso) {
 }
 
 function apiBaseHost() {
-  return String(process.env.NOVO_CRM_API_BASE_URL || '')
-    .trim()
-    .toLowerCase();
+  try {
+    return new URL(String(process.env.NOVO_CRM_API_BASE_URL || '').trim()).host.toLowerCase();
+  } catch {
+    return String(process.env.NOVO_CRM_API_BASE_URL || '')
+      .trim()
+      .toLowerCase();
+  }
 }
 
 export function isProvisionAllowedOnThisHost() {
-  if (String(process.env.NOVO_CRM_PROVISION_ALLOW_PROD || '').trim() === '1') return true;
+  if (String(process.env.NOVO_CRM_PROVISION_ALLOW_PROD || '').trim() === '1') {
+    // ALLOW_PROD exige URL explícita — evita cair no default antigo de produção.
+    const base = String(process.env.NOVO_CRM_API_BASE_URL || '').trim();
+    if (!base) return false;
+    return true;
+  }
   const h = apiBaseHost();
+  if (!h) return false;
   // Nunca liberar crm.eduit.com.br / produção sem ALLOW_PROD explícito.
-  if (h.includes('crm.eduit.com.br') || h.includes('://crm.eduit.')) return false;
-  return h.includes('crm-dev') || h.includes('localhost') || h.includes('127.0.0.1');
+  if (h === 'crm.eduit.com.br' || h.endsWith('.crm.eduit.com.br')) return false;
+  // Allowlist estrita (não substring frouxa).
+  if (h === 'crm-dev-frontend.ca31ey.easypanel.host') return true;
+  if (h === 'localhost' || h === '127.0.0.1') return true;
+  if (h.endsWith('.localhost')) return true;
+  // Outros hosts *-dev* / crm-dev.* só se env liberar explicitamente.
+  if (String(process.env.NOVO_CRM_PROVISION_ALLOW_DEV_HOSTS || '').trim() === '1') {
+    return h.includes('crm-dev') || h.startsWith('crm-dev.');
+  }
+  return false;
 }
 
 function maxPerRun() {
@@ -278,7 +296,18 @@ export async function runMatriculadosProvision(opts = {}) {
   // Processa UMA pessoa (1 contato + N deals). Counters são compartilhados —
   // seguro porque JS é single-thread (sem corrida entre awaits).
   const processPerson = async ([cpf, personRows]) => {
-    if (aborted || createdContacts >= maxCreates) return;
+    if (aborted) return;
+
+    // Reserva slot ANTES de qualquer await de create — evita overshoot do maxCreates.
+    if (createdContacts >= maxCreates) return;
+    const reservedSlot = { claimed: false };
+    const claimSlot = () => {
+      if (aborted || createdContacts >= maxCreates) return false;
+      createdContacts += 1;
+      reservedSlot.claimed = true;
+      return true;
+    };
+
     scanned += 1;
 
     // Idempotência via cache: já existe no CRM → pula sem gastar API.
@@ -319,7 +348,7 @@ export async function runMatriculadosProvision(opts = {}) {
     });
 
     if (dryRun) {
-      createdContacts += 1;
+      if (!claimSlot()) return;
       createdDeals += classifications.length;
       if (createdSamples.length < 15) {
         createdSamples.push({
@@ -350,7 +379,7 @@ export async function runMatriculadosProvision(opts = {}) {
       return;
     }
 
-    if (aborted || createdContacts >= maxCreates) return;
+    if (aborted || !claimSlot()) return;
 
     let contact;
     try {
@@ -361,11 +390,12 @@ export async function runMatriculadosProvision(opts = {}) {
         source: 'SIAA',
       });
     } catch (err) {
+      // Desfaz reserva do slot — create falhou.
+      if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
       noteError({ cpf, error: `contact: ${err?.message || err}` });
       console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
       return;
     }
-    createdContacts += 1;
 
     const dealSummaries = [];
     for (const c of classifications) {
@@ -442,6 +472,25 @@ let activePromise = null;
 
 export function isMatriculadosProvisionRunning() {
   return activePromise != null;
+}
+
+/**
+ * Roda provision sob mutex (sync ou background). Evita dois writers em paralelo.
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number }} opts
+ * @returns {Promise<object>}
+ */
+export async function runMatriculadosProvisionLocked(opts = {}) {
+  if (activePromise) {
+    const err = new Error('Provision já em andamento');
+    err.status = 409;
+    throw err;
+  }
+  activePromise = runMatriculadosProvision(opts);
+  try {
+    return await activePromise;
+  } finally {
+    activePromise = null;
+  }
 }
 
 export function startMatriculadosProvisionBackground(opts = {}) {

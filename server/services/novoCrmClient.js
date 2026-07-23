@@ -12,9 +12,27 @@ import * as tagLogRepo from '../repositories/activationNovoCrmTagRepository.js';
 import { createRateLimiter } from '../utils/rateLimiter.js';
 
 function apiBase() {
-  return String(process.env.NOVO_CRM_API_BASE_URL || 'https://crm.eduit.com.br')
+  const raw = String(process.env.NOVO_CRM_API_BASE_URL || '')
     .trim()
     .replace(/\/$/, '');
+  // Sem default pra produção: URL vazia quebra o client em vez de apontar pra crm.eduit.com.br.
+  if (!raw) {
+    const err = new Error('NOVO_CRM_API_BASE_URL não configurado.');
+    err.status = 503;
+    throw err;
+  }
+  return raw;
+}
+
+/** Host canônico da URL configurada (mesmo critério do host guard). */
+export function getNovoCrmApiHost() {
+  try {
+    return new URL(apiBase()).host.toLowerCase();
+  } catch {
+    return String(process.env.NOVO_CRM_API_BASE_URL || '')
+      .trim()
+      .toLowerCase();
+  }
 }
 
 function apiToken() {
@@ -30,7 +48,11 @@ const apiLimiter = createRateLimiter(apiRatePerSecond(), 1000);
 
 export function isNovoCrmApiConfigured() {
   const enabled = String(process.env.NOVO_CRM_ENABLED || '').trim() === '1';
-  return enabled && Boolean(apiToken());
+  return (
+    enabled &&
+    Boolean(apiToken()) &&
+    Boolean(String(process.env.NOVO_CRM_API_BASE_URL || '').trim())
+  );
 }
 
 function digitsOnly(v) {
@@ -65,8 +87,16 @@ async function request(path, opts = {}) {
     err.status = 503;
     throw err;
   }
-  const method = opts.method || 'GET';
-  const maxRetries = Math.max(0, Number(opts.maxRetries) || 4);
+  const method = String(opts.method || 'GET').toUpperCase();
+  // POST (create) não é idempotente → sem retry por default.
+  // PUT/PATCH/DELETE: poucos retries (429/5xx). GET: retries generosos.
+  let defaultRetries = 4;
+  if (method === 'POST') defaultRetries = 0;
+  else if (method === 'PUT' || method === 'PATCH' || method === 'DELETE') defaultRetries = 2;
+  const maxRetries = Math.max(
+    0,
+    opts.maxRetries != null ? Number(opts.maxRetries) : defaultRetries
+  );
   // Status transitórios do CRM (instância DEV costuma dar 502 sob carga).
   const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
   let attempt = 0;
