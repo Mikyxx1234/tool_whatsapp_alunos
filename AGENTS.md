@@ -5,6 +5,19 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-23 — Novo CRM PROD: sync noturna calm (cache + provision + fields; FLAGS off)
+- **Modelo usado:** Composer/Auto.
+- **Pedido:** sync noturna PROD de contacts/deals + correção de campos SIAA a partir de matriculados; etapas manuais de dia.
+- **Decisão:**
+  - Ligar **CACHE** (espelho) + **PROVISION** (cria ausentes) + **FIELDS_SYNC** (corrige curso/polo/situação…).
+  - **FLAGS_SYNC permanece OFF** (`NOVO_CRM_FLAGS_SYNC_ENABLED=0`) — etapas não mudam automaticamente.
+  - Gate PROD já existente: `NOVO_CRM_PROVISION_ALLOW_PROD=1` + `NOVO_CRM_API_BASE_URL` explícita libera writers de provision **e** fields/flags (alias `isNovoCrmWriteAllowedOnThisHost`).
+  - Ritmo calm: `NOVO_CRM_API_RATE_PER_SECOND=2`, provision concurrency default **2**, cache deal concurrency **1**.
+  - Cron stagger UTC (madrugada BRT = UTC−3): cache full **05** (02 BRT) → provision **07** (04 BRT) → fields **08** (05 BRT); flags default **09** mas desligado.
+- **Não alterado:** `.env` local (pode apontar PROD para scripts); secrets reais só no Easypanel.
+- **Arquivos:** defaults em `novoCrmPersonCacheSyncService`, `novoCrmMatriculadosProvisionService`, `novoCrmFlagsStageSyncService`; receita em `.env.example`.
+- **Alternativas descartadas:** ligar FLAGS de noite (usuário pediu etapas manuais); rate alto 4–8 rps (CRM já sofreu ~10 rps).
+
 ### 2026-07-16 — Novo CRM: cache local Postgres→Postgres para ativação por tag
 - **Modelo usado:** GPT-5.5.
 - **Problema:** ativação por tag no Novo CRM fazia lookup `GET /api/contacts?search=...` pessoa a pessoa; lotes grandes ficavam lentos e dependentes da API HTTP.

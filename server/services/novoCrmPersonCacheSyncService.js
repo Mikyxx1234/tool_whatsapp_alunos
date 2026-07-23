@@ -39,7 +39,8 @@ function incrementalMinutes() {
 }
 
 function fullHourUtc() {
-  return Math.max(0, Math.min(23, Math.floor(Number(process.env.NOVO_CRM_CACHE_FULL_HOUR_UTC) || 3)));
+  // Default 05:00 UTC = 02:00 BRT (madrugada; antes de provision/fields).
+  return Math.max(0, Math.min(23, Math.floor(Number(process.env.NOVO_CRM_CACHE_FULL_HOUR_UTC) || 5)));
 }
 
 function sleep(ms) {

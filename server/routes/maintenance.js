@@ -429,7 +429,8 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
   try {
     if (!isProvisionAllowedOnThisHost()) {
       return res.status(403).json({
-        error: 'Sync flags/etapa só no CRM DEV (crm-dev…). Ou NOVO_CRM_PROVISION_ALLOW_PROD=1.',
+        error:
+          'Sync fields/flags bloqueado neste host. Use CRM DEV ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita.',
       });
     }
     const forceWrite =

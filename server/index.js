@@ -242,7 +242,8 @@ app.listen(PORT, '0.0.0.0', () => {
       console.error('[server] falha ao iniciar cron cache Novo CRM:', err.message);
     }
 
-    // Cria no CRM DEV até N matriculados ausentes (etapa+flags). Só com PROVISION_ENABLED=1.
+    // Cria no CRM matriculados ausentes (etapa+flags na criação). Só com PROVISION_ENABLED=1.
+    // PROD: exige NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita.
     try {
       startMatriculadosProvisionCron();
     } catch (err) {
@@ -250,13 +251,15 @@ app.listen(PORT, '0.0.0.0', () => {
     }
 
     // Atualiza campos SIAA dos deals existentes (curso/polo/situação…). Só com FIELDS_SYNC_ENABLED=1.
+    // Mesmo gate de host que provision (ALLOW_PROD libera PROD).
     try {
       startExistingFieldsSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron fields sync Novo CRM:', err.message);
     }
 
-    // Flags + etapas (intocáveis). Só com FLAGS_SYNC_ENABLED=1 e host DEV.
+    // Flags + etapas (intocáveis). Só com FLAGS_SYNC_ENABLED=1.
+    // Em PROD manter OFF — etapas ficam manuais.
     try {
       startFlagsStageSyncCron();
     } catch (err) {

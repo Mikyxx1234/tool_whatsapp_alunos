@@ -27,7 +27,7 @@ import {
   updateDeal,
   updateDealCustomFields,
 } from './novoCrmClient.js';
-import { isProvisionAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
+import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
 
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -121,8 +121,10 @@ export async function runFlagsStageSync(opts = {}) {
     err.status = 503;
     throw err;
   }
-  if (!isProvisionAllowedOnThisHost()) {
-    const err = new Error('Sync de flags/etapa só no CRM DEV (ou ALLOW_PROD=1)');
+  if (!isNovoCrmWriteAllowedOnThisHost()) {
+    const err = new Error(
+      'Sync fields/flags bloqueado neste host. Use CRM DEV ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + NOVO_CRM_API_BASE_URL explícita.'
+    );
     err.status = 403;
     throw err;
   }
@@ -179,6 +181,8 @@ export async function runFlagsStageSync(opts = {}) {
   let skippedNoMatch = 0;
   let skippedNoDeal = 0;
   let errors = 0;
+  /** @type {Record<string, number>} */
+  const stagesByTarget = {};
   /** @type {Array<object>} */
   const samples = [];
   /** @type {Array<object>} */
@@ -244,6 +248,8 @@ export async function runFlagsStageSync(opts = {}) {
         inBb: inSet(bb, cpf, rgm),
         inEvasao: inSet(evasao, cpf, rgm),
       });
+      stagesByTarget[classification.stageName] =
+        (stagesByTarget[classification.stageName] || 0) + 1;
 
       // Cache stageId — se ausente, fail-closed (não move).
       let currentStageId = String(deal.stageId || '').trim() || null;
@@ -251,28 +257,43 @@ export async function runFlagsStageSync(opts = {}) {
       /** @type {Array<{fieldId:string,value:string}>} */
       const values = [];
       if (doFlags) {
-        values.push(
-          { fieldId: fieldIds.doc_pendentes, value: simNao(classification.flags.doc_pendentes) },
-          { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
-          { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
-          { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) }
-        );
+        const flagPairs = [
+          [fieldIds.doc_pendentes, simNao(classification.flags.doc_pendentes)],
+          [fieldIds.inadimplente, simNao(classification.flags.inadimplente)],
+          [fieldIds.acessoblack, simNao(classification.flags.acessoblack)],
+          [fieldIds.evasao, simNao(classification.flags.evasao)],
+        ];
+        for (const [fieldId, value] of flagPairs) {
+          if (fieldId) values.push({ fieldId, value });
+        }
       }
       if (doFields) {
-        if (digits(mapped.cpf)) values.push({ fieldId: fieldIds.cpf, value: digits(mapped.cpf) });
-        if (digits(mapped.rgm)) values.push({ fieldId: fieldIds.rgm, value: digits(mapped.rgm) });
-        if (mapped.curso) values.push({ fieldId: fieldIds.curso, value: mapped.curso });
-        if (mapped.polo) {
+        if (digits(mapped.cpf) && fieldIds.cpf) {
+          values.push({ fieldId: fieldIds.cpf, value: digits(mapped.cpf) });
+        }
+        if (digits(mapped.rgm) && fieldIds.rgm) {
+          values.push({ fieldId: fieldIds.rgm, value: digits(mapped.rgm) });
+        }
+        if (mapped.curso && fieldIds.curso) {
+          values.push({ fieldId: fieldIds.curso, value: mapped.curso });
+        }
+        if (mapped.polo && fieldIds.polo) {
           values.push({
             fieldId: fieldIds.polo,
             value: titleCasePolo(mapped.polo) || mapped.polo,
           });
         }
         const situacao = mapped.situacao || String(matRow['Situação Matrícula'] || '');
-        if (situacao) values.push({ fieldId: fieldIds.situacao, value: situacao });
-        if (mapped._email) values.push({ fieldId: fieldIds.email, value: mapped._email });
-        if (mapped.e_mail_ad) values.push({ fieldId: fieldIds.email_ad, value: mapped.e_mail_ad });
-        if (matRow['Data Nascimento']) {
+        if (situacao && fieldIds.situacao) {
+          values.push({ fieldId: fieldIds.situacao, value: situacao });
+        }
+        if (mapped._email && fieldIds.email) {
+          values.push({ fieldId: fieldIds.email, value: mapped._email });
+        }
+        if (mapped.e_mail_ad && fieldIds.email_ad) {
+          values.push({ fieldId: fieldIds.email_ad, value: mapped.e_mail_ad });
+        }
+        if (matRow['Data Nascimento'] && fieldIds.nasc) {
           values.push({
             fieldId: fieldIds.nasc,
             value: String(matRow['Data Nascimento']).slice(0, 10),
@@ -381,6 +402,7 @@ export async function runFlagsStageSync(opts = {}) {
     stages_skipped_unknown: stagesSkippedUnknown,
     skipped_no_match: skippedNoMatch,
     skipped_no_deal: skippedNoDeal,
+    stages_by_target: stagesByTarget,
     errors,
     aborted,
     abort_reason: abortReason,
@@ -500,10 +522,10 @@ export function startFlagsStageSyncBackground(opts = {}) {
 }
 
 function fieldsHourUtc() {
-  // Default: 1h depois do provision (05:00 UTC = 02:00 BRT).
+  // Default 08:00 UTC = 05:00 BRT (após provision ~04:00 BRT).
   return Math.max(
     0,
-    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FIELDS_SYNC_HOUR_UTC) || 5))
+    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FIELDS_SYNC_HOUR_UTC) || 8))
   );
 }
 
@@ -525,8 +547,10 @@ export function startExistingFieldsSyncCron() {
     console.log('[novo-crm-fields-sync] cron off — API não configurada');
     return;
   }
-  if (!isProvisionAllowedOnThisHost()) {
-    console.log('[novo-crm-fields-sync] cron off — host não é DEV');
+  if (!isNovoCrmWriteAllowedOnThisHost()) {
+    console.log(
+      '[novo-crm-fields-sync] cron off — escrita bloqueada neste host (DEV allowlist ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL)'
+    );
     return;
   }
 
@@ -547,9 +571,10 @@ export function startExistingFieldsSyncCron() {
 }
 
 function flagsHourUtc() {
+  // Default 09:00 UTC = 06:00 BRT (após fields). Manter FLAGS_SYNC_ENABLED=0 em PROD.
   return Math.max(
     0,
-    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FLAGS_SYNC_HOUR_UTC) || 6))
+    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FLAGS_SYNC_HOUR_UTC) || 9))
   );
 }
 
@@ -563,8 +588,10 @@ export function startFlagsStageSyncCron() {
     console.log('[novo-crm-flags-sync] cron off — API não configurada');
     return;
   }
-  if (!isProvisionAllowedOnThisHost()) {
-    console.log('[novo-crm-flags-sync] cron off — host não é DEV');
+  if (!isNovoCrmWriteAllowedOnThisHost()) {
+    console.log(
+      '[novo-crm-flags-sync] cron off — escrita bloqueada neste host (DEV allowlist ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL)'
+    );
     return;
   }
 

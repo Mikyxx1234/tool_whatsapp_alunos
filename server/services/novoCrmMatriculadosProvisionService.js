@@ -1,12 +1,13 @@
 /**
  * Provisionamento matriculados → Novo CRM (criar ausentes + classificar).
- * Conservador: max por run, delay alto, só DEV por default.
+ * Conservador: max por run, concurrency baixa, só DEV por default.
+ * PROD: NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita (também libera fields/flags writers).
  *
  * Env:
  *   NOVO_CRM_PROVISION_ENABLED=1
  *   NOVO_CRM_PROVISION_MAX_PER_RUN=1000
- *   NOVO_CRM_PROVISION_DELAY_MS=3000
- *   NOVO_CRM_PROVISION_HOUR_UTC=4
+ *   NOVO_CRM_PROVISION_CONCURRENCY=2
+ *   NOVO_CRM_PROVISION_HOUR_UTC=7   (04:00 BRT; após cache full ~02:00 BRT)
  *   NOVO_CRM_PROVISION_ALLOW_PROD=0
  */
 
@@ -61,6 +62,11 @@ function apiBaseHost() {
   }
 }
 
+/**
+ * Gate de escrita CRM (provision + fields sync + flags/etapa).
+ * DEV hosts na allowlist; PROD só com NOVO_CRM_PROVISION_ALLOW_PROD=1 e
+ * NOVO_CRM_API_BASE_URL explícita (ex. https://crm.eduit.com.br).
+ */
 export function isProvisionAllowedOnThisHost() {
   if (String(process.env.NOVO_CRM_PROVISION_ALLOW_PROD || '').trim() === '1') {
     // ALLOW_PROD exige URL explícita — evita cair no default antigo de produção.
@@ -83,15 +89,20 @@ export function isProvisionAllowedOnThisHost() {
   return false;
 }
 
+/** Alias semântico: mesma regra do provision (fields/flags também usam). */
+export function isNovoCrmWriteAllowedOnThisHost() {
+  return isProvisionAllowedOnThisHost();
+}
+
 function maxPerRun() {
   // Cap via env (default 1000). Teto de segurança 20000 p/ backfill fracionado.
   return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_MAX_PER_RUN) || 1000, 1), 20000);
 }
 
 function provisionConcurrency() {
-  // Workers simultâneos no pool. O throughput real ainda é limitado pelo
-  // rate limiter global do client (NOVO_CRM_API_RATE_PER_SECOND).
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_CONCURRENCY) || 4, 1), 20);
+  // Workers simultâneos no pool. Default 2 (calm PROD overnight).
+  // Throughput real ainda limitado por NOVO_CRM_API_RATE_PER_SECOND.
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_CONCURRENCY) || 2, 1), 20);
 }
 
 function maxErrorsBeforeAbort() {
@@ -99,7 +110,8 @@ function maxErrorsBeforeAbort() {
 }
 
 function provisionHourUtc() {
-  return Math.max(0, Math.min(23, Math.floor(Number(process.env.NOVO_CRM_PROVISION_HOUR_UTC) || 4)));
+  // Default 07:00 UTC = 04:00 BRT (após cache full ~02:00 BRT / ~1h).
+  return Math.max(0, Math.min(23, Math.floor(Number(process.env.NOVO_CRM_PROVISION_HOUR_UTC) || 7)));
 }
 
 /**
@@ -525,7 +537,7 @@ export function startMatriculadosProvisionCron() {
   }
   if (!isProvisionAllowedOnThisHost()) {
     console.log(
-      `[novo-crm-provision] cron off — host não é DEV (${apiBaseHost()}). Defina DEV URL ou ALLOW_PROD=1.`
+      `[novo-crm-provision] cron off — escrita bloqueada neste host (${apiBaseHost()}). Use CRM DEV ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita.`
     );
     return;
   }

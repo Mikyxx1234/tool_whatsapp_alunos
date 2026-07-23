@@ -5,6 +5,8 @@
 
 function envId(key, fallback) {
   const v = String(process.env[key] || '').trim();
+  // "-" / "skip" / "0" = desliga o ID (não usar fallback DEV em PROD).
+  if (v === '-' || v === 'skip' || v === '0') return '';
   return v || fallback;
 }
 
@@ -80,6 +82,66 @@ function pick(row, keys) {
 }
 
 /**
+ * 1ª mensalidade por ciclo (YYYY-MM-DD). Em Acolhimento enquanto nowUtc <= cutoff (inclusive).
+ * Ciclos sem entrada caem no fallback: dia 25 do mês da Data Matrícula.
+ */
+export const ACOLHIMENTO_PRIMEIRA_MENSALIDADE_POR_CICLO = {
+  '2026/2': '2026-08-25',
+};
+
+/** Normaliza `2026.2` / `2026/2` / `2026-2` → `2026/2`. */
+export function normalizeCicloSlash(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const m = s.match(/(\d{4})\s*[./\-]\s*(\d)/);
+  if (!m) return s.replace(/\./g, '/');
+  return `${m[1]}/${m[2]}`;
+}
+
+function parseIsoDateUtc(iso) {
+  const s = String(iso || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, mo, d] = s.split('-').map(Number);
+  return Date.UTC(y, mo - 1, d);
+}
+
+/**
+ * Janela de Acolhimento: cutoff por ciclo (1ª mensalidade) ou fallback dia 25 do mês da matrícula.
+ * @returns {{ inAcolhimento: boolean, acolhimentoAte: string|null, cicloNorm: string }}
+ */
+export function resolveAcolhimentoWindow(matRow, now = new Date()) {
+  const cicloNorm = normalizeCicloSlash(pick(matRow, ['Ciclo', 'ciclo', 'CICLO']));
+  const cutoffIso = ACOLHIMENTO_PRIMEIRA_MENSALIDADE_POR_CICLO[cicloNorm] || null;
+  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+
+  if (cutoffIso) {
+    const limit = parseIsoDateUtc(cutoffIso);
+    return {
+      inAcolhimento: limit != null && nowUtc <= limit,
+      acolhimentoAte: cutoffIso,
+      cicloNorm,
+    };
+  }
+
+  const dmRaw = pick(matRow, ['Data Matrícula', 'Data Matricula']);
+  let dm = excelSerialToDate(dmRaw);
+  if (!dm && /^\d{4}-\d{2}-\d{2}/.test(dmRaw)) dm = new Date(`${dmRaw.slice(0, 10)}T00:00:00Z`);
+  if (!dm && /^\d{2}\/\d{2}\/\d{4}$/.test(dmRaw)) {
+    const [dd, mm, yyyy] = dmRaw.split('/').map(Number);
+    dm = new Date(Date.UTC(yyyy, mm - 1, dd));
+  }
+  if (!dm) {
+    return { inAcolhimento: false, acolhimentoAte: null, cicloNorm };
+  }
+  const limit = Date.UTC(dm.getUTCFullYear(), dm.getUTCMonth(), 25);
+  return {
+    inAcolhimento: nowUtc <= limit,
+    acolhimentoAte: new Date(limit).toISOString().slice(0, 10),
+    cicloNorm,
+  };
+}
+
+/**
  * @param {Record<string, unknown>} matRow
  * @param {{
  *   inRematricula: boolean,
@@ -96,6 +158,7 @@ export function classifyMatriculado(matRow, ctx) {
     .toUpperCase()
     .normalize('NFD')
     .replace(/\p{M}/gu, '');
+  // Só CANCELADO (situação SIAA) → Perdido. Não usa etapa CRM "Cancelado".
   const isCancelado = situacao
     .normalize('NFD')
     .replace(/\p{M}/gu, '')
@@ -106,24 +169,14 @@ export function classifyMatriculado(matRow, ctx) {
     /(^|[^A-Z])POS([^A-Z]|$)/.test(negocio);
   const isGrad = negocio.includes('GRAD') && !isPos;
 
-  const dmRaw = pick(matRow, ['Data Matrícula', 'Data Matricula']);
-  let dm = excelSerialToDate(dmRaw);
-  if (!dm && /^\d{4}-\d{2}-\d{2}/.test(dmRaw)) dm = new Date(`${dmRaw.slice(0, 10)}T00:00:00Z`);
   const now = ctx.now || new Date();
-  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  let inAcolhimento = false;
-  let acolhimentoAte = null;
-  if (dm) {
-    const limit = Date.UTC(dm.getUTCFullYear(), dm.getUTCMonth(), 25);
-    acolhimentoAte = new Date(limit).toISOString().slice(0, 10);
-    inAcolhimento = nowUtc <= limit;
-  }
+  const { inAcolhimento, acolhimentoAte, cicloNorm } = resolveAcolhimentoWindow(matRow, now);
 
   const stages = getNovoCrmStageIds();
   /** @type {string} */
   let stageName;
-  // RGM cancelado → Perdido (gera estatística). A etapa "Cancelado" é reservada
-  // ao time de retenção (manual, até o cancelamento ser deferido) e NÃO é usada aqui.
+  // Prioridade: CANCELADO → Perdido; rematrícula → Sem Rematricula; acolhimento por ciclo/cutoff; senão Pós/Graduação.
+  // Etapa CRM "Cancelado" é reservada ao time de retenção (manual) e NÃO é atribuída aqui.
   if (isCancelado) stageName = 'Perdido';
   else if (ctx.inRematricula) stageName = 'Sem Rematricula';
   else if (inAcolhimento) stageName = 'Acolhimento';
@@ -146,6 +199,7 @@ export function classifyMatriculado(matRow, ctx) {
     meta: {
       situacao,
       negocio,
+      ciclo: cicloNorm,
       isCancelado,
       isPos,
       isGrad,
