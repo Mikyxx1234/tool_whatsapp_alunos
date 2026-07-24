@@ -1,0 +1,43 @@
+{
+  "base": "https://crm.eduit.com.br",
+  "organizationId": "cmrmbn2lh0uz2nm016beqgbwb",
+  "organizationName": "Cruzeiro EaD",
+  "pipeline": {
+    "id": "cmrwd5vun0149pd01qlqltsum",
+    "name": "ACADÊMICO"
+  },
+  "stages": {
+    "NOVO_CRM_STAGE_LEAD_ENTRADA": "cmrwd95sx01mfpd01axkzjhm8",
+    "NOVO_CRM_STAGE_ACOLHIMENTO": "cmrwmcq0m0nuzpa01htp153zg",
+    "NOVO_CRM_STAGE_GRADUACAO": "cmrwd5vun014dpd019oyelgwv",
+    "NOVO_CRM_STAGE_POS": "cmrwda2kq01thpd01qplitkqa",
+    "NOVO_CRM_STAGE_SEM_REMATRICULA": "cmrwdazhi01x9pd01l6bva845",
+    "NOVO_CRM_STAGE_RETENCAO": "cmrximn3z0ak9o1010qmv5lbs",
+    "NOVO_CRM_STAGE_CANCELADO": "cmrwmeoi10nzvpa01hhjv0azt",
+    "NOVO_CRM_STAGE_GANHO": "cmrwd5vuo014gpd01x3vwc5fv",
+    "NOVO_CRM_STAGE_PERDIDO": "cmrwd5vuo014hpd01imhgkp0y"
+  },
+  "fields": {
+    "NOVO_CRM_FIELD_ACESSO_BLACK": "cmrwthwwi00ndpf013k1vi40y",
+    "NOVO_CRM_FIELD_CPF": "cmrnpd33ekm5snm01jecpmevp",
+    "NOVO_CRM_FIELD_CURSO": "cmrmextum18srnm0168l8c9al",
+    "NOVO_CRM_FIELD_DOC_PENDENTES": "cmrwtcinz00fzpf015c4o0o1c",
+    "NOVO_CRM_FIELD_EMAIL_AD": "cmrmexu5t18sznm016s1hc9xv",
+    "NOVO_CRM_FIELD_EVASAO": "cmrwtf77t00idpf018tpxpean",
+    "NOVO_CRM_FIELD_NIVEL": "cmrmexul518t9nm01j7qd6gqx",
+    "NOVO_CRM_FIELD_POLO": "cmrmexun518tbnm0187ow3aso",
+    "NOVO_CRM_FIELD_RGM": "cmrmexurt18tfnm01e6krzug6",
+    "NOVO_CRM_FIELD_SITUACAO": "cmrmexuw818tjnm01igvkevn1"
+  },
+  "stagesByName": {
+    "Lead de Entrada": "cmrwd95sx01mfpd01axkzjhm8",
+    "Acolhimento": "cmrwmcq0m0nuzpa01htp153zg",
+    "Graduação": "cmrwd5vun014dpd019oyelgwv",
+    "Pós-Graduação": "cmrwda2kq01thpd01qplitkqa",
+    "Sem Rematrícula": "cmrwdazhi01x9pd01l6bva845",
+    "Retenção": "cmrximn3z0ak9o1010qmv5lbs",
+    "Cancelado": "cmrwmeoi10nzvpa01hhjv0azt",
+    "Ganho": "cmrwd5vuo014gpd01x3vwc5fv",
+    "Perdido": "cmrwd5vuo014hpd01imhgkp0y"
+  }
+}

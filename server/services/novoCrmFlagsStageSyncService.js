@@ -287,6 +287,9 @@ export async function runFlagsStageSync(opts = {}) {
         if (situacao && fieldIds.situacao) {
           values.push({ fieldId: fieldIds.situacao, value: situacao });
         }
+        if (mapped.nivel && fieldIds.nivel) {
+          values.push({ fieldId: fieldIds.nivel, value: mapped.nivel });
+        }
         if (mapped._email && fieldIds.email) {
           values.push({ fieldId: fieldIds.email, value: mapped._email });
         }

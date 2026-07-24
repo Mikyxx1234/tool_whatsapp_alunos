@@ -65,15 +65,25 @@ export function normalizePoloCrm(raw) {
     .join(' ');
 }
 
+/**
+ * SIAA Negócio → opções SELECT do CRM ("Graduação" | "Pós-Graduação").
+ * POS antes de GRAD (senão "PÓS-GRADUAÇÃO" virava Graduação).
+ * COLÉGIO / Técnico / Extensão / vazio → '' (não envia opção inválida).
+ */
 export function normalizeNivelCrm(raw) {
   const s = String(raw || '').trim();
   if (!s) return '';
-  const u = s.toUpperCase();
+  const u = s
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  const isPos =
+    u.includes('POS-GRAD') ||
+    u.includes('POS GRAD') ||
+    /(^|[^A-Z])POS([^A-Z]|$)/.test(u);
+  if (isPos) return 'Pós-Graduação';
   if (u.includes('GRAD')) return 'Graduação';
-  if (u.includes('POS') || u.includes('PÓS') || u.includes('PÓS')) return 'Pós-Graduação';
-  if (u.includes('TEC')) return 'Técnico';
-  if (u.includes('EXT')) return 'Extensão';
-  return s;
+  return '';
 }
 
 /**
@@ -96,7 +106,8 @@ export function extractMatriculadosMappedValues(row) {
     ),
     polo: normalizePoloCrm(pick(row, ['Polo', 'NOME_POL'])),
     nivel: normalizeNivelCrm(
-      pick(row, ['Nível', 'Nivel', 'Nível de Ensino', 'Negócio', 'Negocio', 'Empresa', 'Instituição'])
+      // SIAA matriculados usa "Negócio" (GRADUAÇÃO / PÓS-GRADUAÇÃO); Nível é fallback.
+      pick(row, ['Negócio', 'Negocio', 'Nível', 'Nivel', 'Nível de Ensino', 'Empresa', 'Instituição'])
     ),
     ciclo: normalizeCicloCrm(pick(row, ['Ciclo'])),
     primeiro_nome: primeiro,

@@ -276,6 +276,9 @@ export async function runMatriculadosProvision(opts = {}) {
             value: mapped.situacao || String(row['Situação Matrícula']),
           }
         : null,
+      mapped.nivel && fieldIds.nivel
+        ? { fieldId: fieldIds.nivel, value: mapped.nivel }
+        : null,
       mapped._email ? { fieldId: fieldIds.email, value: mapped._email } : null,
       mapped.e_mail_ad ? { fieldId: fieldIds.email_ad, value: mapped.e_mail_ad } : null,
       row['Data Nascimento']

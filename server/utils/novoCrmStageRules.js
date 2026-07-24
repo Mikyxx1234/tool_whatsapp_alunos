@@ -53,6 +53,7 @@ export function getNovoCrmDealFieldIds() {
     curso: envId('NOVO_CRM_FIELD_CURSO', 'cmr9dw2bx02sdp701lxbkt4nd'),
     polo: envId('NOVO_CRM_FIELD_POLO', 'cmr9f0ang02whp7016bmxlzji'),
     situacao: envId('NOVO_CRM_FIELD_SITUACAO', 'cmr9f1ewb02wpp701gb7y5rf8'),
+    nivel: envId('NOVO_CRM_FIELD_NIVEL', ''),
     email: envId('NOVO_CRM_FIELD_EMAIL', 'cmr9f27vg02wtp701sry87ds4'),
     email_ad: envId('NOVO_CRM_FIELD_EMAIL_AD', 'cmr9f2iq302wxp701573yz5w7'),
     nasc: envId('NOVO_CRM_FIELD_NASC', 'cmq579tb1003bvemcck96lhwx'),
