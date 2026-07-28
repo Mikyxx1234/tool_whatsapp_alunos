@@ -29,6 +29,9 @@ function pick(row, keys) {
   return '';
 }
 
+/** Opção canônica do carousel Situação no deal (alinha com etapa Sem Rematrícula). */
+export const SITUACAO_CRM_SEM_REMATRICULA = 'Sem Rematrícula';
+
 export function normalizeSituacaoCrm(raw) {
   const s = String(raw || '')
     .trim()
@@ -36,11 +39,24 @@ export function normalizeSituacaoCrm(raw) {
     .normalize('NFD')
     .replace(/\p{M}/gu, '');
   if (!s) return '';
+  if (s.includes('REMAT')) return SITUACAO_CRM_SEM_REMATRICULA;
   if (s.includes('CURSO')) return 'Em Curso';
   if (s.includes('CANCEL')) return 'Cancelado';
   if (s.includes('TRANC')) return 'Trancado';
   if (s.includes('TRANSFER')) return 'Transferido';
   return String(raw).trim();
+}
+
+/**
+ * Valor do carousel Situação no deal Novo CRM.
+ * Se o aluno está no snapshot rematrícula (SIAA/Portal) → "Sem Rematrícula";
+ * senão mantém a situação SIAA normalizada (ex.: "Em Curso").
+ * @param {unknown} siaaValue
+ * @param {{ inRematricula?: boolean }} [opts]
+ */
+export function resolveSituacaoCrm(siaaValue, opts = {}) {
+  if (opts.inRematricula) return SITUACAO_CRM_SEM_REMATRICULA;
+  return normalizeSituacaoCrm(siaaValue) || String(siaaValue || '').trim();
 }
 
 export function normalizeCicloCrm(raw) {

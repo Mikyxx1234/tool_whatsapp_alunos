@@ -1,13 +1,72 @@
 /**
  * Regras de etapa/flags Novo CRM (DEV) — matriculados + bases satélite.
  * IDs default = CRM DEV; sobrescreva via env NOVO_CRM_STAGE_* / NOVO_CRM_FIELD_*.
+ *
+ * Guard PROD (28/07/2026, bugfix): quando NOVO_CRM_API_BASE_URL aponta pra
+ * crm.eduit.com.br (host PROD) e não há env var explícita, os IDs são lidos
+ * de data/novo-crm-prod-ids.json em vez do fallback DEV hard-coded. Sem isso,
+ * qualquer chamador que esqueça de setar NOVO_CRM_STAGE_* / NOVO_CRM_FIELD_* (ex.:
+ * scripts/novo-crm-apply-fast.mjs) manda stageId/fieldId de DEV pra PROD e a
+ * API rejeita createDeal com "Referência inválida (estágio, contato ou
+ * responsável)". Em PROD, se o ID também não existir no JSON, retorna '' —
+ * NUNCA cai no fallback DEV (o ID não existe naquele CRM).
  */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PROD_IDS_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'data',
+  'novo-crm-prod-ids.json'
+);
+
+let prodIdsFileCache; // undefined = ainda não tentou carregar; null = ausente/erro
+
+function loadProdIdsFile() {
+  if (prodIdsFileCache !== undefined) return prodIdsFileCache;
+  try {
+    prodIdsFileCache = JSON.parse(fs.readFileSync(PROD_IDS_PATH, 'utf8'));
+  } catch {
+    prodIdsFileCache = null;
+  }
+  return prodIdsFileCache;
+}
+
+function apiBaseHost() {
+  try {
+    return new URL(String(process.env.NOVO_CRM_API_BASE_URL || '').trim()).host.toLowerCase();
+  } catch {
+    return String(process.env.NOVO_CRM_API_BASE_URL || '').trim().toLowerCase();
+  }
+}
+
+function isProdCrmHost() {
+  const h = apiBaseHost();
+  return h === 'crm.eduit.com.br' || h.endsWith('.crm.eduit.com.br');
+}
+
+function prodIdsMap() {
+  const raw = loadProdIdsFile();
+  if (!raw) return null;
+  return { ...(raw.stages || {}), ...(raw.fields || {}) };
+}
 
 function envId(key, fallback) {
   const v = String(process.env[key] || '').trim();
   // "-" / "skip" / "0" = desliga o ID (não usar fallback DEV em PROD).
   if (v === '-' || v === 'skip' || v === '0') return '';
-  return v || fallback;
+  if (v) return v;
+  if (isProdCrmHost()) {
+    const prodVal = prodIdsMap()?.[key];
+    if (prodVal) return String(prodVal);
+    // PROD sem ID mapeado (env nem JSON): nunca usar o hard-coded de DEV.
+    return '';
+  }
+  return fallback;
 }
 
 export function getNovoCrmStageIds() {
@@ -145,11 +204,12 @@ export function resolveAcolhimentoWindow(matRow, now = new Date()) {
 /**
  * @param {Record<string, unknown>} matRow
  * @param {{
- *   inRematricula: boolean,
- *   inDoc: boolean,
- *   inInad: boolean,
- *   inBb: boolean,
- *   inEvasao: boolean,
+ *   inRematricula?: boolean,
+ *   inCaa?: boolean,
+ *   inDoc?: boolean,
+ *   inInad?: boolean,
+ *   inBb?: boolean,
+ *   inEvasao?: boolean,
  *   now?: Date,
  * }} ctx
  */
@@ -159,11 +219,12 @@ export function classifyMatriculado(matRow, ctx) {
     .toUpperCase()
     .normalize('NFD')
     .replace(/\p{M}/gu, '');
-  // Só CANCELADO (situação SIAA) → Perdido. Não usa etapa CRM "Cancelado".
-  const isCancelado = situacao
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .includes('CANCEL');
+  // CANCELADO / TRANCADO (SIAA) → Perdido. Não usa etapa CRM "Cancelado"
+  // (reservada ao time de retenção). Situação carousel continua distinta
+  // (Cancelado vs Trancado) via resolveSituacaoCrm.
+  const situacaoNorm = situacao.normalize('NFD').replace(/\p{M}/gu, '');
+  const isCancelado = situacaoNorm.includes('CANCEL');
+  const isTrancado = situacaoNorm.includes('TRANC');
   const isPos =
     negocio.includes('POS-GRAD') ||
     negocio.includes('POS GRAD') ||
@@ -176,17 +237,22 @@ export function classifyMatriculado(matRow, ctx) {
   const stages = getNovoCrmStageIds();
   /** @type {string} */
   let stageName;
-  // Prioridade: CANCELADO → Perdido; rematrícula → Sem Rematricula; acolhimento por ciclo/cutoff; senão Pós/Graduação.
-  // Etapa CRM "Cancelado" é reservada ao time de retenção (manual) e NÃO é atribuída aqui.
-  if (isCancelado) stageName = 'Perdido';
+  // Prioridade:
+  //   1. CANCELADO/TRANCADO (SIAA) → Perdido (já perdido; vence CAA)
+  //   2. CAA cancelamento pendente (open) → Retenção
+  //   3. rematrícula → Sem Rematricula
+  //   4. acolhimento por ciclo/cutoff
+  //   5. Pós / Graduação
+  // Etapa CRM "Cancelado" continua só manual/IA. Retenção passa a ser atribuída
+  // pelo job quando inCaa; quem JÁ está em Retenção/Ganho/Cancelado não sai
+  // (untouchable no sync — ver isUntouchableStageId).
+  if (isCancelado || isTrancado) stageName = 'Perdido';
+  else if (ctx.inCaa) stageName = 'Retenção';
   else if (ctx.inRematricula) stageName = 'Sem Rematricula';
   else if (inAcolhimento) stageName = 'Acolhimento';
   else if (isPos) stageName = 'Pós';
   else if (isGrad) stageName = 'Graduação';
   else stageName = 'Graduação';
-
-  // Retenção e Cancelado: só manual/IA — nunca atribuídas por este job.
-  // Ganho: intocável por este job.
 
   return {
     stageName,
@@ -202,10 +268,13 @@ export function classifyMatriculado(matRow, ctx) {
       negocio,
       ciclo: cicloNorm,
       isCancelado,
+      isTrancado,
       isPos,
       isGrad,
       inAcolhimento,
       acolhimentoAte,
+      inRematricula: Boolean(ctx.inRematricula),
+      inCaa: Boolean(ctx.inCaa),
       cpf: digits(pick(matRow, ['CPF', 'cpf'])),
       rgm: digits(pick(matRow, ['RGM', 'rgm'])),
     },

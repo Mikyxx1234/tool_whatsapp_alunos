@@ -10,6 +10,7 @@ import {
   dealCustomFieldMapFromRaw,
   extractMatriculadosMappedValues,
   fieldNamesForScope,
+  resolveSituacaoCrm,
 } from '../utils/novoCrmFieldMapping.js';
 import {
   normalizeCpf,
@@ -41,6 +42,30 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function digits(v) {
+  return String(v ?? '').replace(/\D/g, '');
+}
+
+function inRematSet(set, cpf, rgm) {
+  if (cpf && set.has(`cpf:${cpf}`)) return true;
+  if (rgm && set.has(`rgm:${rgm}`)) return true;
+  return false;
+}
+
+/** @returns {Promise<Set<string>>} */
+async function loadRematriculaIdSet() {
+  const set = new Set();
+  const snap = await baseUploadRepo.getLatestSnapshot('rematricula');
+  if (!snap?.id) return set;
+  await baseUploadRepo.forEachRowDataForSnapshot('rematricula', snap.id, (row) => {
+    const cpf = digits(row.CPF || row.cpf || row.Cpf);
+    const rgm = digits(row.RGM || row.rgm || row.Rgm);
+    if (cpf.length >= 11) set.add(`cpf:${cpf}`);
+    if (rgm) set.add(`rgm:${rgm}`);
+  });
+  return set;
+}
+
 /**
  * @param {string} scope
  */
@@ -59,11 +84,12 @@ function assertScope(scope) {
  * @param {string} snapshotId
  */
 async function buildMatriculadosIndex(snapshotId) {
-  /** @type {{ byCpf: Map<string, object>, byRgm: Map<string, object>, byPhone: Map<string, object> }} */
+  /** @type {{ byCpf: Map<string, object>, byRgm: Map<string, object>, byPhone: Map<string, object>, byEmail: Map<string, object> }} */
   const index = {
     byCpf: new Map(),
     byRgm: new Map(),
     byPhone: new Map(),
+    byEmail: new Map(),
   };
 
   await baseUploadRepo.forEachRowDataForSnapshot('matriculados', snapshotId, (row) => {
@@ -72,12 +98,16 @@ async function buildMatriculadosIndex(snapshotId) {
     const rgmDisp = displayRgmFromMatriculadosRow(row);
     const rgm = normalizeRgm(rgmDisp || mapped.rgm);
     const phone = normalizePhone(mapped._phone || mapped.telefone_comercial);
+    const email1 = normalizeEmail(mapped._email);
+    const email2 = normalizeEmail(mapped.e_mail_ad);
 
     const payload = { row, mapped, cpf, rgm, phone };
 
     if (cpf && !index.byCpf.has(cpf)) index.byCpf.set(cpf, payload);
     if (rgm && !index.byRgm.has(rgm)) index.byRgm.set(rgm, payload);
     if (phone && !index.byPhone.has(phone)) index.byPhone.set(phone, payload);
+    if (email1 && !index.byEmail.has(email1)) index.byEmail.set(email1, payload);
+    if (email2 && !index.byEmail.has(email2)) index.byEmail.set(email2, payload);
   });
 
   return index;
@@ -85,7 +115,7 @@ async function buildMatriculadosIndex(snapshotId) {
 
 /**
  * @param {object} cacheRow
- * @param {{ byCpf: Map, byRgm: Map, byPhone: Map }} index
+ * @param {{ byCpf: Map, byRgm: Map, byPhone: Map, byEmail: Map }} index
  */
 function matchMatriculado(cacheRow, index) {
   const cpf = normalizeCpf(cacheRow.cpf_norm);
@@ -104,17 +134,31 @@ function matchMatriculado(cacheRow, index) {
   const rgm2 = normalizeRgm(fields.rgm);
   if (rgm2 && index.byRgm.has(rgm2)) return index.byRgm.get(rgm2);
 
+  // fallback por e-mail (contact email ou email do deal no CRM)
+  const email = normalizeEmail(cacheRow.email_norm) || normalizeEmail(cacheRow.raw_data?.contact?.email);
+  if (email && index.byEmail.has(email)) return index.byEmail.get(email);
+
   return null;
 }
 
 /**
  * Calcula fills empty-only para um cache row.
+ * @param {object} cacheRow
+ * @param {{ mapped: object, cpf?: string, rgm?: string, row?: object }} matched
+ * @param {string} scope
+ * @param {Map<string, {id?: string}>} fieldDefs
+ * @param {Set<string>} [rematSet]
  * @returns {{ dealValues: Array<{name:string,fieldId:string|null,value:string}>, contactPatch: object, fillNames: string[] }|null}
  */
-function computeFills(cacheRow, matched, scope, fieldDefs) {
+function computeFills(cacheRow, matched, scope, fieldDefs, rematSet = new Set()) {
   const wanted = fieldNamesForScope(scope);
   const current = dealCustomFieldMapFromRaw(cacheRow.raw_data);
   const mapped = matched.mapped;
+  const inRematricula = inRematSet(
+    rematSet,
+    normalizeCpf(matched.cpf || mapped.cpf),
+    normalizeRgm(matched.rgm || mapped.rgm)
+  );
 
   /** @type {Array<{name:string,fieldId:string|null,value:string}>} */
   const dealValues = [];
@@ -126,7 +170,10 @@ function computeFills(cacheRow, matched, scope, fieldDefs) {
     if (name === 'cpf' && cacheRow.cpf_norm) continue;
     if (name === 'rgm' && cacheRow.rgm_norm) continue;
 
-    let next = mapped[name];
+    let next =
+      name === 'situacao'
+        ? resolveSituacaoCrm(mapped.situacao, { inRematricula })
+        : mapped[name];
     if (next == null || String(next).trim() === '') continue;
     next = String(next).trim();
 
@@ -198,6 +245,7 @@ async function runEnrichment(opts) {
 
   patchJob({ phase: 'index_matriculados', status_message: 'Indexando matriculados…' });
   const index = await buildMatriculadosIndex(snap.id);
+  const rematSet = await loadRematriculaIdSet();
 
   patchJob({ phase: 'load_cache', status_message: 'Carregando cache…' });
   const candidates = await cacheRepo.listActiveCacheRowsForEnrichment({ scope });
@@ -238,7 +286,7 @@ async function runEnrichment(opts) {
     }
     matched += 1;
 
-    const fills = computeFills(row, hit, scope, fieldDefs);
+    const fills = computeFills(row, hit, scope, fieldDefs, rematSet);
     if (!fills) {
       skipped_no_fill += 1;
       patchJob({ processed: i + 1 });
@@ -306,6 +354,7 @@ async function runEnrichment(opts) {
       by_cpf: index.byCpf.size,
       by_rgm: index.byRgm.size,
       by_phone: index.byPhone.size,
+      by_email: index.byEmail.size,
     },
     candidates: candidates.length,
     matched,

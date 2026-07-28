@@ -7,13 +7,17 @@
  *   both        — fields + flags_stage
  *
  * Intocáveis (não move etapa): Ganho, Retenção, Cancelado.
- * Fonte: espelho local (novo_crm_person_cache) + snapshots das bases.
+ * Fonte: espelho local (novo_crm_person_cache) + snapshots das bases + CAA open.
  */
 
 import { randomUUID } from 'node:crypto';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
+import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
-import { extractMatriculadosMappedValues } from '../utils/novoCrmFieldMapping.js';
+import {
+  extractMatriculadosMappedValues,
+  resolveSituacaoCrm,
+} from '../utils/novoCrmFieldMapping.js';
 import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
@@ -144,8 +148,9 @@ export async function runFlagsStageSync(opts = {}) {
 
   patchJob({ phase: 'loading_bases', status_message: 'Carregando bases…' });
 
-  const [remat, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caa, doc, inad, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
+    caaProtocolsRepo.loadOpenCaaIdSet(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('acessos-blackboard'),
@@ -243,6 +248,7 @@ export async function runFlagsStageSync(opts = {}) {
       const rgm = digits(mapped.rgm) || rgmDeal;
       const classification = classifyMatriculado(matRow, {
         inRematricula: inSet(remat, cpf, rgm),
+        inCaa: inSet(caa, cpf, rgm),
         inDoc: inSet(doc, cpf, rgm),
         inInad: inSet(inad, cpf, rgm),
         inBb: inSet(bb, cpf, rgm),
@@ -283,7 +289,10 @@ export async function runFlagsStageSync(opts = {}) {
             value: titleCasePolo(mapped.polo) || mapped.polo,
           });
         }
-        const situacao = mapped.situacao || String(matRow['Situação Matrícula'] || '');
+        const situacao = resolveSituacaoCrm(
+          mapped.situacao || matRow['Situação Matrícula'],
+          { inRematricula: inSet(remat, cpf, rgm) }
+        );
         if (situacao && fieldIds.situacao) {
           values.push({ fieldId: fieldIds.situacao, value: situacao });
         }

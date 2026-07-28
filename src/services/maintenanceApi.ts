@@ -236,6 +236,65 @@ export interface NovoCrmFlagsStageJobStatusResponse {
   } | null;
 }
 
+export type NovoCrmProvisionMode = 'new' | 'all';
+
+export interface NovoCrmProvisionPreviewResponse {
+  ok: boolean;
+  dry_run: boolean;
+  mode: NovoCrmProvisionMode | string;
+  scanned: number;
+  processed_people?: number;
+  created_contacts: number;
+  created_deals: number;
+  updated_existing?: number;
+  skipped_existing: number;
+  skipped_cache: number;
+  skipped_not_delta?: number;
+  skipped_no_cpf: number;
+  skipped_bad_name?: number;
+  errors: number;
+  max_creates: number;
+  prior_snapshot_id?: string | null;
+  matriculados_snapshot_id?: string;
+  samples: Array<{
+    cpf?: string;
+    nome?: string;
+    reused_contact?: boolean;
+    deals?: Array<{ rgm?: string; stage?: string }>;
+  }>;
+  error_samples: Array<{ cpf?: string; error: string }>;
+}
+
+export interface NovoCrmProvisionStartResponse {
+  ok: boolean;
+  status: 'running';
+  jobId: string;
+  dry_run: boolean;
+  mode: string;
+  max_creates: number | null;
+}
+
+export interface NovoCrmProvisionJobStatusResponse {
+  ok: boolean;
+  running: boolean;
+  job: {
+    jobId: string;
+    mode: string;
+    status: string;
+    dry_run: boolean;
+    total: number;
+    processed: number;
+    sent: number;
+    failed: number;
+    phase: string | null;
+    status_message: string | null;
+    started_at: string;
+    finished_at: string | null;
+    error: string | null;
+    result: NovoCrmProvisionPreviewResponse | null;
+  } | null;
+}
+
 export interface NovoCrmRegressionEvent {
   id: string | number;
   contact_id?: string;
@@ -406,6 +465,40 @@ export const maintenanceApi = {
     const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
     return jsonFetch<NovoCrmFlagsStageJobStatusResponse>(
       `/api/maintenance/sync-flags-stage-novo-crm-status${qs}`
+    );
+  },
+
+  /** Prévia: criação de leads novos (mode=new) ou backlog (mode=all). */
+  previewNovoCrmProvision(opts?: { mode?: NovoCrmProvisionMode; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '1',
+      mode: opts?.mode || 'new',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<NovoCrmProvisionPreviewResponse>(
+      `/api/maintenance/provision-matriculados-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Aplica criação de leads (async). Default mode=new (só ausentes do cache). */
+  startNovoCrmProvision(opts?: { mode?: NovoCrmProvisionMode; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '0',
+      async: '1',
+      mode: opts?.mode || 'new',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<NovoCrmProvisionStartResponse>(
+      `/api/maintenance/provision-matriculados-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getNovoCrmProvisionStatus(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<NovoCrmProvisionJobStatusResponse>(
+      `/api/maintenance/provision-matriculados-novo-crm-status${qs}`
     );
   },
 };

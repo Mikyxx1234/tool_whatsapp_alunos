@@ -3,15 +3,26 @@
  * Conservador: max por run, concurrency baixa, só DEV por default.
  * PROD: NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita (também libera fields/flags writers).
  *
+ * Modes:
+ *   new (default UI) — só CPFs do snapshot atual ausentes do cache local
+ *     (e, se houver snapshot anterior, preferir delta vs anterior). Cap ~200/dia.
+ *   all — backlog completo (backfill; não usar de noite).
+ *
+ * Cron noturno: OFF por padrão (NOVO_CRM_PROVISION_ENABLED≠1). Criação diária
+ * é via botão «Criação de leads novos» no Disparador.
+ *
  * Env:
- *   NOVO_CRM_PROVISION_ENABLED=1
+ *   NOVO_CRM_PROVISION_ENABLED=0   (cron; botão manual não depende disso)
  *   NOVO_CRM_PROVISION_MAX_PER_RUN=1000
+ *   NOVO_CRM_PROVISION_NEW_MAX_PER_RUN=200
  *   NOVO_CRM_PROVISION_CONCURRENCY=2
- *   NOVO_CRM_PROVISION_HOUR_UTC=7   (04:00 BRT; após cache full ~02:00 BRT)
+ *   NOVO_CRM_PROVISION_HOUR_UTC=7
  *   NOVO_CRM_PROVISION_ALLOW_PROD=0
  */
 
+import { randomUUID } from 'crypto';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
+import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
   classifyMatriculado,
@@ -19,11 +30,15 @@ import {
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
-import { extractMatriculadosMappedValues } from '../utils/novoCrmFieldMapping.js';
+import {
+  extractMatriculadosMappedValues,
+  resolveSituacaoCrm,
+} from '../utils/novoCrmFieldMapping.js';
 import {
   createContact,
   createDeal,
   isNovoCrmApiConfigured,
+  listDealsPage,
   searchContacts,
   updateDealCustomFields,
 } from './novoCrmClient.js';
@@ -99,6 +114,16 @@ function maxPerRun() {
   return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_MAX_PER_RUN) || 1000, 1), 20000);
 }
 
+function maxNewPerRun() {
+  // Cap diário de leads novos (~10–150/dia típico; teto 500).
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_NEW_MAX_PER_RUN) || 200, 1), 500);
+}
+
+function normalizeProvisionMode(raw) {
+  const m = String(raw || 'new').trim().toLowerCase();
+  return m === 'all' || m === 'full' || m === 'backfill' ? 'all' : 'new';
+}
+
 function provisionConcurrency() {
   // Workers simultâneos no pool. Default 2 (calm PROD overnight).
   // Throughput real ainda limitado por NOVO_CRM_API_RATE_PER_SECOND.
@@ -138,16 +163,20 @@ function inSet(set, cpf, rgm) {
 }
 
 /**
- * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, jobId?: string|null }} [opts]
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, mode?: 'new'|'all', jobId?: string|null }} [opts]
  */
 export async function runMatriculadosProvision(opts = {}) {
   const dryRun = opts.dryRun === true;
-  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || maxPerRun(), 1), 20000);
+  const mode = normalizeProvisionMode(opts.mode);
+  const defaultMax = mode === 'new' ? maxNewPerRun() : maxPerRun();
+  const hardCap = mode === 'new' ? 500 : 20000;
+  const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || defaultMax, 1), hardCap);
   const concurrency = provisionConcurrency();
   // offset = pula as N primeiras pessoas (grupos por CPF) na ordem determinística.
   // Usado para continuar de onde a run anterior parou sem depender de dedup/cache.
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const errorBudget = maxErrorsBeforeAbort();
+  const jobId = opts.jobId || null;
 
   if (!isNovoCrmApiConfigured()) {
     const err = new Error('NOVO_CRM_ENABLED/TOKEN não configurados');
@@ -169,12 +198,34 @@ export async function runMatriculadosProvision(opts = {}) {
     throw err;
   }
 
-  console.log(
-    `[novo-crm-provision] start dry=${dryRun} max=${maxCreates} offset=${offset} conc=${concurrency} errorBudget=${errorBudget} snap=${matSnap.id} host=${apiBaseHost()}`
-  );
+  // mode=new: CPFs do snapshot atual ausentes do cache; se houver snapshot
+  // anterior, restringe ao delta (apareceu agora e não no anterior).
+  /** @type {Set<string>|null} */
+  let priorSnapCpfs = null;
+  let priorSnapId = null;
+  if (mode === 'new') {
+    const snaps = await baseUploadRepo.listSnapshots('matriculados', { limit: 2 });
+    if (snaps.length >= 2 && snaps[1]?.id) {
+      priorSnapId = snaps[1].id;
+      priorSnapCpfs = new Set();
+      await baseUploadRepo.forEachRowDataForSnapshot('matriculados', priorSnapId, (row) => {
+        const cpf = digits(row.CPF || row.cpf || row.Cpf);
+        if (cpf.length >= 11) priorSnapCpfs.add(cpf);
+      });
+    }
+  }
 
-  const [remat, doc, inad, bb, evasao] = await Promise.all([
+  console.log(
+    `[novo-crm-provision] start dry=${dryRun} mode=${mode} max=${maxCreates} offset=${offset} conc=${concurrency} errorBudget=${errorBudget} snap=${matSnap.id} prior=${priorSnapId || '—'} host=${apiBaseHost()}`
+  );
+  touchProvisionJob(jobId, {
+    phase: 'loading',
+    status_message: `Carregando bases (mode=${mode})…`,
+  });
+
+  const [remat, caa, doc, inad, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
+    caaProtocolsRepo.loadOpenCaaIdSet(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('acessos-blackboard'),
@@ -184,7 +235,9 @@ export async function runMatriculadosProvision(opts = {}) {
   // Idempotência: CPFs já no cache do CRM (sync noturno) → não recria.
   // Torna a run repetível (a busca por CPF na API não acha, pois o CPF vive
   // no deal; o cache extrai cpf_norm do deal, então é a fonte confiável).
+  // mode=new SEMPRE usa cache dedup (é a regra de seleção).
   const useCacheDedup =
+    mode === 'new' ||
     String(process.env.NOVO_CRM_PROVISION_USE_CACHE_DEDUP || '1').trim() !== '0';
   let existingCpfs = new Set();
   if (useCacheDedup) {
@@ -270,12 +323,13 @@ export async function runMatriculadosProvision(opts = {}) {
       mapped.polo
         ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
         : null,
-      mapped.situacao || row['Situação Matrícula']
-        ? {
-            fieldId: fieldIds.situacao,
-            value: mapped.situacao || String(row['Situação Matrícula']),
-          }
-        : null,
+      (() => {
+        const situacao = resolveSituacaoCrm(
+          mapped.situacao || row['Situação Matrícula'],
+          { inRematricula: Boolean(classification.meta?.inRematricula) }
+        );
+        return situacao ? { fieldId: fieldIds.situacao, value: situacao } : null;
+      })(),
       mapped.nivel && fieldIds.nivel
         ? { fieldId: fieldIds.nivel, value: mapped.nivel }
         : null,
@@ -292,11 +346,29 @@ export async function runMatriculadosProvision(opts = {}) {
 
   let skippedBadName = 0;
   let skippedCache = 0;
+  let skippedNotDelta = 0;
+  let updatedExisting = 0;
+
+  // mode=new + snapshot anterior: só quem apareceu agora (delta).
+  // Cache-miss continua obrigatório (processPerson / existingCpfs).
+  if (mode === 'new' && priorSnapCpfs) {
+    for (const cpf of [...groups.keys()]) {
+      if (priorSnapCpfs.has(cpf)) {
+        groups.delete(cpf);
+        skippedNotDelta += 1;
+      }
+    }
+  }
 
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
   // Ordem determinística (mesmo snapshot + sort estável); offset pula as N
   // primeiras pessoas p/ continuar de onde a run anterior parou.
   const personList = [...groups.entries()].slice(offset);
+  touchProvisionJob(jobId, {
+    phase: 'provisioning',
+    status_message: `Provisionando (${personList.length} candidatos, mode=${mode})…`,
+    total: Math.min(personList.length, maxCreates),
+  });
 
   const noteError = (sample) => {
     errors += 1;
@@ -354,6 +426,7 @@ export async function runMatriculadosProvision(opts = {}) {
         rgm,
         classification: classifyMatriculado(r, {
           inRematricula: inSet(remat, cpf, rgm),
+          inCaa: inSet(caa, cpf, rgm),
           inDoc: inSet(doc, cpf, rgm),
           inInad: inSet(inad, cpf, rgm),
           inBb: inSet(bb, cpf, rgm),
@@ -381,6 +454,8 @@ export async function runMatriculadosProvision(opts = {}) {
     }
 
     // Anti-dupe best-effort: busca por CPF no CRM.
+    // Se já existe no funil → atualiza card (campos) / cria deal faltante.
+    // Se não existe → cria contact + deal(s).
     let existing = null;
     try {
       const found = await searchContacts(cpf);
@@ -389,45 +464,77 @@ export async function runMatriculadosProvision(opts = {}) {
       noteError({ cpf, error: `search: ${err?.message || err}` });
       return;
     }
-    if (existing?.id) {
-      skippedExisting += 1;
-      return;
-    }
 
     if (aborted || !claimSlot()) return;
 
-    let contact;
-    try {
-      contact = await createContact({
-        name: nome,
-        email: firstMapped._email || null,
-        phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
-        source: 'SIAA',
-      });
-    } catch (err) {
-      // Desfaz reserva do slot — create falhou.
-      if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
-      noteError({ cpf, error: `contact: ${err?.message || err}` });
-      console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
-      return;
+    let contact = existing;
+    let reusedContact = Boolean(existing?.id);
+    if (!contact?.id) {
+      try {
+        contact = await createContact({
+          name: nome,
+          email: firstMapped._email || null,
+          phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
+          source: 'SIAA',
+        });
+      } catch (err) {
+        // Desfaz reserva do slot — create falhou.
+        if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
+        noteError({ cpf, error: `contact: ${err?.message || err}` });
+        console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
+        return;
+      }
+    } else {
+      // Slot conta pessoa processada; não é "created" no sentido estrito.
+      updatedExisting += 1;
+      skippedExisting += 1;
+    }
+
+    /** @type {object[]} */
+    let existingDeals = [];
+    if (reusedContact) {
+      try {
+        const page = await listDealsPage({ contactId: contact.id, perPage: 50 });
+        existingDeals = page.items || [];
+      } catch (err) {
+        console.warn(
+          `[novo-crm-provision] list deals cpf=${cpf}:`,
+          err?.message || err
+        );
+      }
     }
 
     const dealSummaries = [];
     for (const c of classifications) {
       if (aborted) break;
       try {
-        const deal = await createDeal({
-          title: nome,
-          contactId: contact.id,
-          stageId: c.classification.stageId,
-        });
+        let deal = null;
+        if (reusedContact && existingDeals.length > 0) {
+          // Reusa o 1º deal aberto (ou qualquer) quando há 1 RGM; multi-RGM
+          // cria deals extras se já houver ao menos um.
+          if (classifications.length === 1 || existingDeals.length === 0) {
+            deal = existingDeals.find((d) => String(d.status || '').toUpperCase() === 'OPEN')
+              || existingDeals[0];
+          } else if (dealSummaries.length === 0 && existingDeals.length > 0) {
+            deal = existingDeals.find((d) => String(d.status || '').toUpperCase() === 'OPEN')
+              || existingDeals[0];
+          }
+        }
+        if (!deal?.id) {
+          deal = await createDeal({
+            title: nome,
+            contactId: contact.id,
+            stageId: c.classification.stageId,
+          });
+          createdDeals += 1;
+        }
         await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
-        createdDeals += 1;
         dealSummaries.push({
           dealId: deal.id,
           number: deal.number,
           rgm: c.rgm,
           stage: c.classification.stageName,
+          reused: reusedContact,
         });
       } catch (err) {
         noteError({ cpf, rgm: c.rgm, error: `deal: ${err?.message || err}` });
@@ -436,13 +543,25 @@ export async function runMatriculadosProvision(opts = {}) {
     }
 
     if (createdSamples.length < 15) {
-      createdSamples.push({ contactId: contact.id, cpf, nome, deals: dealSummaries });
+      createdSamples.push({
+        contactId: contact.id,
+        cpf,
+        nome,
+        reused_contact: reusedContact,
+        deals: dealSummaries,
+      });
     }
     if (createdContacts % 50 === 0 || createdContacts === 1) {
       console.log(
-        `[novo-crm-provision] contatos=${createdContacts}/${maxCreates} deals=${createdDeals} last=${cpf}`
+        `[novo-crm-provision] pessoas=${createdContacts}/${maxCreates} deals=${createdDeals} updated=${updatedExisting} last=${cpf}`
       );
     }
+    touchProvisionJob(jobId, {
+      processed: createdContacts,
+      sent: createdDeals,
+      failed: errors,
+      status_message: `Processados ${createdContacts}/${maxCreates} · deals ${createdDeals}`,
+    });
   };
 
   // Pool de workers: cada um puxa a próxima pessoa da fila até esgotar,
@@ -461,11 +580,15 @@ export async function runMatriculadosProvision(opts = {}) {
   const result = {
     ok: !aborted,
     dry_run: dryRun,
+    mode,
     scanned,
-    created_contacts: createdContacts,
+    processed_people: createdContacts,
+    created_contacts: Math.max(0, createdContacts - updatedExisting),
     created_deals: createdDeals,
+    updated_existing: updatedExisting,
     skipped_existing: skippedExisting,
     skipped_cache: skippedCache,
+    skipped_not_delta: skippedNotDelta,
     skipped_no_cpf: skippedNoCpf,
     skipped_duplicate_rgm: skippedDupRgm,
     skipped_bad_name: skippedBadName,
@@ -475,15 +598,36 @@ export async function runMatriculadosProvision(opts = {}) {
     max_creates: maxCreates,
     offset,
     concurrency,
+    prior_snapshot_id: priorSnapId,
+    matriculados_snapshot_id: matSnap.id,
     samples: createdSamples,
     error_samples: errorSamples,
     host: apiBaseHost(),
   };
   console.log('[novo-crm-provision] done', JSON.stringify({ ...result, samples: undefined }));
+  touchProvisionJob(jobId, {
+    phase: 'done',
+    status_message: aborted
+      ? abortReason
+      : `Concluído: ${result.created_contacts} novos · ${updatedExisting} atualizados · ${createdDeals} deals`,
+    processed: createdContacts,
+    sent: createdDeals,
+    failed: errors,
+  });
   return result;
 }
 
+/** @type {Map<string, object>} */
+const provisionJobs = new Map();
+let runningProvisionJobId = null;
 let activePromise = null;
+
+function touchProvisionJob(jobId, patch) {
+  if (!jobId) return;
+  const entry = provisionJobs.get(jobId);
+  if (!entry) return;
+  Object.assign(entry, patch);
+}
 
 export function isMatriculadosProvisionRunning() {
   return activePromise != null;
@@ -491,7 +635,7 @@ export function isMatriculadosProvisionRunning() {
 
 /**
  * Roda provision sob mutex (sync ou background). Evita dois writers em paralelo.
- * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number }} opts
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, mode?: 'new'|'all' }} opts
  * @returns {Promise<object>}
  */
 export async function runMatriculadosProvisionLocked(opts = {}) {
@@ -508,17 +652,85 @@ export async function runMatriculadosProvisionLocked(opts = {}) {
   }
 }
 
+/**
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, mode?: 'new'|'all' }} opts
+ * @returns {boolean}
+ * @deprecated Prefer startMatriculadosProvisionApplyBackground (retorna jobId).
+ */
 export function startMatriculadosProvisionBackground(opts = {}) {
-  if (activePromise) return false;
-  activePromise = runMatriculadosProvision(opts)
+  const started = startMatriculadosProvisionApplyBackground(opts);
+  return started.started;
+}
+
+/**
+ * Apply em background com jobId (polling na UI).
+ * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, mode?: 'new'|'all' }} opts
+ */
+export function startMatriculadosProvisionApplyBackground(opts = {}) {
+  if (activePromise || (runningProvisionJobId && provisionJobs.get(runningProvisionJobId)?.status === 'running')) {
+    return {
+      started: false,
+      jobId: runningProvisionJobId,
+      error: 'Provision já em andamento',
+    };
+  }
+  const jobId = randomUUID();
+  const mode = normalizeProvisionMode(opts.mode);
+  const entry = {
+    jobId,
+    status: 'running',
+    dry_run: false,
+    mode,
+    total: 0,
+    processed: 0,
+    sent: 0,
+    failed: 0,
+    phase: 'starting',
+    status_message: 'Iniciando…',
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    result: null,
+    error: null,
+  };
+  provisionJobs.set(jobId, entry);
+  runningProvisionJobId = jobId;
+
+  activePromise = runMatriculadosProvision({
+    dryRun: false,
+    maxCreates: opts.maxCreates,
+    offset: opts.offset,
+    mode,
+    jobId,
+  })
+    .then((result) => {
+      entry.status = 'completed';
+      entry.result = result;
+      entry.finished_at = new Date().toISOString();
+      return result;
+    })
     .catch((err) => {
+      entry.status = 'failed';
+      entry.error = err?.message || String(err);
+      entry.finished_at = new Date().toISOString();
       console.error('[novo-crm-provision] background FAIL:', err?.message || err);
       return null;
     })
     .finally(() => {
       activePromise = null;
+      if (runningProvisionJobId === jobId) runningProvisionJobId = null;
     });
-  return true;
+
+  return { started: true, jobId };
+}
+
+export function getMatriculadosProvisionJob(jobId) {
+  return provisionJobs.get(String(jobId || '')) || null;
+}
+
+export function getRunningMatriculadosProvisionJob() {
+  if (!runningProvisionJobId) return null;
+  const j = provisionJobs.get(runningProvisionJobId);
+  return j?.status === 'running' ? j : null;
 }
 
 function msUntilHourUtc(hourUtc) {
@@ -551,10 +763,20 @@ export function startMatriculadosProvisionCron() {
     `[novo-crm-provision] cron: max=${maxPerRun()} conc=${provisionConcurrency()}; próximo em ${Math.round(delay / 60000)} min (${String(hour).padStart(2, '0')}:00 UTC)`
   );
 
+  // Cron legado = mode=all (backfill). Produto 28/07: manter OFF —
+  // criação diária é manual (mode=new) no Disparador.
   const first = setTimeout(() => {
-    startMatriculadosProvisionBackground({ dryRun: false, maxCreates: maxPerRun() });
+    startMatriculadosProvisionApplyBackground({
+      dryRun: false,
+      maxCreates: maxPerRun(),
+      mode: 'all',
+    });
     const daily = setInterval(() => {
-      startMatriculadosProvisionBackground({ dryRun: false, maxCreates: maxPerRun() });
+      startMatriculadosProvisionApplyBackground({
+        dryRun: false,
+        maxCreates: maxPerRun(),
+        mode: 'all',
+      });
     }, 24 * 60 * 60 * 1000);
     if (typeof daily?.unref === 'function') daily.unref();
   }, delay);

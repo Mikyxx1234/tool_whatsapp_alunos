@@ -7,7 +7,7 @@
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import * as baseUploadRepo from '../server/repositories/baseUploadRepository.js';
-import { extractMatriculadosMappedValues } from '../server/utils/novoCrmFieldMapping.js';
+import { extractMatriculadosMappedValues, resolveSituacaoCrm } from '../server/utils/novoCrmFieldMapping.js';
 import { classifyMatriculado, titleCasePolo } from '../server/utils/novoCrmStageRules.js';
 import { applyNovoCrmProdIdsFromFile } from './_applyNovoCrmProdIds.mjs';
 
@@ -141,8 +141,9 @@ for (const row of deals.rows) {
   const matRow = (rgm && byRgm.get(rgm)) || (cpf.length >= 11 && byCpf.get(cpf)) || null;
   if (!matRow) continue;
   const mapped = extractMatriculadosMappedValues(matRow);
+  const inRematricula = inSet(remat, cpf, rgm);
   const classification = classifyMatriculado(matRow, {
-    inRematricula: inSet(remat, cpf, rgm),
+    inRematricula,
     inDoc: inSet(doc, cpf, rgm),
     inInad: inSet(inad, cpf, rgm),
     inBb: inSet(bb, cpf, rgm),
@@ -154,7 +155,10 @@ for (const row of deals.rows) {
   const pairs = [
     [F.NOVO_CRM_FIELD_CURSO, mapped.curso],
     [F.NOVO_CRM_FIELD_POLO, titleCasePolo(mapped.polo) || mapped.polo],
-    [F.NOVO_CRM_FIELD_SITUACAO, mapped.situacao || String(matRow['Situação Matrícula'] || '')],
+    [
+      F.NOVO_CRM_FIELD_SITUACAO,
+      resolveSituacaoCrm(mapped.situacao || matRow['Situação Matrícula'], { inRematricula }),
+    ],
     [F.NOVO_CRM_FIELD_NIVEL, mapped.nivel],
     [F.NOVO_CRM_FIELD_EMAIL_AD, mapped.e_mail_ad],
     [F.NOVO_CRM_FIELD_DOC_PENDENTES, simNao(classification.flags.doc_pendentes)],

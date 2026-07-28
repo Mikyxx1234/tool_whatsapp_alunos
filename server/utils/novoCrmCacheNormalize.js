@@ -14,7 +14,9 @@ export function normalizePhone(value) {
 }
 
 export function normalizeCpf(value) {
-  const d = String(value ?? '').replace(/\D/g, '');
+  let d = String(value ?? '').replace(/\D/g, '');
+  // CRM/Excel costumam perder zeros à esquerda (CPF com 9–10 dígitos).
+  if (d.length >= 9 && d.length < 11) d = d.padStart(11, '0');
   return d.length === 11 ? d : '';
 }
 

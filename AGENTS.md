@@ -5,18 +5,93 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-28 — classifyMatriculado: CAA pendente → etapa Retenção
+- **Modelo usado:** Composer/Grok.
+- **Regra:** Att de etapas / provision passa a **atribuir** Retenção quando o aluno está na fila CAA aberta (`caa_protocols.status='open'` — cancelamento + PENDENTE, mesma fonte do roster CAA). Prioridade: CANCEL/TRANC SIAA → **Perdido**; senão CAA open → **Retenção**; senão remat → Sem Rematricula; senão acolhimento; senão Pós/Graduação. Untouchable permanece: quem já está em Ganho/Retenção/Cancelado **não sai** automaticamente; mover *para* Retenção a partir de Graduação etc. é desejado.
+- **Arquivos:** `novoCrmStageRules.js`, `caaProtocolsRepository.js#loadOpenCaaIdSet`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `scripts/novo-crm-stage-sim.mjs`.
+
+### 2026-07-28 — INCIDENTE: orphan-apply spam de deals no sibling + TRANCADO→Graduação
+- **Modelo usado:** Composer/Grok.
+- **Caso:** EVERTON FERNANDO TEIXEIRA MIRANDA (`evertonftm@hotmail.com`) — contact bom `cmrwwb42efm4ptb01rhys1ivb` já tinha Lead de Entrada **#86214** (23/07, RGM `45170339`). Orphan-apply (28/07) criou **6 deals extras** Graduação no mesmo contact (#101173, #103071, #103088, #103394, #103395, #103462). Situação SIAA = **Trancado**; carousel às vezes gravou `Trancado`, stage ficou **Graduação** (errado). Mesmo padrão em sibling `flordeluciana@hotmail.com` (5 deals hoje).
+- **Causa raiz (combo):**
+  1. Path `extra_deal_on_sibling` decidia “RGM faltando” só com **cache local stale** (`siblingRgms` / `rgmsOnCacheRow`) — não lia deals live no CRM. #86214 já tinha RGM no PROD; cache da run não via → criava de novo.
+  2. Script `novo-crm-orphan-apply.mjs` rodava com `NOVO_CRM_ORPHAN_SKIP_FIELDS=1` + `LIVE_CHECK=0` + **várias runs sobrepostas** (offset 0/1150). Deals novos saíam **sem CPF/RGM** → mesmo após create, dedupe por RGM continuava falhando → spam.
+  3. `classifyMatriculado` só mandava **CANCELADO→Perdido**; **TRANCADO** caía no default Graduação/Pós. `resolveSituacaoCrm` já mapeava carousel `Trancado` corretamente.
+- **NÃO foi:** match de e-mail pra pessoa errada (1 linha matriculados, mesmo CPF/RGM); nem `mode=new` do provision diário.
+- **Fix código:**
+  - `classifyMatriculado`: TRANCADO → stage **Perdido** (carousel continua `Trancado`).
+  - Orphan provision: identidade **live** no sibling (list deals + RGM/CPF); claim in-memory `${contactId}:rgm:…`; com `SKIP_FIELDS=1` ainda grava **CPF+RGM** (mínimo pro dedupe); script apply default `LIVE_CHECK=1`, `SKIP_FIELDS=0`.
+- **Cleanup (NÃO auto-deletar):** listar candidatos → aprovação humana. Everton: manter #86214 (mover p/ Perdido + situacao Trancado); deletar #101173/#103071/#103088/#103394/#103395/#103462; contact órfão dup `cmrxr849t11tdo401lqqa8bi4` (+ deal #89146) é candidato a remoção/merge. Blast amostral: 2/2 siblings nos samples dos logs full tinham 2+ deals criados em 28/07.
+- **Nota ops:** `NOVO_CRM_DATABASE_URL` local pode estar **atrás** do PROD API (max deal DB ~49k vs API ~103k) — auditoria de incidente deve preferir API `crm.eduit.com.br`.
+- **Arquivos:** `novoCrmStageRules.js`, `novoCrmOrphanAlunoProvisionService.js`, `scripts/novo-crm-orphan-apply.mjs`.
+
+### 2026-07-28 — Remodel Sync Novo CRM: noite (cache+campos) ≠ dia (3 botões)
+- **Modelo usado:** Composer/Grok.
+- **Supersede:** receita PROD de 23/07 que ligava **PROVISION noturno**. Provision automático de noite fica **OFF** — matriculados é D−1; matrículas do dia já chegam no CRM (CPF/telefone) por outro fluxo; criar em massa à noite a partir do snapshot é timing errado.
+- **Noite (automático):**
+  1. **Cache sync (espelho)** — puxa contacts/deals/fields pro Postgres local (`NOVO_CRM_CACHE_ENABLED=1`, full ~02:00 BRT).
+  2. **Fields att** — snapshot matriculados D−1 atualiza campos SIAA em quem **já** está no funil (`NOVO_CRM_FIELDS_SYNC_ENABLED=1`, ~05:00 BRT).
+  3. **Sem provision noturno** — `NOVO_CRM_PROVISION_ENABLED=0` (cron não cria gente).
+  4. **FLAGS/etapas** — cron permanece OFF (`NOVO_CRM_FLAGS_SYNC_ENABLED=0`).
+- **Dia (Disparador — 3 botões claros):**
+  1. **Full Sync** → `POST /api/maintenance/sync-novo-crm-cache?mode=full&async=1` (só espelho local).
+  2. **Att de etapas** → `POST /api/maintenance/sync-flags-stage-novo-crm?mode=flags_stage&dry_run=0&async=1` (flags + estágio a partir de financeiro/docs/BB/evasão/rematrícula). Escrita manual: gate de host (`ALLOW_PROD`); não exige `FLAGS_SYNC_ENABLED`.
+  3. **Criação de leads novos** → `POST /api/maintenance/provision-matriculados-novo-crm?mode=new&dry_run=0&async=1` (+ status GET). Cap default **200**/run (`NOVO_CRM_PROVISION_NEW_MAX_PER_RUN`).
+- **Regra de seleção `mode=new`:**
+  1. CPF no snapshot **mais recente** de matriculados.
+  2. CPF **ausente** de `novo_crm_person_cache` (espelho).
+  3. Se existir snapshot anterior: restringe ao **delta** (CPF não estava no anterior).
+  4. Contact já no CRM (busca API) → **atualiza card** (campos no deal; cria deal se faltar). Não cria 2º contact.
+  5. `mode=all` = backlog/backfill (exige `PROVISION_ENABLED=1`; não é o fluxo diário).
+- **UI:** `NovoCrmSyncPanel` — copy separa espelho ≠ att campos (noite) ≠ etapas ≠ leads novos; KPIs do cache são status (não “clique pra enriquecer”).
+- **Campo Situação (carousel do deal):** se o aluno está no snapshot **rematrícula** (SIAA/Portal mais recente) → grava **`Sem Rematrícula`** (`SITUACAO_CRM_SEM_REMATRICULA` / `resolveSituacaoCrm`); senão mantém situação SIAA normalizada (ex. `Em Curso`). Mesma regra em fields sync noturno, enrich (empty-only), provision/leads novos e orphan provision — alinha o campo com a etapa `Sem Rematricula` do `classifyMatriculado`.
+- **Arquivos:** `novoCrmMatriculadosProvisionService.js`, `maintenance.js`, `NovoCrmSyncPanel.tsx`, `maintenanceApi.ts`, `.env.example`, `server/index.js`.
+- **Easypanel PROD:** garantir `NOVO_CRM_PROVISION_ENABLED=0`, `NOVO_CRM_FLAGS_SYNC_ENABLED=0`, manter CACHE + FIELDS_SYNC ligados.
+
+### 2026-07-28 — Bugfix: `getNovoCrmStageIds`/`getNovoCrmDealFieldIds` caindo em IDs de DEV contra PROD
+- **Contexto:** batch de provisionamento de órfãos rodou com `created_deals=0, errors=3244`, todos `"Referência inválida (estágio, contato ou responsável)"`. `NOVO_CRM_API_BASE_URL` apontava pra `crm.eduit.com.br` (PROD) mas o `.env` não tinha `NOVO_CRM_STAGE_*`/`NOVO_CRM_FIELD_*` — `novoCrmStageRules.js#envId` caía no fallback hard-coded de DEV (`cmrtilckh...`), que não existe no CRM PROD. `scripts/_applyNovoCrmProdIds.mjs` existia pra corrigir isso mas não era chamado por nenhum caller real (nem `apply-fast.mjs`, nem os scripts de orphan apply).
+- **Fix:** `envId()` em `server/utils/novoCrmStageRules.js` ganhou detecção de host (`isProdCrmHost()`) — se `NOVO_CRM_API_BASE_URL` é `crm.eduit.com.br` (ou subdomínio) e não há env var explícita, lê o ID de `data/novo-crm-prod-ids.json` (stages+fields merged). Se o ID também não existir lá, retorna `''` — **nunca** cai no fallback DEV em PROD (IDs de DEV não existem em PROD; melhor falhar visível/vazio do que criar deal na etapa errada). Fallback DEV só se aplica quando o host não é PROD.
+- **Validado:** rodando `novo-crm-orphan-apply.mjs` após o fix, os erros de "Referência inválida" desapareceram completamente (0 erros de stage; erros restantes eram só `429 Limite de requisições excedido`, esperado sob concorrência). ~991 deals criados nas runs de correção (685+304+2), restando só órfãos sem match real (não-aluno) ou já cobertos por sibling.
+- **Nota operacional:** qualquer script novo que chame `createDeal`/`updateDealCustomFields` direto (sem passar por `novoCrmStageRules.js`) deve usar `getNovoCrmStageIds()`/`getNovoCrmDealFieldIds()` — não hardcodear IDs nem confiar em env vars que podem faltar.
+- **Achado à parte (não é bug, confirmado benigno):** `dotenv@17.4.2` imprime `injected env (N) from .env // tip: <dica aleatória>` a cada load — array `TIPS` hard-coded no próprio `node_modules/dotenv/lib/main.js` (inclui até link promocional `vestauth.com`). Não é telemetria maliciosa nem dependência comprometida, é "feature" de marketing do dotenv upstream. Ignorável.
+
+### 2026-07-28 — Enrich por e-mail + provisionamento de órfãos aluno (deals faltando)
+- **Contexto:** dos ~3.390 contacts órfãos (sem `primary_deal_id`), ~3.229 batem por e-mail com o snapshot matriculados. Só ~12 são duplicata de contact (outro contact já tem deal da mesma pessoa via email/cpf/rgm) — nesses o órfão é ignorado. Os ~3.217 restantes precisam de deal(s) criado(s) no próprio órfão. Multi-curso é raro (~21 pessoas); regra: 1 contact, N deals (1 por RGM/curso).
+- **Enrich (`novoCrmEnrichmentService.js`):** `buildMatriculadosIndex` ganhou `byEmail` (chave `normalizeEmail(mapped._email)` e `mapped.e_mail_ad`); `matchMatriculado` tenta e-mail (contact `email_norm` ou `raw_data.contact.email`) como último fallback, depois de cpf/rgm/phone. Preenchimento continua empty-only; `result.index.by_email` exposto.
+- **Provisionamento de órfãos (`novoCrmOrphanAlunoProvisionService.js`, novo):** varre contacts sem deal, casa por e-mail (pessoal ou acadêmico) com matriculados. Para cada órfão-aluno:
+  1. Busca **sibling** — outro contact que JÁ tem deal e compartilha email/cpf/rgm (rgm/cpf lidos de TODOS os deals do sibling, não só o primary).
+  2. Sibling cobre todos os RGMs do aluno → `dup_contact_skip` (não cria nada; não apaga/mescla o órfão, só não grava).
+  3. Sibling cobre parte → cria os deals que faltam **no sibling** (multi-curso: contact bom recebe o 2º curso).
+  4. Sem sibling → cria 1 deal por RGM distinto **no próprio órfão** (fill de todos os campos mapeados + etapa via `classifyMatriculado`, igual ao provisionamento normal).
+  - **Nunca cria um 2º contact.** Não-alunos (sem match de e-mail) são ignorados. Reaproveita `extractMatriculadosMappedValues`, `classifyMatriculado`, `getNovoCrmDealFieldIds`, `titleCasePolo`, `createDeal`/`updateDealCustomFields`; gate de escrita via `isNovoCrmWriteAllowedOnThisHost` (mesmo do provision).
+  - Rota: `POST /api/maintenance/provision-orphan-alunos-novo-crm?dry_run=1|0&async=1&max=` (+ status GET), padrão igual ao `enrich-novo-crm` (dry síncrono, apply em job assíncrono).
+  - Dry-run real (28/07): 3.390 órfãos, 3.237 aluno-por-email, 10 dup_contact_skip, 3.242 deals a criar no órfão, 2 no sibling — bate com a auditoria prévia (pequena variação por incluir e-mail acadêmico no match).
+- **Script:** `scripts/novo-crm-orphan-aluno-dryrun.mjs` (dry-run isolado, só lê banco).
+
+### 2026-07-28 — Diagnóstico Sync Novo CRM (full #21 + gaps CPF/RGM/Graduação)
+- **Contexto:** Full sync #21 (28/07 02:00→05:40 BRT, ~220 min, status ok). UI Kanban Graduação 16.550 vs cache 13.675 (Δ≈2.875); demais etapas Acadêmico batem. Graduação ~95% sem owner; criação em massa 23/07 (~12k) via provision. FLAGS/etapas OFF.
+- **Painel Sync (cache ativo 34.402):** Sem CPF 6.757 · Sem RGM 4.488 · “Campos incompletos” 6.909 · Alertas data-loss 28.779 abertos.
+- **Por que tantos Sem CPF (quebra):**
+  1. **~3.390 sem deal** — contact no CRM sem negócio; sync não inventa CPF/RGM.
+  2. **~1.058 com deal mas campo CPF vazio** no CRM (Lead de Entrada/Atendimento/parcial).
+  3. **~2.309 com CPF no custom field mas `cpf_norm` vazio** — bug: valores com **9–10 dígitos** (zero à esquerda perdido); `normalizeCpf` exigia 11. **Corrigido 28/07:** `padStart(11,'0')` + reprocess cache → **2.294 fixados**; Sem CPF **6.757 → 4.463**.
+- **Sem deal ≠ duplicata:** dos 3.390, só **33** batem phone/email com contact que já tem deal; **24** duplicata só entre órfãos; **3.333** órfãos únicos.
+- **Sem RGM no CRM (deal com campo vazio) = 1.098:** cruzado telefone × `mv_aluno_por_telefone` → **30 alunos**, **1.068 não alunos** (683 Lead de Entrada; 221 em etapas acadêmicas). Lista: `data/sem-rgm-nao-alunos.csv` + canvas `sync-gaps-cpf-rgm`.
+- **“Campos incompletos” no KPI:** SQL rápido = falta CPF **ou** RGM **ou** phone **ou** email **ou** nome (não são os 10 campos do enrich).
+- **Alertas:** `upsertSnapshot` **loga** regressão mas **ainda sobrescreve** o snapshot.
+- **Pendente:** investigar Δ Graduação UI vs cache; opcional merge-preserve no upsert; decidir limpeza dos 1.068 não-alunos / 3.333 órfãos.
+- **Modelo:** Composer/Grok.
+
 ### 2026-07-23 — Novo CRM PROD: sync noturna calm (cache + provision + fields; FLAGS off)
+- **Status:** **Parcialmente supersedida em 28/07/2026** — PROVISION noturno sai da receita PROD; criação diária vira botão `mode=new`. Ver decisão «Remodel Sync Novo CRM» acima. CACHE + FIELDS_SYNC + FLAGS off permanecem.
 - **Modelo usado:** Composer/Auto.
-- **Pedido:** sync noturna PROD de contacts/deals + correção de campos SIAA a partir de matriculados; etapas manuais de dia.
-- **Decisão:**
-  - Ligar **CACHE** (espelho) + **PROVISION** (cria ausentes) + **FIELDS_SYNC** (corrige curso/polo/situação…).
-  - **FLAGS_SYNC permanece OFF** (`NOVO_CRM_FLAGS_SYNC_ENABLED=0`) — etapas não mudam automaticamente.
-  - Gate PROD já existente: `NOVO_CRM_PROVISION_ALLOW_PROD=1` + `NOVO_CRM_API_BASE_URL` explícita libera writers de provision **e** fields/flags (alias `isNovoCrmWriteAllowedOnThisHost`).
-  - Ritmo calm: `NOVO_CRM_API_RATE_PER_SECOND=2`, provision concurrency default **2**, cache deal concurrency **1**.
-  - Cron stagger UTC (madrugada BRT = UTC−3): cache full **05** (02 BRT) → provision **07** (04 BRT) → fields **08** (05 BRT); flags default **09** mas desligado.
-- **Não alterado:** `.env` local (pode apontar PROD para scripts); secrets reais só no Easypanel.
+- **Pedido (histórico):** sync noturna PROD de contacts/deals + correção de campos SIAA; etapas manuais de dia.
+- **Decisão original:**
+  - Ligar **CACHE** + **PROVISION** + **FIELDS_SYNC**; **FLAGS_SYNC OFF**.
+  - Gate PROD: `NOVO_CRM_PROVISION_ALLOW_PROD=1` + URL explícita.
+  - Ritmo calm: `NOVO_CRM_API_RATE_PER_SECOND=2`, concurrency baixa.
+  - Cron stagger antigo: cache **05** → provision **07** → fields **08** (UTC).
 - **Arquivos:** defaults em `novoCrmPersonCacheSyncService`, `novoCrmMatriculadosProvisionService`, `novoCrmFlagsStageSyncService`; receita em `.env.example`.
-- **Alternativas descartadas:** ligar FLAGS de noite (usuário pediu etapas manuais); rate alto 4–8 rps (CRM já sofreu ~10 rps).
 
 ### 2026-07-16 — Novo CRM: cache local Postgres→Postgres para ativação por tag
 - **Modelo usado:** GPT-5.5.

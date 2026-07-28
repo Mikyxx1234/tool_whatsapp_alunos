@@ -195,6 +195,21 @@ async function recordDataLossEvent({ snapshot, existing, diff, syncLogId }) {
   return (rowCount ?? 0) > 0;
 }
 
+/** Marca primary_deal_id após create (evita re-provisionar órfão no próximo run sem full sync). */
+export async function markPrimaryDealId(contactId, dealId) {
+  const cid = String(contactId || '').trim();
+  const did = String(dealId || '').trim();
+  if (!cid || !did) return;
+  await query(
+    `update novo_crm_person_cache
+        set primary_deal_id = $2,
+            last_synced_at = now()
+      where contact_id = $1
+        and (primary_deal_id is null or btrim(primary_deal_id) = '')`,
+    [cid, did]
+  );
+}
+
 export async function upsertSnapshot(snapshot, { syncLogId = null, fullSeenAt = null } = {}) {
   const existing = await loadExisting(snapshot.contactId);
   let dataLossInserted = 0;

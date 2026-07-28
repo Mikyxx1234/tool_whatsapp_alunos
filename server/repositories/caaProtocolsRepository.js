@@ -239,6 +239,25 @@ export async function listOpenProtocolsByRgm() {
 }
 
 /**
+ * Set `cpf:…` / `rgm:…` da fila CAA aberta (status='open' em caa_protocols).
+ * Mesma fonte do roster "CAA — ativações disponíveis" (sem filtro de janela 48h —
+ * quem ainda está open segue em luta de retenção no CRM).
+ * @returns {Promise<Set<string>>}
+ */
+export async function loadOpenCaaIdSet() {
+  const rows = await listOpenProtocolsByRgm();
+  const set = new Set();
+  for (const p of rows) {
+    const data = p?.data && typeof p.data === 'object' ? p.data : {};
+    const cpf = String(p.cpf || data.CPF || data.cpf || '').replace(/\D/g, '');
+    const rgm = String(p.rgm || data.RGM || data.rgm || '').replace(/\D/g, '');
+    if (cpf.length >= 11) set.add(`cpf:${cpf}`);
+    if (rgm) set.add(`rgm:${rgm}`);
+  }
+  return set;
+}
+
+/**
  * Estatísticas de transições nas últimas 24h (ou em um intervalo ou por snapshot).
  *
  * `novos_pendentes` conta apenas protocolos que apareceram pela primeira vez

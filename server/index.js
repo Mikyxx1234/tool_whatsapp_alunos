@@ -242,7 +242,8 @@ app.listen(PORT, '0.0.0.0', () => {
       console.error('[server] falha ao iniciar cron cache Novo CRM:', err.message);
     }
 
-    // Cria no CRM matriculados ausentes (etapa+flags na criação). Só com PROVISION_ENABLED=1.
+    // Provision noturno: OFF por padrão (NOVO_CRM_PROVISION_ENABLED≠1).
+    // Criação diária de leads novos = botão manual no Disparador (mode=new).
     // PROD: exige NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita.
     try {
       startMatriculadosProvisionCron();
@@ -250,16 +251,15 @@ app.listen(PORT, '0.0.0.0', () => {
       console.error('[server] falha ao iniciar cron provision matriculados:', err.message);
     }
 
-    // Atualiza campos SIAA dos deals existentes (curso/polo/situação…). Só com FIELDS_SYNC_ENABLED=1.
-    // Mesmo gate de host que provision (ALLOW_PROD libera PROD).
+    // Att de campos SIAA (curso/polo/situação…) em deals existentes — noite, FIELDS_SYNC_ENABLED=1.
+    // Matriculados é D-1; não cria gente nova.
     try {
       startExistingFieldsSyncCron();
     } catch (err) {
       console.error('[server] falha ao iniciar cron fields sync Novo CRM:', err.message);
     }
 
-    // Flags + etapas (intocáveis). Só com FLAGS_SYNC_ENABLED=1.
-    // Em PROD manter OFF — etapas ficam manuais.
+    // Flags + etapas: cron OFF em PROD (FLAGS_SYNC_ENABLED=0). Botão «Att de etapas» no Disparador.
     try {
       startFlagsStageSyncCron();
     } catch (err) {

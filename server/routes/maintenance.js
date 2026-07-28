@@ -22,11 +22,20 @@ import {
   getRunningEnrichmentJob,
 } from '../services/novoCrmEnrichmentService.js';
 import {
+  previewOrphanAlunoProvision,
+  startOrphanAlunoProvisionApplyBackground,
+  getOrphanAlunoProvisionJob,
+  getRunningOrphanAlunoProvisionJob,
+} from '../services/novoCrmOrphanAlunoProvisionService.js';
+import {
   runMatriculadosProvision,
   runMatriculadosProvisionLocked,
-  startMatriculadosProvisionBackground,
+  startMatriculadosProvisionApplyBackground,
   isMatriculadosProvisionRunning,
+  getMatriculadosProvisionJob,
+  getRunningMatriculadosProvisionJob,
   isProvisionAllowedOnThisHost,
+  isNovoCrmWriteAllowedOnThisHost,
 } from '../services/novoCrmMatriculadosProvisionService.js';
 import {
   runFlagsStageSync,
@@ -353,10 +362,14 @@ router.post('/enrich-novo-crm', requireApiKey, async (req, res) => {
 
 /**
  * POST /api/maintenance/provision-matriculados-novo-crm
- * ?dry_run=1&max=1000&async=1
+ * ?dry_run=1|0&mode=new|all&max=200&async=1
  *
- * Cria no CRM (DEV) alunos do snapshot matriculados que ainda não existem.
- * Aplica etapa + flags pelas regras. Conservador: delay alto, max por run.
+ * mode=new (default): só CPFs do snapshot atual ausentes do cache local
+ *   (e delta vs snapshot anterior, se existir). Cap diário ~200.
+ * mode=all: backlog completo (backfill; não é o fluxo diário).
+ *
+ * Escrita manual: gate de host (ALLOW_PROD). Cron noturno continua exigindo
+ * NOVO_CRM_PROVISION_ENABLED=1 (deve ficar OFF em PROD — ver AGENTS.md 28/07).
  */
 router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) => {
   try {
@@ -372,6 +385,8 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
       req.body?.dry_run === false ||
       req.body?.dryRun === false;
     const reallyDry = !forceWrite;
+    const modeRaw = String(req.query.mode || req.body?.mode || 'new').trim().toLowerCase();
+    const mode = modeRaw === 'all' || modeRaw === 'full' || modeRaw === 'backfill' ? 'all' : 'new';
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
     const asyncMode =
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
@@ -379,41 +394,97 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
     if (reallyDry) {
       const preview = await runMatriculadosProvision({
         dryRun: true,
-        maxCreates: maxCreates || 50,
+        maxCreates: maxCreates || (mode === 'new' ? 50 : 50),
+        mode,
       });
       return res.json(preview);
     }
 
-    if (String(process.env.NOVO_CRM_PROVISION_ENABLED || '').trim() !== '1') {
+    // mode=all (backfill) ainda exige PROVISION_ENABLED como kill-switch extra.
+    // mode=new (botão diário) só precisa do gate de host — cron fica OFF.
+    if (
+      mode === 'all' &&
+      String(process.env.NOVO_CRM_PROVISION_ENABLED || '').trim() !== '1'
+    ) {
       return res.status(403).json({
-        error: 'NOVO_CRM_PROVISION_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
+        error:
+          'mode=all exige NOVO_CRM_PROVISION_ENABLED=1. Para leads novos do dia use mode=new.',
       });
     }
 
     if (isMatriculadosProvisionRunning()) {
-      return res.status(409).json({ error: 'Provision já em andamento' });
+      const running = getRunningMatriculadosProvisionJob();
+      return res.status(409).json({
+        error: 'Provision já em andamento',
+        jobId: running?.jobId || null,
+      });
     }
 
     if (asyncMode) {
-      const started = startMatriculadosProvisionBackground({
+      const started = startMatriculadosProvisionApplyBackground({
         dryRun: false,
         maxCreates,
+        mode,
       });
-      if (!started) return res.status(409).json({ error: 'Provision já em andamento' });
+      if (!started.started) {
+        return res.status(409).json({
+          error: started.error || 'Provision já em andamento',
+          jobId: started.jobId,
+        });
+      }
       return res.status(202).json({
         ok: true,
         status: 'running',
+        jobId: started.jobId,
         dry_run: false,
+        mode,
         max_creates: maxCreates || null,
       });
     }
 
-    const result = await runMatriculadosProvisionLocked({ dryRun: false, maxCreates });
+    const result = await runMatriculadosProvisionLocked({ dryRun: false, maxCreates, mode });
     res.json(result);
   } catch (err) {
     console.error('[provision-matriculados-novo-crm]', err);
     const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
     res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /api/maintenance/provision-matriculados-novo-crm-status?jobId=
+ */
+router.get('/provision-matriculados-novo-crm-status', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId ? String(req.query.jobId) : null;
+    const job = jobId
+      ? getMatriculadosProvisionJob(jobId)
+      : getRunningMatriculadosProvisionJob();
+    if (!job) {
+      return res.json({ ok: true, running: false, job: null });
+    }
+    res.json({
+      ok: true,
+      running: job.status === 'running',
+      job: {
+        jobId: job.jobId,
+        mode: job.mode,
+        status: job.status,
+        dry_run: job.dry_run,
+        total: job.total,
+        processed: job.processed,
+        sent: job.sent,
+        failed: job.failed,
+        phase: job.phase,
+        status_message: job.status_message,
+        started_at: job.started_at,
+        finished_at: job.finished_at,
+        error: job.error,
+        result: job.result,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 
@@ -454,20 +525,8 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
       return res.json(preview);
     }
 
-    // Write gate: FLAGS_SYNC_ENABLED ou FIELDS_SYNC_ENABLED (fields mode).
-    const flagsOn = String(process.env.NOVO_CRM_FLAGS_SYNC_ENABLED || '').trim() === '1';
-    const fieldsOn = String(process.env.NOVO_CRM_FIELDS_SYNC_ENABLED || '').trim() === '1';
-    if (mode === 'fields' && !fieldsOn && !flagsOn) {
-      return res.status(403).json({
-        error:
-          'NOVO_CRM_FIELDS_SYNC_ENABLED≠1 e FLAGS_SYNC_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
-      });
-    }
-    if ((mode === 'flags_stage' || mode === 'both') && !flagsOn) {
-      return res.status(403).json({
-        error: 'NOVO_CRM_FLAGS_SYNC_ENABLED≠1 — escrita bloqueada (dry_run ainda permitido).',
-      });
-    }
+    // Escrita manual (botão «Att de etapas»): só gate de host (check acima).
+    // Cron noturno continua exigindo FLAGS_SYNC_ENABLED=1 (manter OFF em PROD).
 
     if (isFlagsStageSyncRunning()) {
       return res.status(409).json({ error: 'Sync de flags/etapa já em andamento' });
@@ -558,6 +617,104 @@ router.get('/enrich-novo-crm-status', requireApiKey, async (req, res) => {
         sent: job.sent,
         failed: job.failed,
         skipped: job.skipped,
+        phase: job.phase,
+        status_message: job.status_message,
+        started_at: job.started_at,
+        finished_at: job.finished_at,
+        error: job.error,
+        result: job.result,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/provision-orphan-alunos-novo-crm?dry_run=1|0&async=1&max=
+ *
+ * Cria deal(s) para contacts órfãos (sem nenhum deal) do cache Novo CRM cujo
+ * e-mail bate com o snapshot de matriculados. Nunca cria um segundo contact:
+ * se já existe outro contact ("sibling") com deal para a mesma pessoa, cria
+ * os deals que faltam nesse sibling em vez do órfão (ver AGENTS.md 28/07/2026).
+ *
+ * dry_run=1 (default): prévia síncrona.
+ * dry_run=0&async=1: grava em background.
+ */
+router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res) => {
+  try {
+    const forceWrite =
+      req.query.dry_run === '0' ||
+      req.query.dry_run === 'false' ||
+      req.body?.dry_run === false ||
+      req.body?.dryRun === false;
+    const isDry = !forceWrite;
+    const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
+    const asyncMode =
+      req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+
+    if (isDry) {
+      const preview = await previewOrphanAlunoProvision({ maxCreates });
+      return res.json(preview);
+    }
+
+    if (!isNovoCrmWriteAllowedOnThisHost()) {
+      return res.status(403).json({
+        error:
+          'Provisionamento de órfãos bloqueado neste host. Use CRM DEV ou NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita.',
+      });
+    }
+
+    const running = getRunningOrphanAlunoProvisionJob();
+    if (running) {
+      return res.status(409).json({
+        error: 'Provisionamento de órfãos já em andamento',
+        jobId: running.jobId,
+      });
+    }
+    const started = startOrphanAlunoProvisionApplyBackground({ maxCreates });
+    if (!started.started) {
+      return res.status(409).json({
+        error: started.error || 'Provisionamento de órfãos já em andamento',
+        jobId: started.jobId,
+      });
+    }
+    return res.status(202).json({
+      ok: true,
+      status: 'running',
+      jobId: started.jobId,
+      dry_run: false,
+      async: Boolean(asyncMode),
+      max_creates: maxCreates || null,
+    });
+  } catch (err) {
+    console.error('[provision-orphan-alunos-novo-crm]', err);
+    const status = err?.status && Number(err.status) >= 400 ? Number(err.status) : 500;
+    res.status(status).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /api/maintenance/provision-orphan-alunos-novo-crm-status?jobId=
+ */
+router.get('/provision-orphan-alunos-novo-crm-status', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId ? String(req.query.jobId) : null;
+    const job = jobId ? getOrphanAlunoProvisionJob(jobId) : getRunningOrphanAlunoProvisionJob();
+    if (!job) {
+      return res.json({ ok: true, running: false, job: null });
+    }
+    res.json({
+      ok: true,
+      running: job.status === 'running',
+      job: {
+        jobId: job.jobId,
+        status: job.status,
+        dry_run: job.dry_run,
+        total: job.total,
+        processed: job.processed,
+        sent: job.sent,
+        failed: job.failed,
         phase: job.phase,
         status_message: job.status_message,
         started_at: job.started_at,

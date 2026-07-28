@@ -493,8 +493,9 @@ export async function getDealCustomFieldsByName() {
  * PUT /api/deals/:id/custom-fields — body { values: [{ fieldId, value }] }
  * @param {string} dealId
  * @param {Array<{ fieldId: string, value: string|number|null }>} values
+ * @param {{ maxRetries?: number }} [opts]
  */
-export async function updateDealCustomFields(dealId, values) {
+export async function updateDealCustomFields(dealId, values, opts = {}) {
   const id = String(dealId || '').trim();
   if (!id) {
     const err = new Error('dealId obrigatório');
@@ -509,6 +510,7 @@ export async function updateDealCustomFields(dealId, values) {
   }
   return request(`/api/deals/${encodeURIComponent(id)}/custom-fields`, {
     method: 'PUT',
+    maxRetries: opts.maxRetries,
     body: {
       values: list.map((v) => ({
         fieldId: String(v.fieldId),
