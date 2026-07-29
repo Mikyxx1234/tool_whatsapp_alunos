@@ -8,7 +8,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 ### 2026-07-29 — Att de etapas rápida + Retenção CAA só 72h
 - **Modelo usado:** Composer/Grok.
 - **Problema:** Att de etapas fazia `updateDealCustomFields` + `getDeal` em quase todo deal matched (~36k) → horas a 3 rps. CAA `open` sem janela inchava Retenção (estoque velho ~852 open).
-- **Performance:** no apply `flags_stage`, só escreve flags se Sim/Não diferir do cache; `getDeal` só se cache indicar move ou stage ausente; deal já alinhado → 0 calls (`skipped_unchanged`).
+- **Performance:** no apply `flags_stage`, só escreve flags se valor **já conhecido no cache** e divergir (não reescreve flag vazia); confia no `stageId` do espelho (sem `getDeal`, opt-in `NOVO_CRM_FLAGS_SYNC_LIVE_STAGE=1`); fila de escrita com concurrency default **8** (`NOVO_CRM_FLAGS_SYNC_CONCURRENCY`); deal alinhado → 0 calls. Em PROD Att: sugerir `NOVO_CRM_API_RATE_PER_SECOND=8`.
 - **Regra Retenção:** CAA open com T0=`coalesce(data_chegada, first_seen_at)` e idade ≤ **72h** (`NOVO_CRM_CAA_RETENCAO_HOURS`) → Retenção. Após 72h: **não** força Retenção — segue SIAA (Cancel/Tranc → Perdido; Em curso → remat/acolhimento/Pós/Graduação). Untouchable global: **Ganho + Cancelado** apenas. Já em Retenção **sem** CAA open = manual/outra automação → não mexe. Já em Retenção **com** CAA open >72h → pode sair para SIAA/Perdido.
 - **Arquivos:** `caaProtocolsRepository.js` (`loadOpenCaaT0Map`), `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, provision/orphan callers, `NovoCrmSyncPanel.tsx`.
 

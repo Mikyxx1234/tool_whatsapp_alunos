@@ -107,6 +107,20 @@ function maxErrorsBeforeAbort() {
   return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 2000);
 }
 
+/** Workers paralelos no apply (rate limit global do client ainda vale). Default 8. */
+function flagsSyncConcurrency() {
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_CONCURRENCY) || 8, 1), 24);
+}
+
+/**
+ * getDeal live antes de mover? Default OFF — confia no stageId do espelho
+ * (Full Sync noturno). Ligue NOVO_CRM_FLAGS_SYNC_LIVE_STAGE=1 se quiser revalidar.
+ */
+function flagsSyncLiveStage() {
+  const v = String(process.env.NOVO_CRM_FLAGS_SYNC_LIVE_STAGE || '').trim();
+  return v === '1' || v === 'true';
+}
+
 /** Deal apagado no CRM mas ainda no espelho local — skip, não abort. */
 function isDealMissingError(err) {
   const status = Number(err?.status);
@@ -245,12 +259,16 @@ export async function runFlagsStageSync(opts = {}) {
   let skippedMissing = 0;
   let skippedUnchanged = 0;
   let errors = 0;
+  const liveStage = flagsSyncLiveStage();
+  const concurrency = dryRun ? 1 : flagsSyncConcurrency();
   /** @type {Record<string, number>} */
   const stagesByTarget = {};
   /** @type {Array<object>} */
   const samples = [];
   /** @type {Array<object>} */
   const errorSamples = [];
+  /** @type {Array<object>} */
+  const workQueue = [];
 
   const noteError = (sample) => {
     errors += 1;
@@ -344,7 +362,9 @@ export async function runFlagsStageSync(opts = {}) {
           if (!fieldId) continue;
           const cur = normFlagValue(readDealField(deal, fieldId, names));
           const next = normFlagValue(value);
-          if (cur && cur === next) continue;
+          // Sem valor no cache → não reescreve (era o gargalo: 4 PUTs por deal).
+          // Só corrige quando já conhecemos o valor e ele diverge.
+          if (!cur || cur === next) continue;
           flagValues.push({ fieldId, value });
         }
       }
@@ -443,78 +463,178 @@ export async function runFlagsStageSync(opts = {}) {
         continue;
       }
 
-      try {
-        const cacheDecide = decideMove(currentStageId, inCaaOpen);
-        const needsFlagWrite = flagValues.length > 0;
-        const needsFieldWrite = fieldValues.length > 0;
-        // getDeal só se cache aponta move ou etapa desconhecida.
-        const needsLiveStage =
-          doFlags &&
-          Boolean(classification.stageId) &&
-          (cacheDecide.move || cacheDecide.unknown);
-
-        if (!needsFlagWrite && !needsFieldWrite && !needsLiveStage) {
-          skippedUnchanged += 1;
-          if (cacheDecide.untouchable) stagesSkippedUntouchable += 1;
-          continue;
-        }
-
-        if (values.length) {
-          await updateDealCustomFields(dealId, values);
-          if (needsFlagWrite) flagsUpdated += 1;
-          if (needsFieldWrite) fieldsUpdated += 1;
-        }
-
-        let liveStageId = currentStageId;
-        if (needsLiveStage) {
-          try {
-            const live = await getDeal(dealId);
-            liveStageId = String(live?.stageId || live?.stage?.id || '').trim() || null;
-            currentStageId = liveStageId;
-          } catch (err) {
-            if (isDealMissingError(err)) {
-              noteMissing(dealId, cpf);
-              continue;
-            }
-            noteError({ dealId, cpf, error: `getDeal: ${err?.message || err}` });
-            stagesSkippedUnknown += 1;
-            continue;
-          }
-        }
-
-        const d = decideMove(liveStageId, inCaaOpen);
-        if (d.move) {
-          await updateDeal(dealId, { stageId: classification.stageId });
-          stagesMoved += 1;
-        } else if (d.untouchable) {
-          stagesSkippedUntouchable += 1;
-        } else if (d.unknown) {
-          stagesSkippedUnknown += 1;
-        }
-
-        if (samples.length < 15) {
-          samples.push({
+      const cacheDecide = decideMove(currentStageId, inCaaOpen);
+      const needsFlagWrite = flagValues.length > 0;
+      const needsFieldWrite = fieldValues.length > 0;
+      const needsMove = Boolean(cacheDecide.move && classification.stageId);
+      // Etapa desconhecida no cache: só getDeal se LIVE_STAGE=1; senão skip move.
+      if (cacheDecide.unknown) {
+        if (liveStage && doFlags && classification.stageId) {
+          workQueue.push({
             dealId,
             cpf,
             rgm,
-            from: stageNameFromId(currentStageId) || currentStageId,
-            to: classification.stageName,
-            moved: d.move,
-            untouchable: d.untouchable,
-            unknown_stage: d.unknown,
-            in_caa_fresh: inCaaFresh,
-            in_caa_open: inCaaOpen,
+            inCaaOpen,
+            inCaaFresh,
+            classification,
+            values,
+            needsFlagWrite,
+            needsFieldWrite,
+            needsMove: true,
+            needsLiveStage: true,
+            fromStageId: currentStageId,
+          });
+        } else {
+          stagesSkippedUnknown += 1;
+          if (!needsFlagWrite && !needsFieldWrite) skippedUnchanged += 1;
+          else {
+            workQueue.push({
+              dealId,
+              cpf,
+              rgm,
+              inCaaOpen,
+              inCaaFresh,
+              classification,
+              values,
+              needsFlagWrite,
+              needsFieldWrite,
+              needsMove: false,
+              needsLiveStage: false,
+              fromStageId: currentStageId,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (!needsFlagWrite && !needsFieldWrite && !needsMove) {
+        skippedUnchanged += 1;
+        if (cacheDecide.untouchable) stagesSkippedUntouchable += 1;
+        continue;
+      }
+
+      workQueue.push({
+        dealId,
+        cpf,
+        rgm,
+        inCaaOpen,
+        inCaaFresh,
+        classification,
+        values,
+        needsFlagWrite,
+        needsFieldWrite,
+        needsMove,
+        // Default: confia no cache (1 PUT stage). LIVE_STAGE=1 → getDeal antes.
+        needsLiveStage: Boolean(liveStage && needsMove),
+        fromStageId: currentStageId,
+      });
+    }
+  }
+
+  if (!dryRun && workQueue.length && !aborted) {
+    patchJob({
+      phase: 'writing',
+      status_message: `Gravando ${workQueue.length} alterações (${concurrency} workers)…`,
+      total: workQueue.length,
+      processed: 0,
+    });
+    let cursor = 0;
+    let written = 0;
+    const decideMoveWork = (stageId, caaOpen, classification) => {
+      if (!doFlags || !classification.stageId) {
+        return { move: false, untouchable: false, unknown: false };
+      }
+      if (!stageId) return { move: false, untouchable: false, unknown: true };
+      if (isUntouchableStageId(stageId)) {
+        return { move: false, untouchable: true, unknown: false };
+      }
+      if (retencaoStageId && stageId === retencaoStageId && !caaOpen) {
+        return { move: false, untouchable: true, unknown: false };
+      }
+      if (classification.stageId === stageId) {
+        return { move: false, untouchable: false, unknown: false };
+      }
+      return { move: true, untouchable: false, unknown: false };
+    };
+
+    const worker = async () => {
+      while (!aborted) {
+        const idx = cursor++;
+        if (idx >= workQueue.length) return;
+        const item = workQueue[idx];
+        try {
+          if (item.values?.length) {
+            await updateDealCustomFields(item.dealId, item.values);
+            if (item.needsFlagWrite) flagsUpdated += 1;
+            if (item.needsFieldWrite) fieldsUpdated += 1;
+          }
+
+          let stageId = item.fromStageId;
+          if (item.needsLiveStage) {
+            try {
+              const live = await getDeal(item.dealId);
+              stageId = String(live?.stageId || live?.stage?.id || '').trim() || null;
+            } catch (err) {
+              if (isDealMissingError(err)) {
+                noteMissing(item.dealId, item.cpf);
+                written += 1;
+                continue;
+              }
+              noteError({ dealId: item.dealId, cpf: item.cpf, error: `getDeal: ${err?.message || err}` });
+              stagesSkippedUnknown += 1;
+              written += 1;
+              continue;
+            }
+          }
+
+          if (item.needsMove || item.needsLiveStage) {
+            const d = decideMoveWork(stageId, item.inCaaOpen, item.classification);
+            if (d.move) {
+              await updateDeal(item.dealId, { stageId: item.classification.stageId });
+              stagesMoved += 1;
+            } else if (d.untouchable) {
+              stagesSkippedUntouchable += 1;
+            } else if (d.unknown) {
+              stagesSkippedUnknown += 1;
+            }
+            if (samples.length < 15) {
+              samples.push({
+                dealId: item.dealId,
+                cpf: item.cpf,
+                rgm: item.rgm,
+                from: stageNameFromId(stageId) || stageId,
+                to: item.classification.stageName,
+                moved: d.move,
+                untouchable: d.untouchable,
+                unknown_stage: d.unknown,
+                in_caa_fresh: item.inCaaFresh,
+                in_caa_open: item.inCaaOpen,
+              });
+            }
+          }
+        } catch (err) {
+          if (isDealMissingError(err)) {
+            noteMissing(item.dealId, item.cpf);
+          } else {
+            noteError({ dealId: item.dealId, cpf: item.cpf, error: err?.message || String(err) });
+            console.warn(`[novo-crm-flags-sync] FAIL deal=${item.dealId}:`, err?.message || err);
+          }
+        }
+        written += 1;
+        if (written % 50 === 0 || written === workQueue.length) {
+          patchJob({
+            processed: written,
+            sent: flagsUpdated + stagesMoved + fieldsUpdated,
+            status_message: `Gravados ${written}/${workQueue.length}…`,
           });
         }
-      } catch (err) {
-        if (isDealMissingError(err)) {
-          noteMissing(dealId, cpf);
-          continue;
-        }
-        noteError({ dealId, cpf, error: err?.message || String(err) });
-        console.warn(`[novo-crm-flags-sync] FAIL deal=${dealId}:`, err?.message || err);
       }
-    }
+    };
+
+    console.log(
+      `[novo-crm-flags-sync] write queue=${workQueue.length} concurrency=${concurrency} live_stage=${liveStage}`
+    );
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
   }
 
   const result = {
@@ -532,6 +652,9 @@ export async function runFlagsStageSync(opts = {}) {
     skipped_no_deal: skippedNoDeal,
     skipped_missing: skippedMissing,
     skipped_unchanged: skippedUnchanged,
+    write_queue: dryRun ? 0 : workQueue.length,
+    concurrency,
+    live_stage: liveStage,
     caa_retencao_hours: caaRetencaoHours,
     caa_open_ids: caaT0Map.size,
     stages_by_target: stagesByTarget,
