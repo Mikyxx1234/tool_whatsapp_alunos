@@ -34,7 +34,7 @@ const OPTIONS: Array<{
   {
     id: 'sync_crm',
     title: 'Sync Novo CRM',
-    description: 'Espelho local, lacunas (CPF/RGM) e enriquecimento a partir de matriculados.',
+    description: 'Espelho noturno (cache) + att de etapas + criação de leads novos do dia.',
     icon: Database,
   },
 ];
