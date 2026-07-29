@@ -6,8 +6,9 @@
  *   fields      — sobrescreve campos SIAA (curso/polo/situação/email/rgm/cpf/nasc)
  *   both        — fields + flags_stage
  *
- * Intocáveis (não move etapa): Ganho, Retenção, Cancelado.
- * Fonte: espelho local (novo_crm_person_cache) + snapshots das bases + CAA open.
+ * Intocáveis (não move etapa): Ganho, Cancelado; Retenção sem CAA open (manual).
+ * CAA open ≤72h → Retenção; após 72h segue SIAA (pode sair de Retenção).
+ * Apply otimizado: pula flags/getDeal quando o cache já está alinhado.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -20,7 +21,10 @@ import {
 } from '../utils/novoCrmFieldMapping.js';
 import {
   classifyMatriculado,
+  getCaaRetencaoHours,
   getNovoCrmDealFieldIds,
+  getNovoCrmStageIds,
+  isCaaWithinRetencaoWindow,
   isUntouchableStageId,
   stageNameFromId,
   titleCasePolo,
@@ -47,6 +51,40 @@ function inSet(set, cpf, rgm) {
   return false;
 }
 
+/** Normaliza valor de flag CRM para comparar Sim/Não. */
+function normFlagValue(v) {
+  const s = String(v ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  if (!s) return '';
+  if (s === 'sim' || s === 'true' || s === '1' || s === 'yes') return 'sim';
+  if (s === 'nao' || s === 'false' || s === '0' || s === 'no') return 'nao';
+  return s;
+}
+
+/**
+ * Lê valor de custom field no deal do cache (por id e/ou nome).
+ * @param {object} deal
+ * @param {string} fieldId
+ * @param {string[]} names
+ */
+function readDealField(deal, fieldId, names = []) {
+  const id = String(fieldId || '').trim();
+  const wanted = names.map((n) => n.toLowerCase());
+  for (const f of deal?.customFields || []) {
+    const fid = String(f?.id || f?.fieldId || '').trim();
+    const name = String(f?.name || '')
+      .trim()
+      .toLowerCase();
+    if ((id && fid === id) || (wanted.length && wanted.includes(name))) {
+      if (f?.value != null && String(f.value).trim() !== '') return String(f.value).trim();
+    }
+  }
+  return '';
+}
+
 function situacaoRank(row) {
   const sit = String(row['Situação Matrícula'] || row.Situacao || '')
     .toUpperCase()
@@ -65,7 +103,23 @@ function keepBestRow(map, key, row) {
 }
 
 function maxErrorsBeforeAbort() {
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 200);
+  // Cap alto: ghost deals no cache (404) não contam — ver isDealMissingError.
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 2000);
+}
+
+/** Deal apagado no CRM mas ainda no espelho local — skip, não abort. */
+function isDealMissingError(err) {
+  const status = Number(err?.status);
+  if (status === 404) return true;
+  const msg = String(err?.message || err || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  return (
+    msg.includes('nao encontrado') ||
+    msg.includes('not found') ||
+    msg.includes('negocio nao encontrado')
+  );
 }
 
 async function loadIdSetFromBase(category) {
@@ -148,14 +202,17 @@ export async function runFlagsStageSync(opts = {}) {
 
   patchJob({ phase: 'loading_bases', status_message: 'Carregando bases…' });
 
-  const [remat, caa, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
-    caaProtocolsRepo.loadOpenCaaIdSet(),
+    caaProtocolsRepo.loadOpenCaaT0Map(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('acessos-blackboard'),
     loadIdSetFromBase('provavel-evasao'),
   ]);
+  const caaRetencaoHours = getCaaRetencaoHours();
+  const stageIds = getNovoCrmStageIds();
+  const retencaoStageId = String(stageIds.Retenção || '').trim();
 
   /** @type {Map<string, Record<string, unknown>>} */
   const byCpf = new Map();
@@ -185,6 +242,8 @@ export async function runFlagsStageSync(opts = {}) {
   let fieldsUpdated = 0;
   let skippedNoMatch = 0;
   let skippedNoDeal = 0;
+  let skippedMissing = 0;
+  let skippedUnchanged = 0;
   let errors = 0;
   /** @type {Record<string, number>} */
   const stagesByTarget = {};
@@ -200,6 +259,15 @@ export async function runFlagsStageSync(opts = {}) {
       aborted = true;
       abortReason = `abort após ${errors} erros`;
       console.error(`[novo-crm-flags-sync] ${abortReason}`);
+    }
+  };
+
+  const noteMissing = (dealId, cpf) => {
+    skippedMissing += 1;
+    if (skippedMissing <= 5 || skippedMissing % 100 === 0) {
+      console.warn(
+        `[novo-crm-flags-sync] SKIP missing deal=${dealId} cpf=${cpf || '?'} (total=${skippedMissing})`
+      );
     }
   };
 
@@ -246,9 +314,12 @@ export async function runFlagsStageSync(opts = {}) {
       const mapped = extractMatriculadosMappedValues(matRow);
       const cpf = digits(mapped.cpf) || cpfDeal;
       const rgm = digits(mapped.rgm) || rgmDeal;
+      const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
+      const inCaaOpen = Boolean(caaT0);
+      const inCaaFresh = isCaaWithinRetencaoWindow(caaT0);
       const classification = classifyMatriculado(matRow, {
         inRematricula: inSet(remat, cpf, rgm),
-        inCaa: inSet(caa, cpf, rgm),
+        inCaaFresh,
         inDoc: inSet(doc, cpf, rgm),
         inInad: inSet(inad, cpf, rgm),
         inBb: inSet(bb, cpf, rgm),
@@ -261,30 +332,37 @@ export async function runFlagsStageSync(opts = {}) {
       let currentStageId = String(deal.stageId || '').trim() || null;
 
       /** @type {Array<{fieldId:string,value:string}>} */
-      const values = [];
+      const flagValues = [];
       if (doFlags) {
         const flagPairs = [
-          [fieldIds.doc_pendentes, simNao(classification.flags.doc_pendentes)],
-          [fieldIds.inadimplente, simNao(classification.flags.inadimplente)],
-          [fieldIds.acessoblack, simNao(classification.flags.acessoblack)],
-          [fieldIds.evasao, simNao(classification.flags.evasao)],
+          [fieldIds.doc_pendentes, simNao(classification.flags.doc_pendentes), ['doc pendentes', 'doc_pendentes']],
+          [fieldIds.inadimplente, simNao(classification.flags.inadimplente), ['inadimplente']],
+          [fieldIds.acessoblack, simNao(classification.flags.acessoblack), ['acessoblack', 'acesso black']],
+          [fieldIds.evasao, simNao(classification.flags.evasao), ['evasao', 'evasão']],
         ];
-        for (const [fieldId, value] of flagPairs) {
-          if (fieldId) values.push({ fieldId, value });
+        for (const [fieldId, value, names] of flagPairs) {
+          if (!fieldId) continue;
+          const cur = normFlagValue(readDealField(deal, fieldId, names));
+          const next = normFlagValue(value);
+          if (cur && cur === next) continue;
+          flagValues.push({ fieldId, value });
         }
       }
+
+      /** @type {Array<{fieldId:string,value:string}>} */
+      const fieldValues = [];
       if (doFields) {
         if (digits(mapped.cpf) && fieldIds.cpf) {
-          values.push({ fieldId: fieldIds.cpf, value: digits(mapped.cpf) });
+          fieldValues.push({ fieldId: fieldIds.cpf, value: digits(mapped.cpf) });
         }
         if (digits(mapped.rgm) && fieldIds.rgm) {
-          values.push({ fieldId: fieldIds.rgm, value: digits(mapped.rgm) });
+          fieldValues.push({ fieldId: fieldIds.rgm, value: digits(mapped.rgm) });
         }
         if (mapped.curso && fieldIds.curso) {
-          values.push({ fieldId: fieldIds.curso, value: mapped.curso });
+          fieldValues.push({ fieldId: fieldIds.curso, value: mapped.curso });
         }
         if (mapped.polo && fieldIds.polo) {
-          values.push({
+          fieldValues.push({
             fieldId: fieldIds.polo,
             value: titleCasePolo(mapped.polo) || mapped.polo,
           });
@@ -294,32 +372,43 @@ export async function runFlagsStageSync(opts = {}) {
           { inRematricula: inSet(remat, cpf, rgm) }
         );
         if (situacao && fieldIds.situacao) {
-          values.push({ fieldId: fieldIds.situacao, value: situacao });
+          fieldValues.push({ fieldId: fieldIds.situacao, value: situacao });
         }
         if (mapped.nivel && fieldIds.nivel) {
-          values.push({ fieldId: fieldIds.nivel, value: mapped.nivel });
+          fieldValues.push({ fieldId: fieldIds.nivel, value: mapped.nivel });
         }
         if (mapped._email && fieldIds.email) {
-          values.push({ fieldId: fieldIds.email, value: mapped._email });
+          fieldValues.push({ fieldId: fieldIds.email, value: mapped._email });
         }
         if (mapped.e_mail_ad && fieldIds.email_ad) {
-          values.push({ fieldId: fieldIds.email_ad, value: mapped.e_mail_ad });
+          fieldValues.push({ fieldId: fieldIds.email_ad, value: mapped.e_mail_ad });
         }
         if (matRow['Data Nascimento'] && fieldIds.nasc) {
-          values.push({
+          fieldValues.push({
             fieldId: fieldIds.nasc,
             value: String(matRow['Data Nascimento']).slice(0, 10),
           });
         }
       }
 
-      const decideMove = (stageId) => {
+      const values = [...flagValues, ...fieldValues];
+
+      /**
+       * @param {string|null} stageId
+       * @param {boolean} caaOpen
+       */
+      const decideMove = (stageId, caaOpen) => {
         if (!doFlags || !classification.stageId) {
           return { move: false, untouchable: false, unknown: false };
         }
         if (!stageId) return { move: false, untouchable: false, unknown: true };
-        const untouchable = isUntouchableStageId(stageId);
-        if (untouchable) return { move: false, untouchable: true, unknown: false };
+        if (isUntouchableStageId(stageId)) {
+          return { move: false, untouchable: true, unknown: false };
+        }
+        // Retenção sem CAA open = manual / outra automação — não mexe.
+        if (retencaoStageId && stageId === retencaoStageId && !caaOpen) {
+          return { move: false, untouchable: true, unknown: false };
+        }
         if (classification.stageId === stageId) {
           return { move: false, untouchable: false, unknown: false };
         }
@@ -327,9 +416,10 @@ export async function runFlagsStageSync(opts = {}) {
       };
 
       if (dryRun) {
-        const d = decideMove(currentStageId);
-        if (doFlags) flagsUpdated += 1;
-        if (doFields) fieldsUpdated += 1;
+        const d = decideMove(currentStageId, inCaaOpen);
+        if (doFlags && flagValues.length) flagsUpdated += 1;
+        if (doFields && fieldValues.length) fieldsUpdated += 1;
+        if (!flagValues.length && !fieldValues.length && !d.move) skippedUnchanged += 1;
         if (d.move) stagesMoved += 1;
         else if (d.untouchable) stagesSkippedUntouchable += 1;
         else if (d.unknown) stagesSkippedUnknown += 1;
@@ -344,35 +434,55 @@ export async function runFlagsStageSync(opts = {}) {
             move: d.move,
             untouchable: d.untouchable,
             unknown_stage: d.unknown,
+            in_caa_fresh: inCaaFresh,
+            in_caa_open: inCaaOpen,
             flags: classification.flags,
+            flags_would_write: flagValues.length,
           });
         }
         continue;
       }
 
       try {
-        if (values.length) {
-          await updateDealCustomFields(dealId, values);
-          if (doFlags) flagsUpdated += 1;
-          if (doFields) fieldsUpdated += 1;
+        const cacheDecide = decideMove(currentStageId, inCaaOpen);
+        const needsFlagWrite = flagValues.length > 0;
+        const needsFieldWrite = fieldValues.length > 0;
+        // getDeal só se cache aponta move ou etapa desconhecida.
+        const needsLiveStage =
+          doFlags &&
+          Boolean(classification.stageId) &&
+          (cacheDecide.move || cacheDecide.unknown);
+
+        if (!needsFlagWrite && !needsFieldWrite && !needsLiveStage) {
+          skippedUnchanged += 1;
+          if (cacheDecide.untouchable) stagesSkippedUntouchable += 1;
+          continue;
         }
 
-        // Antes de mover: revalida etapa ao vivo (cache pode estar stale).
+        if (values.length) {
+          await updateDealCustomFields(dealId, values);
+          if (needsFlagWrite) flagsUpdated += 1;
+          if (needsFieldWrite) fieldsUpdated += 1;
+        }
+
         let liveStageId = currentStageId;
-        if (doFlags && classification.stageId) {
+        if (needsLiveStage) {
           try {
             const live = await getDeal(dealId);
             liveStageId = String(live?.stageId || live?.stage?.id || '').trim() || null;
             currentStageId = liveStageId;
           } catch (err) {
-            // Sem etapa viva → fail-closed (não move).
+            if (isDealMissingError(err)) {
+              noteMissing(dealId, cpf);
+              continue;
+            }
             noteError({ dealId, cpf, error: `getDeal: ${err?.message || err}` });
             stagesSkippedUnknown += 1;
             continue;
           }
         }
 
-        const d = decideMove(liveStageId);
+        const d = decideMove(liveStageId, inCaaOpen);
         if (d.move) {
           await updateDeal(dealId, { stageId: classification.stageId });
           stagesMoved += 1;
@@ -392,9 +502,15 @@ export async function runFlagsStageSync(opts = {}) {
             moved: d.move,
             untouchable: d.untouchable,
             unknown_stage: d.unknown,
+            in_caa_fresh: inCaaFresh,
+            in_caa_open: inCaaOpen,
           });
         }
       } catch (err) {
+        if (isDealMissingError(err)) {
+          noteMissing(dealId, cpf);
+          continue;
+        }
         noteError({ dealId, cpf, error: err?.message || String(err) });
         console.warn(`[novo-crm-flags-sync] FAIL deal=${dealId}:`, err?.message || err);
       }
@@ -414,6 +530,10 @@ export async function runFlagsStageSync(opts = {}) {
     stages_skipped_unknown: stagesSkippedUnknown,
     skipped_no_match: skippedNoMatch,
     skipped_no_deal: skippedNoDeal,
+    skipped_missing: skippedMissing,
+    skipped_unchanged: skippedUnchanged,
+    caa_retencao_hours: caaRetencaoHours,
+    caa_open_ids: caaT0Map.size,
     stages_by_target: stagesByTarget,
     errors,
     aborted,

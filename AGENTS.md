@@ -5,10 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-29 — Att de etapas rápida + Retenção CAA só 72h
+- **Modelo usado:** Composer/Grok.
+- **Problema:** Att de etapas fazia `updateDealCustomFields` + `getDeal` em quase todo deal matched (~36k) → horas a 3 rps. CAA `open` sem janela inchava Retenção (estoque velho ~852 open).
+- **Performance:** no apply `flags_stage`, só escreve flags se Sim/Não diferir do cache; `getDeal` só se cache indicar move ou stage ausente; deal já alinhado → 0 calls (`skipped_unchanged`).
+- **Regra Retenção:** CAA open com T0=`coalesce(data_chegada, first_seen_at)` e idade ≤ **72h** (`NOVO_CRM_CAA_RETENCAO_HOURS`) → Retenção. Após 72h: **não** força Retenção — segue SIAA (Cancel/Tranc → Perdido; Em curso → remat/acolhimento/Pós/Graduação). Untouchable global: **Ganho + Cancelado** apenas. Já em Retenção **sem** CAA open = manual/outra automação → não mexe. Já em Retenção **com** CAA open >72h → pode sair para SIAA/Perdido.
+- **Arquivos:** `caaProtocolsRepository.js` (`loadOpenCaaT0Map`), `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, provision/orphan callers, `NovoCrmSyncPanel.tsx`.
+
 ### 2026-07-28 — classifyMatriculado: CAA pendente → etapa Retenção
 - **Modelo usado:** Composer/Grok.
-- **Regra:** Att de etapas / provision passa a **atribuir** Retenção quando o aluno está na fila CAA aberta (`caa_protocols.status='open'` — cancelamento + PENDENTE, mesma fonte do roster CAA). Prioridade: CANCEL/TRANC SIAA → **Perdido**; senão CAA open → **Retenção**; senão remat → Sem Rematricula; senão acolhimento; senão Pós/Graduação. Untouchable permanece: quem já está em Ganho/Retenção/Cancelado **não sai** automaticamente; mover *para* Retenção a partir de Graduação etc. é desejado.
-- **Arquivos:** `novoCrmStageRules.js`, `caaProtocolsRepository.js#loadOpenCaaIdSet`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `scripts/novo-crm-stage-sim.mjs`.
+- **Status:** **Supersedida em 29/07** — ver «Att de etapas rápida + Retenção CAA só 72h». Retenção deixa de ser para qualquer CAA open e deixa de ser untouchable global.
+- **Regra original:** Att de etapas / provision atribuía Retenção a qualquer `caa_protocols.status='open'`. Untouchable: Ganho/Retenção/Cancelado.
 
 ### 2026-07-28 — INCIDENTE: orphan-apply spam de deals no sibling + TRANCADO→Graduação
 - **Modelo usado:** Composer/Grok.

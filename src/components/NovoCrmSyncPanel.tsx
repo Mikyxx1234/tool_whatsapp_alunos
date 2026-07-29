@@ -216,8 +216,8 @@ export function NovoCrmSyncPanel() {
           `Match: ${preview.matched.toLocaleString('pt-BR')}\n` +
           `Flags a atualizar: ${preview.flags_updated.toLocaleString('pt-BR')}\n` +
           `Etapas a mover: ${preview.stages_moved.toLocaleString('pt-BR')}\n` +
-          `Intocáveis (Ganho/Retenção/Cancelado): ${preview.stages_skipped_untouchable.toLocaleString('pt-BR')}\n\n` +
-          `Usa financeiro, docs, BB, evasão e rematrícula.\n` +
+          `Intocáveis (Ganho/Cancelado + Retenção sem CAA open): ${preview.stages_skipped_untouchable.toLocaleString('pt-BR')}\n\n` +
+          `CAA → Retenção só nas primeiras 72h (data chegada). Depois segue status SIAA.\n` +
           `Confirmar aplicação?\n` +
           `(Dica: rode Full Sync antes se criou gente recentemente.)`
       );
@@ -420,7 +420,8 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-emerald-900">2. Att de etapas</p>
             <p className="text-[11px] text-emerald-800/80 flex-1">
-              Atualiza flags e move etapa conforme bases do dia. Não toca Ganho/Retenção/Cancelado.
+              Flags + etapa. CAA→Retenção só ≤72h; depois SIAA/Perdido. Não toca Ganho/Cancelado nem
+              Retenção manual (sem CAA open).
             </p>
             <button
               type="button"

@@ -493,8 +493,8 @@ router.get('/provision-matriculados-novo-crm-status', requireApiKey, async (req,
  * ?dry_run=1|0&mode=flags_stage|fields|both&async=1&max=
  *
  * Atualiza flags (Sim/Não) e/ou move etapa dos deals existentes.
- * Intocáveis: Ganho, Retenção, Cancelado (não move etapa).
- * Preferir dry_run=1 primeiro. Botão manual na UI Sync Novo CRM.
+ * Intocáveis: Ganho, Cancelado; Retenção sem CAA open (manual).
+ * CAA→Retenção só ≤72h (NOVO_CRM_CAA_RETENCAO_HOURS). Preferir dry_run=1 primeiro.
  */
 router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
   try {

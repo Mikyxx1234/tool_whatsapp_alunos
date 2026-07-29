@@ -27,6 +27,7 @@ import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
+  isCaaWithinRetencaoWindow,
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -223,9 +224,9 @@ export async function runMatriculadosProvision(opts = {}) {
     status_message: `Carregando bases (mode=${mode})…`,
   });
 
-  const [remat, caa, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
-    caaProtocolsRepo.loadOpenCaaIdSet(),
+    caaProtocolsRepo.loadOpenCaaT0Map(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('acessos-blackboard'),
@@ -426,7 +427,9 @@ export async function runMatriculadosProvision(opts = {}) {
         rgm,
         classification: classifyMatriculado(r, {
           inRematricula: inSet(remat, cpf, rgm),
-          inCaa: inSet(caa, cpf, rgm),
+          inCaaFresh: isCaaWithinRetencaoWindow(
+            caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm)
+          ),
           inDoc: inSet(doc, cpf, rgm),
           inInad: inSet(inad, cpf, rgm),
           inBb: inSet(bb, cpf, rgm),

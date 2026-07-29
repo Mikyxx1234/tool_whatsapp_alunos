@@ -82,10 +82,29 @@ export function getNovoCrmStageIds() {
   };
 }
 
-/** Etapas que o job NÃO move (humano/IA). Flags ainda podem ser atualizadas. */
+/**
+ * Horas em que CAA open força etapa Retenção (default 72).
+ * Depois: classifica por SIAA; Retenção sem CAA open = manual/outra automação.
+ */
+export function getCaaRetencaoHours() {
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_CAA_RETENCAO_HOURS) || 72, 1), 8760);
+}
+
+/** @param {Date|null|undefined} t0 @param {Date} [now] */
+export function isCaaWithinRetencaoWindow(t0, now = new Date()) {
+  if (!t0 || !(t0 instanceof Date) || Number.isNaN(t0.getTime())) return false;
+  const ms = getCaaRetencaoHours() * 60 * 60 * 1000;
+  return now.getTime() - t0.getTime() <= ms;
+}
+
+/**
+ * Etapas que o job NÃO move (humano/IA). Flags ainda podem ser atualizadas.
+ * Retenção NÃO entra aqui — saída pós-72h / keep manual é decidido no sync
+ * (já em Retenção sem CAA open = intocável).
+ */
 export function getUntouchableStageIds() {
   const s = getNovoCrmStageIds();
-  return new Set([s.Ganho, s.Retenção, s.Cancelado].filter(Boolean));
+  return new Set([s.Ganho, s.Cancelado].filter(Boolean));
 }
 
 export function isUntouchableStageId(stageId) {
@@ -206,6 +225,7 @@ export function resolveAcolhimentoWindow(matRow, now = new Date()) {
  * @param {{
  *   inRematricula?: boolean,
  *   inCaa?: boolean,
+ *   inCaaFresh?: boolean,
  *   inDoc?: boolean,
  *   inInad?: boolean,
  *   inBb?: boolean,
@@ -233,21 +253,24 @@ export function classifyMatriculado(matRow, ctx) {
 
   const now = ctx.now || new Date();
   const { inAcolhimento, acolhimentoAte, cicloNorm } = resolveAcolhimentoWindow(matRow, now);
+  // Retenção só com CAA open dentro da janela (default 72h). Callers novos
+  // passam inCaaFresh; inCaa legado só conta se inCaaFresh não veio.
+  const inCaaFresh =
+    ctx.inCaaFresh !== undefined ? Boolean(ctx.inCaaFresh) : Boolean(ctx.inCaa);
 
   const stages = getNovoCrmStageIds();
   /** @type {string} */
   let stageName;
   // Prioridade:
   //   1. CANCELADO/TRANCADO (SIAA) → Perdido (já perdido; vence CAA)
-  //   2. CAA cancelamento pendente (open) → Retenção
+  //   2. CAA open ≤72h → Retenção
   //   3. rematrícula → Sem Rematricula
   //   4. acolhimento por ciclo/cutoff
   //   5. Pós / Graduação
-  // Etapa CRM "Cancelado" continua só manual/IA. Retenção passa a ser atribuída
-  // pelo job quando inCaa; quem JÁ está em Retenção/Ganho/Cancelado não sai
-  // (untouchable no sync — ver isUntouchableStageId).
+  // Após 72h: não força Retenção — segue SIAA (Em curso → funil; Cancel→Perdido).
+  // Quem já está em Retenção sem CAA open permanece (manual) no sync de flags.
   if (isCancelado || isTrancado) stageName = 'Perdido';
-  else if (ctx.inCaa) stageName = 'Retenção';
+  else if (inCaaFresh) stageName = 'Retenção';
   else if (ctx.inRematricula) stageName = 'Sem Rematricula';
   else if (inAcolhimento) stageName = 'Acolhimento';
   else if (isPos) stageName = 'Pós';
@@ -274,7 +297,8 @@ export function classifyMatriculado(matRow, ctx) {
       inAcolhimento,
       acolhimentoAte,
       inRematricula: Boolean(ctx.inRematricula),
-      inCaa: Boolean(ctx.inCaa),
+      inCaa: inCaaFresh,
+      inCaaFresh,
       cpf: digits(pick(matRow, ['CPF', 'cpf'])),
       rgm: digits(pick(matRow, ['RGM', 'rgm'])),
     },

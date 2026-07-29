@@ -35,6 +35,7 @@ import {
 import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
+  isCaaWithinRetencaoWindow,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
@@ -363,9 +364,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const byEmail = await buildAlunoByEmailIndex(matSnap.id);
 
   patchJob({ phase: 'load_bases', status_message: 'Carregando bases satélite…' });
-  const [remat, caa, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
-    caaProtocolsRepo.loadOpenCaaIdSet(),
+    caaProtocolsRepo.loadOpenCaaT0Map(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('acessos-blackboard'),
@@ -615,7 +616,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
         dealsWouldCreateOnSibling += 1;
         const classification = classifyMatriculado(it.row, {
           inRematricula: inSet(remat, it.cpf, it.rgm),
-          inCaa: inSet(caa, it.cpf, it.rgm),
+          inCaaFresh: isCaaWithinRetencaoWindow(
+            caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm)
+          ),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
           inBb: inSet(bb, it.cpf, it.rgm),
@@ -677,7 +680,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
         dealsWouldCreateOnOrphan += 1;
         const classification = classifyMatriculado(it.row, {
           inRematricula: inSet(remat, it.cpf, it.rgm),
-          inCaa: inSet(caa, it.cpf, it.rgm),
+          inCaaFresh: isCaaWithinRetencaoWindow(
+            caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm)
+          ),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
           inBb: inSet(bb, it.cpf, it.rgm),

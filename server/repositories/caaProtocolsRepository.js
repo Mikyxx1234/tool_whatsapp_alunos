@@ -239,22 +239,70 @@ export async function listOpenProtocolsByRgm() {
 }
 
 /**
- * Set `cpf:…` / `rgm:…` da fila CAA aberta (status='open' em caa_protocols).
- * Mesma fonte do roster "CAA — ativações disponíveis" (sem filtro de janela 48h —
- * quem ainda está open segue em luta de retenção no CRM).
- * @returns {Promise<Set<string>>}
+ * T0 do protocolo CAA para janela de Retenção no CRM:
+ * coalesce(data_chegada, first_seen_at).
+ * @param {object} p
+ * @returns {Date|null}
  */
-export async function loadOpenCaaIdSet() {
+export function caaProtocolT0(p) {
+  const raw =
+    p?.data_chegada ||
+    (p?.data && typeof p.data === 'object'
+      ? p.data['Data Chegada'] || p.data.data_chegada || p.data.DataChegada
+      : null) ||
+    p?.first_seen_at ||
+    null;
+  if (!raw) return null;
+  const d = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Map `cpf:…` / `rgm:…` → Date (T0) dos protocolos CAA `open`.
+ * Se a mesma chave aparece em mais de um protocolo, fica o T0 mais recente.
+ * @returns {Promise<Map<string, Date>>}
+ */
+export async function loadOpenCaaT0Map() {
   const rows = await listOpenProtocolsByRgm();
-  const set = new Set();
+  /** @type {Map<string, Date>} */
+  const map = new Map();
+  const put = (key, t0) => {
+    if (!key || !t0) return;
+    const prev = map.get(key);
+    if (!prev || t0.getTime() > prev.getTime()) map.set(key, t0);
+  };
   for (const p of rows) {
     const data = p?.data && typeof p.data === 'object' ? p.data : {};
     const cpf = String(p.cpf || data.CPF || data.cpf || '').replace(/\D/g, '');
     const rgm = String(p.rgm || data.RGM || data.rgm || '').replace(/\D/g, '');
-    if (cpf.length >= 11) set.add(`cpf:${cpf}`);
-    if (rgm) set.add(`rgm:${rgm}`);
+    const t0 = caaProtocolT0(p);
+    if (!t0) continue;
+    if (cpf.length >= 11) put(`cpf:${cpf}`, t0);
+    if (rgm) put(`rgm:${rgm}`, t0);
   }
-  return set;
+  return map;
+}
+
+/**
+ * Set `cpf:…` / `rgm:…` da fila CAA aberta (status='open' em caa_protocols).
+ * @returns {Promise<Set<string>>}
+ */
+export async function loadOpenCaaIdSet() {
+  const map = await loadOpenCaaT0Map();
+  return new Set(map.keys());
+}
+
+/**
+ * @param {Map<string, Date>} t0Map
+ * @param {string} cpf
+ * @param {string} rgm
+ * @returns {Date|null}
+ */
+export function lookupCaaT0(t0Map, cpf, rgm) {
+  if (!t0Map || typeof t0Map.get !== 'function') return null;
+  if (cpf && t0Map.has(`cpf:${cpf}`)) return t0Map.get(`cpf:${cpf}`) || null;
+  if (rgm && t0Map.has(`rgm:${rgm}`)) return t0Map.get(`rgm:${rgm}`) || null;
+  return null;
 }
 
 /**
