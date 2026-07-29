@@ -14,6 +14,7 @@ import {
   maintenanceApi,
   type NovoCrmCacheStatusResponse,
   type NovoCrmRegressionEvent,
+  type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
 
 function fmtDt(iso: string | null | undefined) {
@@ -54,6 +55,10 @@ export function NovoCrmSyncPanel() {
   const [provisionJobId, setProvisionJobId] = useState<string | null>(null);
   const [provisionMsg, setProvisionMsg] = useState<string | null>(null);
   const [provisionBusy, setProvisionBusy] = useState(false);
+
+  const [dedupeBusy, setDedupeBusy] = useState(false);
+  const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
+  const [dedupePreview, setDedupePreview] = useState<OrphanDedupePreviewResponse | null>(null);
 
   const pollRef = useRef<number | null>(null);
 
@@ -268,6 +273,22 @@ export function NovoCrmSyncPanel() {
     }
   };
 
+  const runDedupePreview = async () => {
+    if (dedupeBusy) return;
+    setDedupeBusy(true);
+    setDedupeMsg('Calculando prévia dedupe…');
+    setDedupePreview(null);
+    try {
+      const preview = await maintenanceApi.previewOrphanDedupe({ scope: 'both' });
+      setDedupePreview(preview);
+      setDedupeMsg(null);
+    } catch (e) {
+      setDedupeMsg(e instanceof Error ? e.message : 'Falha na prévia dedupe');
+    } finally {
+      setDedupeBusy(false);
+    }
+  };
+
   const running = status?.running_sync || null;
   const total = running?.contacts_total ?? null;
   const seen = running?.contacts_seen ?? 0;
@@ -456,6 +477,31 @@ export function NovoCrmSyncPanel() {
               )}
               {provisionJobId ? 'Criando…' : 'Criação de leads novos'}
             </button>
+          </div>
+
+          <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
+            <p className="text-xs font-semibold text-violet-900">4. Dedupe órfãos/incompletos</p>
+            <p className="text-[11px] text-violet-800/80 flex-1">
+              Prévia: conta contacts sem deal (órfãos) e com deal sem CPF/RGM (incompletos) matchados por e-mail ou telefone. Sibling melhor → deal do ruim vai para Perdido. Sem sibling → enrich leve (CPF/RGM).
+            </p>
+            <button
+              type="button"
+              onClick={() => void runDedupePreview()}
+              disabled={dedupeBusy}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {dedupeBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserRound className="w-3.5 h-3.5" />}
+              {dedupeBusy ? 'Calculando…' : 'Prévia dedupe (scope=both)'}
+            </button>
+            {dedupeMsg && <p className="text-[11px] text-violet-700">{dedupeMsg}</p>}
+            {dedupePreview && (
+              <div className="mt-1 text-[11px] text-violet-900 space-y-0.5">
+                <p>Órfãos: <strong>{dedupePreview.orphans_total.toLocaleString('pt-BR')}</strong> · Aluno: <strong>{dedupePreview.orphan_aluno.toLocaleString('pt-BR')}</strong> · Sem match: {dedupePreview.orphan_no_match.toLocaleString('pt-BR')}</p>
+                <p>Dup skip (sem deal): {dedupePreview.dup_skip_no_deal.toLocaleString('pt-BR')} · Deals criaria: <strong>{(dedupePreview.deals_would_create_on_orphan + dedupePreview.deals_would_create_on_sibling).toLocaleString('pt-BR')}</strong></p>
+                <p>Incompletos: <strong>{dedupePreview.incomplete_total.toLocaleString('pt-BR')}</strong> · Dup→Perdido: <strong>{dedupePreview.dup_to_perdido.toLocaleString('pt-BR')}</strong> ({(dedupePreview.deals_would_move_perdido ?? 0).toLocaleString('pt-BR')} deals) · Enrich: {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</p>
+                <p>Match e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
+              </div>
+            )}
           </div>
         </div>
 

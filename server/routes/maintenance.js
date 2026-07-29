@@ -631,13 +631,15 @@ router.get('/enrich-novo-crm-status', requireApiKey, async (req, res) => {
 });
 
 /**
- * POST /api/maintenance/provision-orphan-alunos-novo-crm?dry_run=1|0&async=1&max=
+ * POST /api/maintenance/provision-orphan-alunos-novo-crm?dry_run=1|0&async=1&max=&scope=
  *
- * Cria deal(s) para contacts órfãos (sem nenhum deal) do cache Novo CRM cujo
- * e-mail bate com o snapshot de matriculados. Nunca cria um segundo contact:
- * se já existe outro contact ("sibling") com deal para a mesma pessoa, cria
- * os deals que faltam nesse sibling em vez do órfão (ver AGENTS.md 28/07/2026).
+ * scope=orphans (default): cria deals para contacts sem nenhum deal.
+ * scope=incomplete: dedupe contacts COM deal mas sem CPF/RGM —
+ *   sibling mais completo → move deals do ruim para Perdido;
+ *   sem sibling → empty-only fill CPF/RGM.
+ * scope=both: ambos em sequência.
  *
+ * Match por e-mail OU telefone. Nunca cria segundo contact.
  * dry_run=1 (default): prévia síncrona.
  * dry_run=0&async=1: grava em background.
  */
@@ -652,9 +654,12 @@ router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res)
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
     const asyncMode =
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
+    // scope: orphans | incomplete | both (default orphans para compat; dedupe UI usa both)
+    const scopeRaw = String(req.query.scope || req.body?.scope || 'orphans').trim().toLowerCase();
+    const scope = ['orphans', 'incomplete', 'both'].includes(scopeRaw) ? scopeRaw : 'orphans';
 
     if (isDry) {
-      const preview = await previewOrphanAlunoProvision({ maxCreates });
+      const preview = await previewOrphanAlunoProvision({ maxCreates, scope });
       return res.json(preview);
     }
 
@@ -672,7 +677,7 @@ router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res)
         jobId: running.jobId,
       });
     }
-    const started = startOrphanAlunoProvisionApplyBackground({ maxCreates });
+    const started = startOrphanAlunoProvisionApplyBackground({ maxCreates, scope });
     if (!started.started) {
       return res.status(409).json({
         error: started.error || 'Provisionamento de órfãos já em andamento',
@@ -685,6 +690,7 @@ router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res)
       jobId: started.jobId,
       dry_run: false,
       async: Boolean(asyncMode),
+      scope,
       max_creates: maxCreates || null,
     });
   } catch (err) {

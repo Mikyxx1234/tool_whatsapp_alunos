@@ -5,6 +5,28 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-29 — Dedupe órfãos/incompletos por telefone + e-mail (scope orphans|incomplete|both)
+- **Modelo usado:** Executor (Sonnet 4.6).
+- **Problema:** ~1.041 contacts órfãos (sem deal) e ~3.039 contacts incompletos (deal sem CPF/RGM no espelho) precisavam de tratamento estruturado. Match anterior era só por e-mail; telefone ficava fora.
+- **Regras implementadas:**
+  - Match: e-mail **ou** telefone (matriculados index `byEmail` + `byPhone`). CPF/RGM usados apenas para sibling lookup.
+  - **Órfão (sem deal):**
+    - Sibling cobre todos os RGMs → `dup_skip_no_deal` (NÃO cria deal Perdido fantasma, NÃO apaga contact).
+    - Sibling falta algum RGM → cria deal(s) no sibling.
+    - Sem sibling → cria deal(s) no próprio órfão.
+  - **Incompleto (tem deal, sem CPF e/ou RGM):**
+    - Sibling com score de completude maior → `dup_to_perdido`: move deal(s) do contact ruim para etapa **Perdido** (via `updateDeal({ stageId: perdidoStageId })`); respeita `isUntouchableStageId`; pula se já Perdido.
+    - Sem sibling melhor → empty-only fill CPF/RGM no deal primário via `updateDealCustomFields`.
+  - Nunca cria segundo contact. Nunca apaga contact.
+- **Scope:** `orphans` (compat. com endpoint existente) | `incomplete` | `both`. Default endpoint: `orphans` (compat); novo dedupe UI usa `both`.
+- **Contadores novos no result:** `scope`, `matched_email`, `matched_phone`, `dup_skip_no_deal`, `dup_to_perdido`, `deals_would_move_perdido` / `deals_moved_perdido`, `incomplete_total`, `incomplete_scanned`, `incomplete_no_match`, `incomplete_enriched`, `index.by_phone`.
+- **Dry-run PROD (29/07):** orphans=1.041 · aluno=1.029 · dup_skip_no_deal=156 · dup_to_perdido=42 · deals_would_move_perdido=30 · deals_create_orphan=869 · deals_create_sibling=7 · incomplete=3.039 · sem_match=1.114 · enriched=1.780. Sem erros.
+- **Rota:** `POST /api/maintenance/provision-orphan-alunos-novo-crm?scope=both&dry_run=1` (prévia) / `?scope=both&dry_run=0&async=1` (apply). Parâmetro `scope` em query ou body.
+- **UI:** botão "Prévia dedupe (scope=both)" no `NovoCrmSyncPanel` (card 4), exibe contadores inline.
+- **Script:** `scripts/novo-crm-orphan-aluno-dryrun.mjs [maxCreates] [--scope=both]`.
+- **Arquivos:** `novoCrmOrphanAlunoProvisionService.js`, `server/routes/maintenance.js`, `src/services/maintenanceApi.ts`, `src/components/NovoCrmSyncPanel.tsx`, `scripts/novo-crm-orphan-aluno-dryrun.mjs`.
+- **Nota:** a entrada «28/07 — Enrich por e-mail + provisionamento de órfãos aluno» é supersedida nesta parte pelo match telefone + regra incompleto→Perdido acima.
+
 ### 2026-07-29 — Att de etapas rápida + Retenção CAA só 72h
 - **Modelo usado:** Composer/Grok.
 - **Problema:** Att de etapas fazia `updateDealCustomFields` + `getDeal` em quase todo deal matched (~36k) → horas a 3 rps. CAA `open` sem janela inchava Retenção (estoque velho ~852 open).

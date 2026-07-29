@@ -1,22 +1,21 @@
 /**
- * Provisionamento de "órfãos aluno" no Novo CRM: contacts sem nenhum deal
- * (primary_deal_id nulo) cujo e-mail bate com o snapshot de matriculados.
+ * Provisionamento / dedupe de órfãos + incompletos no Novo CRM.
  *
- * Regra (auditoria 28/07/2026, ver AGENTS.md):
- *   - Sem sibling (nenhum outro contact com deal compartilhando email/cpf/rgm)
- *     → cria 1 deal por RGM distinto NO PRÓPRIO contact órfão.
- *   - Com sibling que já tem deal para TODOS os RGMs do aluno
- *     → `dup_contact_skip` (não cria nada; órfão é duplicata de contact).
- *   - Com sibling faltando algum RGM (multi-curso)
- *     → cria os deals que faltam NO SIBLING (contact "bom"), nunca no órfão.
- *   - Nunca cria um segundo contact.
+ * Match matriculados: e-mail **ou telefone** (além de cpf/rgm no sibling).
  *
- * Env:
- *   NOVO_CRM_ORPHAN_PROVISION_DELAY_MS=20
- *   NOVO_CRM_ORPHAN_PROVISION_CONCURRENCY=3
- *   NOVO_CRM_ORPHAN_PROVISION_MAX_PER_RUN=20000
- *   NOVO_CRM_ORPHAN_OFFSET=0          — pula N primeiros órfãos (retomada segura)
- *   NOVO_CRM_ORPHAN_LIVE_CHECK=0|1    — default 1; 0 quando offset cobre run anterior
+ * Órfão (sem deal):
+ *   - Sem sibling → cria 1 deal por RGM no próprio órfão.
+ *   - Sibling falta RGM → cria no sibling.
+ *   - Sibling cobre tudo → dup_skip_no_deal (não cria deal Perdido fantasma).
+ *
+ * Incompleto (tem deal, sem CPF e/ou RGM no espelho):
+ *   - Sibling “bom” → move deal(s) do contact ruim para Perdido.
+ *   - Sem sibling → empty-only fill no deal (enrich leve).
+ *
+ * Nunca cria segundo contact. Nunca apaga contact.
+ *
+ * Env: NOVO_CRM_ORPHAN_* (delay/concurrency/max/offset/live_check)
+ * scope: orphans | incomplete | both (default both no dedupe endpoint)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -30,12 +29,15 @@ import {
 import {
   normalizeCpf,
   normalizeEmail,
+  normalizePhone,
   normalizeRgm,
 } from '../utils/novoCrmCacheNormalize.js';
 import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
+  getNovoCrmStageIds,
   isCaaWithinRetencaoWindow,
+  isUntouchableStageId,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
@@ -46,6 +48,7 @@ import {
   getDeal,
   isNovoCrmApiConfigured,
   listDealsPage,
+  updateDeal,
   updateDealCustomFields,
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
@@ -140,23 +143,25 @@ function defaultMaxCreates() {
 }
 
 /**
- * Índice matriculados por e-mail (pessoal ou acadêmico) → deals distintos (por RGM).
+ * Índice matriculados por e-mail e telefone → grupo de deals (por RGM).
  * @param {string} snapshotId
- * @returns {Promise<Map<string, Map<string, { row: object, mapped: object, cpf: string, rgm: string, curso: string }>>>}
+ * @returns {Promise<{ byEmail: Map<string, Map<string, object>>, byPhone: Map<string, Map<string, object>> }>}
  */
-async function buildAlunoByEmailIndex(snapshotId) {
+async function buildAlunoMatchIndex(snapshotId) {
   /** @type {Map<string, Map<string, object>>} */
   const byEmail = new Map();
+  /** @type {Map<string, Map<string, object>>} */
+  const byPhone = new Map();
 
-  const addRow = (email, item) => {
-    if (!email) return;
-    let group = byEmail.get(email);
+  const addTo = (map, key, item) => {
+    if (!key) return;
+    let group = map.get(key);
     if (!group) {
       group = new Map();
-      byEmail.set(email, group);
+      map.set(key, group);
     }
-    const key = item.rgm || `_norgm_${group.size}`;
-    if (!group.has(key)) group.set(key, item);
+    const gkey = item.rgm || `_norgm_${group.size}`;
+    if (!group.has(gkey)) group.set(gkey, item);
   };
 
   await baseUploadRepo.forEachRowDataForSnapshot('matriculados', snapshotId, (row) => {
@@ -164,15 +169,17 @@ async function buildAlunoByEmailIndex(snapshotId) {
     const cpf = normalizeCpf(cpfDigitsFromExcelCell(mapped.cpf || row.CPF || ''));
     const rgmDisp = displayRgmFromMatriculadosRow(row);
     const rgm = normalizeRgm(rgmDisp || mapped.rgm);
-    const item = { row, mapped, cpf, rgm, curso: mapped.curso };
+    const phone = normalizePhone(mapped._phone || mapped.telefone_comercial);
+    const item = { row, mapped, cpf, rgm, curso: mapped.curso, phone };
 
     const email1 = normalizeEmail(mapped._email);
     const email2 = normalizeEmail(mapped.e_mail_ad);
-    addRow(email1, item);
-    if (email2 && email2 !== email1) addRow(email2, item);
+    addTo(byEmail, email1, item);
+    if (email2 && email2 !== email1) addTo(byEmail, email2, item);
+    addTo(byPhone, phone, item);
   });
 
-  return byEmail;
+  return { byEmail, byPhone };
 }
 
 /**
@@ -240,12 +247,12 @@ function addToMultiMap(map, key, value) {
 }
 
 /**
- * Índices do cache completo (contact_id, email, cpf, rgm) — cpf/rgm também
- * varrem TODOS os deals de cada contact (não só o primary).
+ * Índices do cache (contact_id, email, phone, cpf, rgm).
  */
 function buildCacheIndices(cacheRows) {
   const byContactId = new Map();
   const byEmail = new Map();
+  const byPhone = new Map();
   const byCpf = new Map();
   const byRgm = new Map();
 
@@ -258,6 +265,11 @@ function buildCacheIndices(cacheRows) {
     addToMultiMap(byEmail, email1, id);
     if (email2 && email2 !== email1) addToMultiMap(byEmail, email2, id);
 
+    const phone1 = normalizePhone(row.phone_norm);
+    const phone2 = normalizePhone(row.raw_data?.contact?.phone);
+    addToMultiMap(byPhone, phone1, id);
+    if (phone2 && phone2 !== phone1) addToMultiMap(byPhone, phone2, id);
+
     const cpf1 = normalizeCpf(row.cpf_norm);
     addToMultiMap(byCpf, cpf1, id);
 
@@ -269,19 +281,28 @@ function buildCacheIndices(cacheRows) {
     }
   }
 
-  return { byContactId, byEmail, byCpf, byRgm };
+  return { byContactId, byEmail, byPhone, byCpf, byRgm };
+}
+
+function siblingCompletenessScore(row) {
+  if (!row) return 0;
+  let s = 0;
+  if (normalizeCpf(row.cpf_norm)) s += 2;
+  if (rgmsOnCacheRow(row).size > 0) s += 2;
+  if (row.primary_deal_id || dealsFromCacheRow(row).length > 0) s += 1;
+  return s;
 }
 
 /**
- * Acha um contact "sibling" (com pelo menos 1 deal) que compartilhe email/cpf/rgm
- * com o grupo de identidade do aluno, excluindo o próprio contact órfão.
- * @returns {string|null} contact_id do sibling ou null
+ * Sibling com deal que compartilha email/phone/cpf/rgm. Prefere o mais completo.
+ * @returns {string|null}
  */
 function findSiblingContactId(orphanContactId, keys, indices) {
   const candidateIds = new Set();
-  for (const e of keys.emails) for (const id of indices.byEmail.get(e) || []) candidateIds.add(id);
-  for (const c of keys.cpfs) for (const id of indices.byCpf.get(c) || []) candidateIds.add(id);
-  for (const r of keys.rgms) for (const id of indices.byRgm.get(r) || []) candidateIds.add(id);
+  for (const e of keys.emails || []) for (const id of indices.byEmail.get(e) || []) candidateIds.add(id);
+  for (const p of keys.phones || []) for (const id of indices.byPhone.get(p) || []) candidateIds.add(id);
+  for (const c of keys.cpfs || []) for (const id of indices.byCpf.get(c) || []) candidateIds.add(id);
+  for (const r of keys.rgms || []) for (const id of indices.byRgm.get(r) || []) candidateIds.add(id);
   candidateIds.delete(String(orphanContactId));
 
   const withDeal = [...candidateIds].filter((id) => {
@@ -289,8 +310,34 @@ function findSiblingContactId(orphanContactId, keys, indices) {
     return row && (row.primary_deal_id || dealsFromCacheRow(row).length > 0);
   });
   if (!withDeal.length) return null;
-  withDeal.sort((a, b) => a.localeCompare(b));
+  withDeal.sort((a, b) => {
+    const sa = siblingCompletenessScore(indices.byContactId.get(a));
+    const sb = siblingCompletenessScore(indices.byContactId.get(b));
+    return sb - sa || String(a).localeCompare(String(b));
+  });
   return withDeal[0];
+}
+
+function contactPhones(row) {
+  return [
+    normalizePhone(row.phone_norm),
+    normalizePhone(row.raw_data?.contact?.phone),
+  ].filter(Boolean);
+}
+
+function contactEmails(row) {
+  return [
+    normalizeEmail(row.email_norm),
+    normalizeEmail(row.raw_data?.contact?.email),
+  ].filter(Boolean);
+}
+
+/** Tem deal mas falta CPF e/ou RGM no espelho. */
+function isIncompleteWithDeal(row) {
+  if (!row.primary_deal_id && dealsFromCacheRow(row).length === 0) return false;
+  const hasCpf = Boolean(normalizeCpf(row.cpf_norm));
+  const hasRgm = rgmsOnCacheRow(row).size > 0 || Boolean(normalizeRgm(row.rgm_norm));
+  return !hasCpf || !hasRgm;
 }
 
 /**
@@ -325,12 +372,23 @@ function buildDealValues(fieldIds, mapped, row, classification) {
 }
 
 /**
- * @param {{ dryRun?: boolean, maxCreates?: number, jobId?: string|null }} [opts]
+ * @param {{
+ *   dryRun?: boolean,
+ *   maxCreates?: number,
+ *   jobId?: string|null,
+ *   scope?: 'orphans'|'incomplete'|'both',
+ *   offset?: number,
+ *   liveCheck?: boolean,
+ * }} [opts]
  */
 export async function runOrphanAlunoProvision(opts = {}) {
   const dryRun = opts.dryRun !== false;
   const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || defaultMaxCreates(), 1), 20000);
   const jobId = opts.jobId || null;
+  const scopeRaw = String(opts.scope || 'orphans').trim().toLowerCase();
+  const scope = ['orphans', 'incomplete', 'both'].includes(scopeRaw) ? scopeRaw : 'orphans';
+  const doOrphans = scope === 'orphans' || scope === 'both';
+  const doIncomplete = scope === 'incomplete' || scope === 'both';
 
   if (!dryRun) {
     if (!isNovoCrmApiConfigured()) {
@@ -354,14 +412,14 @@ export async function runOrphanAlunoProvision(opts = {}) {
     Object.assign(entry, p);
   };
 
-  patchJob({ phase: 'load_matriculados', status_message: 'Indexando matriculados por e-mail…' });
+  patchJob({ phase: 'load_matriculados', status_message: 'Indexando matriculados (e-mail + telefone)…' });
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
   if (!matSnap?.id) {
     const err = new Error('Nenhum snapshot de matriculados encontrado. Faça upload em Bases.');
     err.status = 400;
     throw err;
   }
-  const byEmail = await buildAlunoByEmailIndex(matSnap.id);
+  const { byEmail, byPhone } = await buildAlunoMatchIndex(matSnap.id);
 
   patchJob({ phase: 'load_bases', status_message: 'Carregando bases satélite…' });
   const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
@@ -376,9 +434,13 @@ export async function runOrphanAlunoProvision(opts = {}) {
   patchJob({ phase: 'load_cache', status_message: 'Carregando cache do CRM…' });
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({ scope: 'all_mapped', limit: 100000 });
   const indices = buildCacheIndices(cacheRows);
-  const orphans = cacheRows.filter((r) => !r.primary_deal_id);
+  const orphans = doOrphans
+    ? cacheRows.filter((r) => !r.primary_deal_id && dealsFromCacheRow(r).length === 0)
+    : [];
+  const incompletes = doIncomplete ? cacheRows.filter((r) => isIncompleteWithDeal(r)) : [];
 
   const fieldIds = getNovoCrmDealFieldIds();
+  const perdidoStageId = String(getNovoCrmStageIds().Perdido || '').trim();
   const offset = Math.max(0, Number(opts.offset ?? process.env.NOVO_CRM_ORPHAN_OFFSET) || 0);
   const liveCheckEnv = String(process.env.NOVO_CRM_ORPHAN_LIVE_CHECK ?? '1').trim();
   const liveCheck =
@@ -388,7 +450,15 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let scanned = 0;
   let orphanAluno = 0;
   let orphanNoMatch = 0;
+  let matchedEmail = 0;
+  let matchedPhone = 0;
   let dupContactSkip = 0;
+  let dupSkipNoDeal = 0;
+  let dupToPerdido = 0;
+  let dealsMovedPerdido = 0;
+  let incompleteScanned = 0;
+  let incompleteNoMatch = 0;
+  let incompleteEnriched = 0;
   let dealsWouldCreateOnOrphan = 0;
   let dealsWouldCreateOnSibling = 0;
   let createdDeals = 0;
@@ -415,7 +485,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
   });
 
   console.log(
-    `[novo-crm-orphan-provision] start dry=${dryRun} max=${maxCreates} offset=${offset} conc=${concurrency} delay_ms=${DELAY_MS} liveCheck=${liveCheck} skipFieldsAll=${skipFieldsAll} orphans=${orphans.length}`
+    `[novo-crm-orphan-provision] start dry=${dryRun} scope=${scope} max=${maxCreates} offset=${offset} conc=${concurrency} orphans=${orphans.length} incompletes=${incompletes.length}`
   );
 
   const atMax = () => dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling >= maxCreates;
@@ -529,17 +599,27 @@ export async function runOrphanAlunoProvision(opts = {}) {
     const row = orphans[i];
     scanned += 1;
 
-    const emailCandidates = [
-      normalizeEmail(row.email_norm),
-      normalizeEmail(row.raw_data?.contact?.email),
-    ].filter(Boolean);
+    const emailCandidates = contactEmails(row);
+    const phoneCandidates = contactPhones(row);
     let group = null;
-    let matchedEmail = null;
+    let matchedKey = null;
+    let matchVia = null;
     for (const e of emailCandidates) {
       if (byEmail.has(e)) {
         group = byEmail.get(e);
-        matchedEmail = e;
+        matchedKey = e;
+        matchVia = 'email';
         break;
+      }
+    }
+    if (!group) {
+      for (const p of phoneCandidates) {
+        if (byPhone.has(p)) {
+          group = byPhone.get(p);
+          matchedKey = p;
+          matchVia = 'phone';
+          break;
+        }
       }
     }
     if (!group) {
@@ -548,21 +628,26 @@ export async function runOrphanAlunoProvision(opts = {}) {
       return;
     }
     orphanAluno += 1;
+    if (matchVia === 'email') matchedEmail += 1;
+    if (matchVia === 'phone') matchedPhone += 1;
 
     const items = [...group.values()];
-    const emailsSet = new Set([matchedEmail]);
+    const emailsSet = new Set(emailCandidates);
+    const phonesSet = new Set(phoneCandidates);
     for (const it of items) {
       const e2 = normalizeEmail(it.mapped.e_mail_ad);
       if (e2) emailsSet.add(e2);
       const e3 = normalizeEmail(it.mapped._email);
       if (e3) emailsSet.add(e3);
+      const ph = normalizePhone(it.phone || it.mapped._phone);
+      if (ph) phonesSet.add(ph);
     }
     const cpfsSet = new Set(items.map((it) => it.cpf).filter(Boolean));
     const rgmsSet = new Set(items.map((it) => it.rgm).filter(Boolean));
 
     const siblingId = findSiblingContactId(
       row.contact_id,
-      { emails: emailsSet, cpfs: cpfsSet, rgms: rgmsSet },
+      { emails: emailsSet, phones: phonesSet, cpfs: cpfsSet, rgms: rgmsSet },
       indices
     );
 
@@ -589,12 +674,14 @@ export async function runOrphanAlunoProvision(opts = {}) {
 
       if (!missingItems.length) {
         dupContactSkip += 1;
+        dupSkipNoDeal += 1;
         if (samples.length < 25) {
           samples.push({
-            type: 'dup_contact_skip',
+            type: 'dup_skip_no_deal',
             orphan_contact_id: row.contact_id,
             sibling_contact_id: siblingId,
-            email: matchedEmail,
+            match_via: matchVia,
+            match_key: matchedKey,
             rgms: [...rgmsSet],
             sibling_rgms: [...siblingRgms],
           });
@@ -629,7 +716,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
             type: 'extra_deal_on_sibling',
             orphan_contact_id: row.contact_id,
             sibling_contact_id: siblingId,
-            email: matchedEmail,
+            match_via: matchVia,
+            match_key: matchedKey,
             rgm: it.rgm,
             curso: it.curso,
             stage: classification.stageName,
@@ -692,7 +780,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
           samples.push({
             type: 'orphan_aluno',
             orphan_contact_id: row.contact_id,
-            email: matchedEmail,
+            match_via: matchVia,
+            match_key: matchedKey,
             rgm: it.rgm,
             curso: it.curso,
             stage: classification.stageName,
@@ -740,20 +829,202 @@ export async function runOrphanAlunoProvision(opts = {}) {
   };
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
+  // === INCOMPLETE PASS ===
+  if (doIncomplete && incompletes.length > 0) {
+    patchJob({
+      phase: 'process_incomplete',
+      total: incompletes.length,
+      processed: 0,
+      status_message: 'Processando incompletos (dedupe + enrich)…',
+    });
+
+    let incIdx = 0;
+    for (const row of incompletes) {
+      incompleteScanned += 1;
+      incIdx += 1;
+
+      // Match matriculados via email then phone.
+      const emailCandidates = contactEmails(row);
+      const phoneCandidates = contactPhones(row);
+      let group = null;
+      let matchedKey = null;
+      let matchVia = null;
+      for (const e of emailCandidates) {
+        if (byEmail.has(e)) { group = byEmail.get(e); matchedKey = e; matchVia = 'email'; break; }
+      }
+      if (!group) {
+        for (const p of phoneCandidates) {
+          if (byPhone.has(p)) { group = byPhone.get(p); matchedKey = p; matchVia = 'phone'; break; }
+        }
+      }
+      if (!group) {
+        incompleteNoMatch += 1;
+        patchJob({ processed: incIdx });
+        continue;
+      }
+      if (matchVia === 'email') matchedEmail += 1;
+      else matchedPhone += 1;
+
+      const items = [...group.values()];
+      const emailsSet = new Set(emailCandidates);
+      const phonesSet = new Set(phoneCandidates);
+      for (const it of items) {
+        const e2 = normalizeEmail(it.mapped.e_mail_ad);
+        if (e2) emailsSet.add(e2);
+        const e3 = normalizeEmail(it.mapped._email);
+        if (e3) emailsSet.add(e3);
+        const ph = normalizePhone(it.phone || it.mapped._phone);
+        if (ph) phonesSet.add(ph);
+      }
+      const cpfsSet = new Set(items.map((it) => it.cpf).filter(Boolean));
+      const rgmsSet = new Set(items.map((it) => it.rgm).filter(Boolean));
+
+      // Find sibling more complete than this contact.
+      const siblingId = findSiblingContactId(
+        row.contact_id,
+        { emails: emailsSet, phones: phonesSet, cpfs: cpfsSet, rgms: rgmsSet },
+        indices
+      );
+      const currentScore = siblingCompletenessScore(row);
+      const siblingRow = siblingId ? indices.byContactId.get(siblingId) : null;
+      const siblingScore = siblingRow ? siblingCompletenessScore(siblingRow) : 0;
+
+      if (siblingId && siblingRow && siblingScore > currentScore) {
+        // Sibling is more complete → mark bad deals on this contact as Perdido.
+        if (!perdidoStageId) {
+          // Cannot resolve Perdido stage (probably missing env / wrong host) — skip.
+          patchJob({ processed: incIdx });
+          continue;
+        }
+        dupToPerdido += 1;
+
+        // Collect all deals on this incomplete contact.
+        const allDeals = dealsFromCacheRow(row);
+        const primaryId = String(row.primary_deal_id || '').trim();
+        if (primaryId && !allDeals.some((d) => String(d.id) === primaryId)) {
+          allDeals.push({ id: primaryId });
+        }
+
+        for (const deal of allDeals) {
+          if (!deal?.id) continue;
+          const dealStageId = String(deal?.stageId || deal?.stage_id || '').trim();
+          if (isUntouchableStageId(dealStageId)) continue;
+          if (dealStageId === perdidoStageId) continue;
+
+          dealsMovedPerdido += 1;
+          if (samples.length < 25) {
+            samples.push({
+              type: 'dup_to_perdido',
+              incomplete_contact_id: row.contact_id,
+              sibling_contact_id: siblingId,
+              deal_id: deal.id,
+              current_stage_id: dealStageId || null,
+              match_via: matchVia,
+              match_key: matchedKey,
+            });
+          }
+          if (!dryRun) {
+            try {
+              await updateDeal(deal.id, { stageId: perdidoStageId });
+              if (DELAY_MS > 0) await sleep(DELAY_MS);
+            } catch (err) {
+              errors += 1;
+              if (errorSamples.length < 25) {
+                errorSamples.push({
+                  incomplete_contact_id: row.contact_id,
+                  deal_id: deal.id,
+                  error: err?.message || String(err),
+                });
+              }
+            }
+          }
+        }
+      } else {
+        // No suitable sibling → empty-only fill CPF/RGM on primary deal.
+        const allDeals = dealsFromCacheRow(row);
+        const primaryId = String(row.primary_deal_id || '').trim();
+        const primaryDeal =
+          (primaryId && allDeals.find((d) => String(d.id) === primaryId)) ||
+          (primaryId ? { id: primaryId } : null) ||
+          allDeals[0] ||
+          null;
+
+        if (!primaryDeal?.id || !fieldIds?.cpf) {
+          patchJob({ processed: incIdx });
+          continue;
+        }
+
+        const hasCpf = Boolean(normalizeCpf(row.cpf_norm));
+        const hasRgm = rgmsOnCacheRow(row).size > 0 || Boolean(normalizeRgm(row.rgm_norm));
+        const it = items[0];
+        const enrichValues = [
+          (!hasCpf && it?.cpf) ? { fieldId: fieldIds.cpf, value: it.cpf } : null,
+          (!hasRgm && it?.rgm) ? { fieldId: fieldIds.rgm, value: it.rgm } : null,
+        ].filter(Boolean);
+
+        if (!enrichValues.length) {
+          patchJob({ processed: incIdx });
+          continue;
+        }
+
+        incompleteEnriched += 1;
+        if (samples.length < 25) {
+          samples.push({
+            type: 'incomplete_enriched',
+            contact_id: row.contact_id,
+            deal_id: primaryDeal.id,
+            match_via: matchVia,
+            match_key: matchedKey,
+            filled: enrichValues.map((v) => (v.fieldId === fieldIds.cpf ? 'cpf' : 'rgm')),
+          });
+        }
+        if (!dryRun) {
+          try {
+            await updateDealCustomFields(primaryDeal.id, enrichValues, { maxRetries: 4 });
+            if (DELAY_MS > 0) await sleep(DELAY_MS);
+          } catch (err) {
+            errors += 1;
+            if (errorSamples.length < 25) {
+              errorSamples.push({
+                incomplete_contact_id: row.contact_id,
+                deal_id: primaryDeal.id,
+                error: err?.message || String(err),
+              });
+            }
+          }
+        }
+      }
+
+      patchJob({ processed: incIdx, failed: errors });
+    }
+  }
+
   const result = {
     ok: true,
     dry_run: dryRun,
+    scope,
     matriculados_snapshot_id: matSnap.id,
     matriculados_file: matSnap.file_name || null,
-    index: { by_email: byEmail.size },
+    index: { by_email: byEmail.size, by_phone: byPhone.size },
     cache_total: cacheRows.length,
     orphans_total: orphans.length,
     orphans_scanned: scanned,
     orphan_aluno: orphanAluno,
     orphan_no_match: orphanNoMatch,
+    matched_email: matchedEmail,
+    matched_phone: matchedPhone,
     dup_contact_skip: dupContactSkip,
+    dup_skip_no_deal: dupSkipNoDeal,
+    dup_to_perdido: dupToPerdido,
     deals_would_create_on_orphan: dealsWouldCreateOnOrphan,
     deals_would_create_on_sibling: dealsWouldCreateOnSibling,
+    ...(dryRun
+      ? { deals_would_move_perdido: dealsMovedPerdido }
+      : { deals_moved_perdido: dealsMovedPerdido }),
+    incomplete_total: incompletes.length,
+    incomplete_scanned: incompleteScanned,
+    incomplete_no_match: incompleteNoMatch,
+    incomplete_enriched: incompleteEnriched,
     created_deals: dryRun ? 0 : createdDeals,
     errors: dryRun ? 0 : errors,
     skipped_already_has_deal_live: dryRun ? 0 : skippedAlreadyHasDeal,
@@ -787,15 +1058,15 @@ let runningJobId = null;
 
 /**
  * Prévia síncrona (dry-run).
- * @param {{ maxCreates?: number }} opts
+ * @param {{ maxCreates?: number, scope?: 'orphans'|'incomplete'|'both' }} opts
  */
 export async function previewOrphanAlunoProvision(opts = {}) {
-  return runOrphanAlunoProvision({ maxCreates: opts.maxCreates, dryRun: true });
+  return runOrphanAlunoProvision({ maxCreates: opts.maxCreates, scope: opts.scope, dryRun: true });
 }
 
 /**
  * Apply em background. Retorna jobId.
- * @param {{ maxCreates?: number, offset?: number, liveCheck?: boolean }} opts
+ * @param {{ maxCreates?: number, offset?: number, liveCheck?: boolean, scope?: 'orphans'|'incomplete'|'both' }} opts
  */
 export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
   if (runningJobId && jobs.get(runningJobId)?.status === 'running') {
@@ -824,6 +1095,7 @@ export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
     maxCreates: opts.maxCreates,
     offset: opts.offset,
     liveCheck: opts.liveCheck,
+    scope: opts.scope,
     dryRun: false,
     jobId,
   })

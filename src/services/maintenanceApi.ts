@@ -308,6 +308,66 @@ export interface NovoCrmRegressionsResponse {
   events: NovoCrmRegressionEvent[];
 }
 
+export interface OrphanDedupePreviewResponse {
+  ok: boolean;
+  dry_run: boolean;
+  scope: string;
+  matriculados_snapshot_id: string;
+  matriculados_file: string | null;
+  index: { by_email: number; by_phone: number };
+  cache_total: number;
+  orphans_total: number;
+  orphans_scanned: number;
+  orphan_aluno: number;
+  orphan_no_match: number;
+  matched_email: number;
+  matched_phone: number;
+  dup_contact_skip: number;
+  dup_skip_no_deal: number;
+  dup_to_perdido: number;
+  deals_would_create_on_orphan: number;
+  deals_would_create_on_sibling: number;
+  deals_would_move_perdido?: number;
+  deals_moved_perdido?: number;
+  incomplete_total: number;
+  incomplete_scanned: number;
+  incomplete_no_match: number;
+  incomplete_enriched: number;
+  created_deals: number;
+  errors: number;
+  stopped_at_max: boolean;
+  samples: unknown[];
+}
+
+export interface OrphanDedupeStartResponse {
+  ok: boolean;
+  status: 'running';
+  jobId: string;
+  dry_run: boolean;
+  scope: string;
+  max_creates: number | null;
+}
+
+export interface OrphanDedupeJobStatusResponse {
+  ok: boolean;
+  running: boolean;
+  job: {
+    jobId: string;
+    status: string;
+    dry_run: boolean;
+    total: number;
+    processed: number;
+    sent: number;
+    failed: number;
+    phase: string | null;
+    status_message: string | null;
+    started_at: string;
+    finished_at: string | null;
+    error: string | null;
+    result: OrphanDedupePreviewResponse | null;
+  } | null;
+}
+
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     ...init,
@@ -499,6 +559,33 @@ export const maintenanceApi = {
     const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
     return jsonFetch<NovoCrmProvisionJobStatusResponse>(
       `/api/maintenance/provision-matriculados-novo-crm-status${qs}`
+    );
+  },
+
+  /** Prévia síncrona dedupe órfãos/incompletos (scope=both por padrão aqui). */
+  previewOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+    const params = new URLSearchParams({ dry_run: '1', scope: opts?.scope ?? 'both' });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<OrphanDedupePreviewResponse>(
+      `/api/maintenance/provision-orphan-alunos-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Inicia apply dedupe em background. */
+  startOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+    const params = new URLSearchParams({ dry_run: '0', async: '1', scope: opts?.scope ?? 'both' });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<OrphanDedupeStartResponse>(
+      `/api/maintenance/provision-orphan-alunos-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  getOrphanDedupeStatus(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<OrphanDedupeJobStatusResponse>(
+      `/api/maintenance/provision-orphan-alunos-novo-crm-status${qs}`
     );
   },
 };
