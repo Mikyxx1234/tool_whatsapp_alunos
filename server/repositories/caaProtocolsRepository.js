@@ -239,19 +239,16 @@ export async function listOpenProtocolsByRgm() {
 }
 
 /**
- * T0 do protocolo CAA para janela de Retenção no CRM:
- * coalesce(data_chegada, first_seen_at).
+ * T0 do protocolo CAA para janela de Retenção no CRM.
+ * Usa exclusivamente `first_seen_at` — o momento em que o protocolo apareceu
+ * pela primeira vez em um dos nossos uploads. `data_chegada` do arquivo
+ * (campo Excel) é ignorada para esta janela porque pode diferir do momento
+ * real de entrada no fluxo operacional.
  * @param {object} p
  * @returns {Date|null}
  */
 export function caaProtocolT0(p) {
-  const raw =
-    p?.data_chegada ||
-    (p?.data && typeof p.data === 'object'
-      ? p.data['Data Chegada'] || p.data.data_chegada || p.data.DataChegada
-      : null) ||
-    p?.first_seen_at ||
-    null;
+  const raw = p?.first_seen_at || null;
   if (!raw) return null;
   const d = raw instanceof Date ? raw : new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
