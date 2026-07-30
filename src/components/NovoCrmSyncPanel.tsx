@@ -245,18 +245,29 @@ export function NovoCrmSyncPanel() {
     setProvisionBusy(true);
     setProvisionMsg('Calculando prévia de leads novos…');
     try {
-      const preview = await maintenanceApi.previewNovoCrmProvision({ mode: 'new', max: 50 });
+      // max = teto real do apply: assim o número da prévia é o que será criado
+      // (com max menor, a contagem saía truncada e parecia menor do que é).
+      const previewMax = 200;
+      const preview = await maintenanceApi.previewNovoCrmProvision({
+        mode: 'new',
+        max: previewMax,
+      });
+      const skippedRgm = preview.skipped_cache_rgm ?? 0;
+      const hitCap = preview.created_contacts >= previewMax;
       const ok = window.confirm(
         `Criação de leads novos (prévia)\n\n` +
-          `Candidatos (amostra): ${preview.created_contacts.toLocaleString('pt-BR')} pessoas` +
-          ` · ${preview.created_deals.toLocaleString('pt-BR')} deals\n` +
-          `Já no cache (pulados): ${preview.skipped_cache.toLocaleString('pt-BR')}\n` +
+          `A criar: ${preview.created_contacts.toLocaleString('pt-BR')} pessoas` +
+          ` · ${preview.created_deals.toLocaleString('pt-BR')} deals` +
+          (hitCap ? ` (teto ${previewMax}/run — sobra fica pra próxima)` : '') +
+          `\n` +
+          `Já no CRM (pulados): ${preview.skipped_cache.toLocaleString('pt-BR')} por CPF` +
+          ` · ${skippedRgm.toLocaleString('pt-BR')} por RGM\n` +
           (preview.skipped_not_delta
             ? `Já no snapshot anterior: ${preview.skipped_not_delta.toLocaleString('pt-BR')}\n`
             : '') +
-          `\nSó cria quem está no matriculados atual e ainda não está no espelho local.\n` +
-          `Se o contact já existir no CRM, atualiza o card.\n` +
-          `Teto ~200/dia.\n\n` +
+          `\nSó cria quem está no matriculados atual e ainda não está no espelho local\n` +
+          `(dedup por CPF ou RGM).\n` +
+          `Se o contact já existir no CRM (CPF, telefone ou e-mail), atualiza o card.\n\n` +
           `Confirmar criação?`
       );
       if (!ok) {

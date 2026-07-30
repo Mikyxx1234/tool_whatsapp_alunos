@@ -249,9 +249,15 @@ export interface NovoCrmProvisionPreviewResponse {
   updated_existing?: number;
   skipped_existing: number;
   skipped_cache: number;
+  /** Pulados porque o RGM já existe no espelho (CPF do espelho pode estar corrompido). */
+  skipped_cache_rgm?: number;
   skipped_not_delta?: number;
   skipped_no_cpf: number;
   skipped_bad_name?: number;
+  matched_by_cpf?: number;
+  matched_by_phone?: number;
+  matched_by_email?: number;
+  search_fuzzy_rejected?: number;
   errors: number;
   max_creates: number;
   prior_snapshot_id?: string | null;
