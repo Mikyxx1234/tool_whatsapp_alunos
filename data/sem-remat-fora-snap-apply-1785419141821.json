@@ -1,0 +1,2590 @@
+{
+  "ran_at": "2026-07-30T13:44:42.163Z",
+  "ran_at_brt": "30/07/2026, 10:44:42",
+  "dry_run": false,
+  "base_url": "https://crm.eduit.com.br",
+  "scan": {
+    "scanned": 37725,
+    "in_sem_remat": 7475,
+    "in_remat_snapshot_skip": 6878,
+    "no_cpf_rgm_skip": 388,
+    "no_mat_match_skip": 37,
+    "target_still_sem_remat_skip": 0,
+    "no_stage_id_skip": 0,
+    "movable": 172,
+    "by_target": {
+      "Graduação": 26,
+      "Perdido": 8,
+      "Acolhimento": 134,
+      "Pós": 3,
+      "Retenção": 1
+    }
+  },
+  "apply": {
+    "moved": 0,
+    "skipped_live": 172,
+    "errors": 0,
+    "by_target": {}
+  },
+  "no_match_list": [
+    {
+      "dealId": "cms6j1xql7s8wt201dz3efplj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwjz78l0g8vpa01g4djym25",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwjzqd50gbppa01p0o0h1je",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwkonmw0jchpa0198on58lp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwlaxgs0kttpa01hdf6a5a8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwltqcv0menpa01dnxr4v87",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrwv9fw26ojztb01nvq23hht",
+      "cpf": "51678290890",
+      "rgm": "49235613",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cmrxfuf5604kho101jol0wuhs",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxj3j3y0bv9o101i96itekg",
+      "cpf": "02782956221",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cmrxj7ram0c8fo101ku1ingmj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxk78jc0fqbo101rrfpnhx7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxo7tcn01ejoz016ay1nm4a",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxoso4n0bzxoz01bnqhry3t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxqf9v305qro401abqllabv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxrrn3n006to801hzra31i6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrxyfwmm0uadm601ebwzzfa1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmry4bmys031nrt01xzut6bpp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmry4d33f0353rt01zjao5xp8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmry8qnvg0709rt01o1ch471c",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrybe69j07udrt01bm4eqjz9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmryuu6yp0eqzrt01ohfu60y2",
+      "cpf": "35953496877",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cmrz3c0hs0razpr01d4k4xn1m",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrz6hhse07b1mq01dvezaslr",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrzfy5lz1jhzmp01h3avgfun",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrzg5k1v1kqrmp01nfsmbab7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cmrzm0fcs1vdxmp01usgcyoi0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms1ph4dd0513p801ydgmh4bu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms221pfq001xp601sdsw9v1q",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms26zm1m01yhp601wdwmr40r",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms2bkl1u03c5p601japqcncp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms349ie60cb5p601507n2gq1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms34ll750czvp60124bcqwap",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms34xga60e9vp601ma4n8nuc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms352nvj0f91p6014o1k1dls",
+      "cpf": "21657710807",
+      "rgm": "49661388",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms36db5n0kvbp60139bvn52r",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms37axvi0sbxp601pupjakqf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms37ln7o0uxpp6013c8847vd",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms39pe1t19ojp601hhg15exy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3bp1hc1qfsp601ksxhdbcz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3d96o1047zmi01lk2au3cb",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3dpok708u7mi010ryyypzv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3e08x200xlof015j7gaxrz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3f1vlx0bz4of011urd2dua",
+      "cpf": "43461668818",
+      "rgm": "40350924",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms3f49i80cosof016uzc6yeh",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3fabhg0eisof01qhxzrftw",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3fnw6x0ivzof010wrzenqo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3fzzex0memof01ygjusz1b",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3g63qh0oamof01mun7njpe",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3gmsiw13guof01y8zsp52d",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3gxtun1f8nof01756d4vo7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3gyxv71gu5of01uzedtm73",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3h2l021lplof012y295gia",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3h8o6g1pfvof01dalmo9k7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3hi0011rf2of01p9fjmeax",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3itepv25jbof01yb60clyo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3j2vyd28z4of016qcz24f0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3j4dej29epof01rdqj7q4f",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3jiwc32ewuof016cnh8gp2",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3jm86j2g4hof01zog0tirb",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3kjjmv2tb9of0140zid32t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3kjum42tg9of014rxl0ja6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ktzlb2wreof01tzacqxl0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3kurol2x1gof01oam5uvbs",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ky1il2y1mof0169dxrr7t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3l7r5437ejof0128t2dlrm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3lb7ys3aqwof01nthuecel",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3lcj353ci4of015zzd24gm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ldcxx3de4of0167j66i7a",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3lpsj53q9fof010urxzqhj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3m5jl847oaof01jno79i78",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mbhd24edfof019ct51ac2",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mdkyr4gmnof01qjx9bomp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mdthi4gxpof01dmkp1rm4",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mn39b4se3of015dsvoro3",
+      "cpf": "35431842889",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms3mqaft4w68of013jltc4n1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mvkub52bpof01qymd7e9v",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3mym1655qxof01bblnrq0d",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3n60sz59q5of01goxu9w21",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3n6kby5a7dof014jucnzg8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3nasps5c3kof013allzc96",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3no84d5ht8of01rul6ueu8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3o09sd5m57of01ksx2ckd5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3o1ylp5mt1of01efct4qda",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ofudv5s2tof013w1rfpze",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3os7te5ww7of01ulhsd4gu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3oshkr5x0vof019cuypxwo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3oznqj5zmeof01zh1b9b4s",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3p9j0r00w3s501x4u8yath",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3pb65a01pbs501ha89fv6p",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ph5s408rfs5012d1lslwj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3prwpt0gb1s501g62ehyn5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3pvatd0igas501c10gt785",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3pzqn10k8ys501gopfb9ol",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3pzthu0kays501uoy1tzs3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3q5w430mu4s5017vclowdg",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3q8pud0nwgs501gn4xa7n5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3qjgv401d1pg013tmbxus0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3qntrc03c8pg01mo9kyvje",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3qwoj506yopg01mxmp4gwe",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ri21q0fo7pg01k7xu8ha7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3rn7070hklpg01otk0kafc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3rzkk60lj6pg01sclldgzi",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3s4jww0mzipg019xzsdw2z",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3s6qjt0npypg01bi8tsa42",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3sqqqg0sl0pg0162c642p3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3svkfs0trkpg01775k0pkj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3symws0ueypg01w9qs7pii",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3t694x0vzmpg01tvrukzq8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3tn7q60z36pg01o7ieqsd1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3tvf4e169epg01xlqh8yxm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3u1am418hepg01wn8ga4d8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3ubrms1cqcpg01676px9lv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3uyxcr1r74pg01wlx9mj87",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3v2ott1t76pg016wypvez4",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3v3m6t1tqypg01m1v9dvle",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3v44v81tyopg011id2rmnk",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3vq38h22tipg01rziiatue",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3vtjc924ewpg019s7aetlm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3wmrdx2e2wpg01o0a2le2o",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3wsxqc2fu2pg01cjlh7bmg",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3xcsig2lnapg01niwrvxxf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3xw3382ndcpg01pc4s3phx",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3y7p812osopg01izo1kege",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms3yen1l2puepg01pjmlhfk3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms41g3n62t9upg017wli58pp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4jc6racfg6pg010vrf7eak",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4jvax7dc4opg013izqgszz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4k5fdidsc6pg01i4x9og74",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4kem9xdxf8pg015msmhai6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4kjef9dy06pg011qeaoiju",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4kwe4edzaspg01c4532mdq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4l0jh6dzn6pg01wlgzxqe6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4l4q9oe03opg01evdd908r",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4lj4kre1sapg0103gp23aw",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4lt93le2bipg01g29elg1e",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4lu8q8e2fkpg01prllkmjj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4lujtte2v8pg01up9tv1qe",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4lx763e33spg01ahi7ac0e",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4m01zbe3dapg01n0cjymn3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4mvzn3e9tjpg01gsh654zy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4n3vfqebljpg01zu3ycit7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4nftsof0trpg0164yj4oji",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4nvpdwg1jppg01wyynoaoq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4nxdadg2lbpg01opysof3g",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4nz2ayg3jbpg018g9d10aq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4nzsk2g3xjpg015r7rckye",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4o0ssmg491pg01upleqgs5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4o3urlg5h7pg019qfn74rc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4oforsgbkhpg01sr96kvmp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4ouptgjlrepg01sogzapuk",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4oxpn0kaghpg01g28lt0uk",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4p1cmnl0njpg019id2vca1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4pd25qm6whpg01evovfb7b",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4pf5q3m9ippg01eb38s1rh",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4pphqxmm7vpg01kr33mlf9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4pqzjwmp0ppg01lrpa5cxh",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4pzq8tn8d5pg0137oua3m6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4q0lsonfsjpg01v9k10x2q",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4qb2d8q1h7pg01u2gj25aa",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4qd0xvqlx5pg01xjo6e8ux",
+      "cpf": "52423327862",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms4qlwn1r406pg01751k0q61",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4qr6j6r624pg014eavheda",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4re8alrdehpg0147j9i6re",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4rgnvureavpg01wgfdr23m",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4rlle8rfurpg01iwr1a2tu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4s2j6u02mnny01prhucmp3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4s9mn504f6ny01pitvi2kf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4sbm3x0516ny01kmnqantn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4sbnlk052cny01mp9rfuej",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4scabc05aqny018c321xg6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4seffv05s4ny01xppvjg0u",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4sh2md06heny0156f4y95o",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4shd2y06lwny01q1z2jqcn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4simx1070mny014mr8bq69",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4spubn08p6ny01mgexk3ql",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4sq49z08sgny01pj9jzmpt",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4ss4zf09i7ny01djvrlqvj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4sus4s0a7jny01v8az5mig",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4szr080bhxny01jgi45m7i",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4taxqi0ehfny01a40zzpmp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4tkl3c0gz5ny01bpszxl4n",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4tnrxm0i4nny01ft4bypo0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4tpwxm0ishny01seytexd6",
+      "cpf": "42603604856",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms4trugn00gjpe01yquwn74r",
+      "cpf": "35457862852",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms4txc9e01x1pe010922anpq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4u0ir102z7pe01tei7fp4d",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4u9jmj05bdpe01bzdfomnn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4ua42x05gfpe018awcwa1c",
+      "cpf": "22433526809",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms4ul3ed0849pe01tfagxmac",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4uol4e00qhnw01uba8ox6x",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4uonoi00rznw01rxeu6k2e",
+      "cpf": "27639780888",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms4uwvlw02yznw010n5se1cl",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4v39k304ilnw01nygqabxq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vcep607oznw01fwrpy4ut",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vco4n07rtnw012qx7olua",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vex9008bvnw01rxikq5xb",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vhsm608z1nw01awsm2x23",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vi0lq092tnw01nd1042tn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vic8x095rnw0132k9mlp0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vn40j09xrnw01gi1gi4mu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vp5wk0abbnw01jvnpdkmy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vrer60ap7nw011ucuhxg4",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vtgk70bf9nw01ykvv6eq0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vtmmq0bhbnw01sywoom3s",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vvkbz0c1lnw01tn80ttph",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4vxvgt00hxse017y96mrd7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4w0o18016xse01bwqx5b2t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4w5fby024vse013s7f4ong",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4w8a0v000fpl01tajng4dc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4wk3ql02ahpl01vrbnxhgp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4wozgr04stpl01wwb31yhl",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4wr7oq065qpl01zplien1r",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4wsi6t0724pl016cyl6nmp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4wwtux09yypl01exn13khk",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4x5hpd0fpupl01uyw60m2i",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4x7n2k0gg6pl01z7utjc8u",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4xcppt0hs8pl01c2i96doa",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4xiz9l0jjupl01sxj5jp4h",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4xlg400k6epl01pf9dmn10",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4xud890lt1pl014kv4avgc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4y4qqx00ille01j23ej1dd",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4y7h1b017jle01j3rckg6w",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4yld2e0455le01fpa1n5fv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4yssit05yple01351j8m1o",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4yudx006f9le01gobw7vrj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4z0c4u016gnt01hv53wvwj",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4z2ob601p4nt01hpdo8fw6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4z41gt01xont01vl7tey0f",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4z5efl025int0130hxceb5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4zi0g6058unt013jyy5mn1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4zkh2e05psnt01z20jku0o",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms4zxbbu0ancnt01m1oo7mj0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms50c1mn0ffqnt01e1d9xjvc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms50d62s0fxynt010v3e89gz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms50ww0k0vkgnt01shjt7vln",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms50zata0wiunt01ipvkt1mv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms50zx0i0wwqnt0104xgntle",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms511slm0xlent01vmn0apwp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms51ldia14b6nt01nt5068co",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms51sea115xgnt01zecvpxc6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5234nn1a0wnt0165q9hang",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms52gq9p1fcint01yha2nf58",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms52igmk1fyfnt01v2zt619g",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms53uu3g0ej9nq01849vw4u8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms54effb0m0hnq0127248y62",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms55m4ca1d2tnq01k7qlhwhx",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms55tfjx1eyjnq014ahcv85m",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms56hh2i1li0nq01biwfpzw3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms56ypwk1y4wnq01jeqj9vyc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms57crm72bognq01ajvv9ulp",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms57ewr12dk2nq01w797yn2q",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms57jvol2jxmnq01w9xf5xvf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms586ie73f61nq013egeikpm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms58l8ma3tcxnq01xo9a6ew1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms59sff142slnq01fz3nh683",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5a2laj44hjnq01sduatk33",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5c032y5dl1nq0117nb8rtr",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5ds3kl7wgrnq01glf78qou",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5gv6qjcx2fnq015d57tuez",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5j24hjgocjnq01gku2r703",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5t70o2z6ibnq01n2j9m6u9",
+      "cpf": "02813275050",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms5xb2kd6chhnq01o4f6jt92",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5xjhp76q23nq0161xo2x50",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5ya9hx7wfnnq01cz5dx7io",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5ykdpw8blrnq01kc99g2a0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms5ysjbl8oppnq01sgzg9qq1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms60ap1xb13vnq01i274lz8n",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms60qjg8bmdvnq01tf3m642h",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms615663c515nq01u3q3j3oz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms616kq6c6ijnq01kbjzdb27",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms617y61c8jtnq016qxeye6p",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms61ojqtcpltnq01z39ob98e",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms61xiv6crt3nq018jsuj8kq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6208s0cs57nq0180dpvt58",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms625hs6csopnq01hcqu5iul",
+      "cpf": "56489573865",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms62f8kwcultnq01ihwnn5nz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms62gxevcv09nq01wep1gvg3",
+      "cpf": "07802167418",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms62la80cw52nq013ik8aded",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms63l214d72nnq01kzjpkfhz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms63xddsdadlnq01glv4iqur",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms63yd4wdawrnq01yxtl4n83",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms640n3bdfutnq01e1sdoa0z",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms64bbpwefv7nq01oayp700z",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms64bokhegx5nq01o6f2zwr1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms64uqtxg1c2nq014gv8qwvg",
+      "cpf": "03936269114",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms64v4clg2banq012us7hnok",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6518gegkcwnq01m8gqem70",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms658p9ah6rbnq017sepvv39",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms65dqzthoflnq01ggcwlsx4",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms65e7yihq1lnq015ho9fzim",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms65w2cnj7mhnq01pl8ae77v",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms660r0xjntznq01tghnzv07",
+      "cpf": "34612277813",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms662ii3ju1jnq01al5yr5x0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms668lsckddbnq01og2ujjlz",
+      "cpf": "54282686898",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms669ph0kfxnnq01glm5aks9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms66lbktlfixnq01vooa7pd9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms675k4mn3fnnq01wl6fclo0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67aqb1nixhnq010tnp8ju0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67cclunltdnq01d6w3yd4e",
+      "cpf": "15215721866",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms67ccq9nltjnq01lmx559zg",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67gg63nx1znq013c53a6ky",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67nwumomr1nq01g5cfcybs",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67qbc7oqbhnq0168mwf5k3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67yh0jp9k7nq01kaccsi5y",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms67yku9p9nznq01yikpx2q5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms689n6npodlnq01y4da6o83",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68alrtpp2tnq01362vgx8y",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68iieupuwwnq01ks6w5a5e",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68mh2tpxkynq01vov1lrl5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68p8b7pzbanq01ljub0mvl",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68qcck000bt201scliynxa",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68xg7o04h5t2012r6154tf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms68yter05bdt201e565nvg1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms693yv508mnt201umxig2ew",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69cnf70dylt2013b7e8ydx",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69evlv0fext201pat9q91j",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69ij190i1kt201l3zatvsx",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69qtr90nnqt201ry7z4lhi",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69rj3z0o32t201layt9pmu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69rwm80odat201dau10hiu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69u7la0pu0t2014o7yebon",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69vy620qxct201ebhqdg0e",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69z3iy0sw4t201y0zmtwgf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms69zsb10tfet201z4q0vhad",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6a6chy0xa0t201mgp4mxbt",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6aa62l0zfqt201762akatl",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ajqfs14qyt2015gz0ut19",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6animf16wnt201spn4xjow",
+      "cpf": "08849445571",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6anizq16xbt2016ntk6jg4",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6aunh21autt201p965wrh0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6axchg1c6lt201p22hnl4i",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6b2q4r1f5jt2011sem0kth",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6b5y6j1gvst201ya7cbldo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6bedx91mbvt201ug57fz1t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6bq5l31xout201nwi10new",
+      "cpf": "01056117869",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6bsd3e20y2t201x9a3j204",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6bsw1m21u0t201yb5d507s",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6btbtr22pct201fryur4jy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6btghe22vmt201mm5be4fc",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6btppd23b8t201er9j4qwu",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6btzp723t2t201rcf5sjya",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6bw80g27zst201bihlpoiz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6bwolr28ywt20120l8b3tt",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6bxdbe2abct201fqmfx4b9",
+      "cpf": "07425932660",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6bxtyd2b6wt201rcspt48s",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c07oy2e5qt201vprfq456",
+      "cpf": "09627527548",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c0cl82eb4t201tghniwqb",
+      "cpf": "98533576587",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c1cf82fnit201eimmex6m",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c1igh2g06t201vkp6xwga",
+      "cpf": "54323651899",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c2zvy2ilit20175u3onqf",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c3qwj2jtst201n1dawsu6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6c47zf2kmet201rm3f4ex5",
+      "cpf": "00000000009",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6c6yfz2okmt2019yaa4x38",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6cbmfq2us2t201frm6sjzq",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6chgkh2ymlt201air4nef0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6chza12yvlt201ybk5a3oo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ckwy130int201j551jqb2",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6co0mz32gtt201vztd3p17",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6crn4t34p5t201us6ftgi0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6cssvo35k5t201o0q9b2mr",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ctgeg3619t201gyqkn070",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6cznnd3cf1t20173v3ns5t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6d2k9w3f3lt2013tay9cpi",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6dcoq73pvlt2016s3b0kbg",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6di21i3vuft2011551n9zz",
+      "cpf": "06552664109",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6dlaf43zs7t2010m144ygl",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6dlx1t40l3t2013q465qtn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6duyhi4dl8t201b8t0csmz",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6e28374juit201mg9jibpy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6e2p854k5et201kwl880g8",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6e565y4lr2t201zwkemjtt",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6e6g9l4mnat20180fddv65",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6em5wr4woct201o89t6m20",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6esg1u508at20194ailm3z",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6etjg650vxt201is1bcyk9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6evjbe51ylt2019svelr4t",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ey0mt53idt201lsf0ekdx",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6f3w1f57plt201efxbr9ia",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6f5rtr5918t201usqy7eur",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6fhyp85gzqt201in2q7m3h",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6fnpin5ko2t201kuy34e2a",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6fxlqn5rpkt201agvpj7q9",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6fzfn35sz8t201wieyseo1",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6g0nfq5tsgt2012bfjqwuc",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6g2ave5umgt201rg5bkcac",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6g72ml5xz7t201f82xbw36",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6gch83616zt201rgfztyl5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ginx66575t201kadw11k7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6gk1e8668qt201f0nqgflu",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6goka869net20163phjxyo",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6gt4aa6cv6t201wgumjres",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6gu73g6dr2t2017oaebhh7",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6gvlrz6f16t2014oahbp7k",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6h1s226kh9t201n20280ee",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6h8vfb6pkpt201jbvvdzey",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hcw8u6s52t2018gt8j2km",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hhsbf6ws7t201j2v7fisy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hiqvc6ygtt20139b1boad",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hjqn3702dt2014gfnsk20",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hk91870vrt20138rwukra",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6hv8997d3kt201cyqwxuya",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6i0kn27fbut201wahl0kz6",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6i6jvl7i9rt2016pfuuctv",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6i8vfi7je0t201gugpqort",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6idser7l9ct201sqvu41va",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6idux47laqt201m8g1nah3",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6isoxw7poyt201j5b0qxer",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6ivcnp7qaot201s0z23q4c",
+      "cpf": "60550677305",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6izdhn7re8t201bb0yik3s",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6izs927rhot201di9stzuw",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6jimxa84y8t201ikn21cew",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6jq40a86hut201w1qkc20f",
+      "cpf": "44960595841",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6jrq2c874ht201vhaf20z0",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6jrxyc878rt201b72ctcjn",
+      "cpf": "41150326859",
+      "rgm": "",
+      "reason": "no_mat_match"
+    },
+    {
+      "dealId": "cms6jzrht89mct201vrs3m0xd",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6k1idx8a72t201gf6tjlel",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6k214e8a9ut201y875gvhf",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6klvjn8frst201g4uu974x",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6knioi8gbet201183tlcou",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6l0hzy8j0lt201n8lrzthm",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6l86ns8lmdt201hf4jgcfd",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6lbotu8mcnt201gfoysgd5",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6lctnp8mm9t2019evccnzy",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6lev2q8n81t201vinpl3uh",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    },
+    {
+      "dealId": "cms6lvvi88xert201t64c3ecn",
+      "cpf": "",
+      "rgm": "",
+      "reason": "no_cpf_rgm"
+    }
+  ],
+  "apply_samples": [],
+  "error_samples": [],
+  "snapshots": {
+    "matriculados_id": "c4296028-165e-4fbe-9bb3-a61d5fb25597",
+    "matriculados_created_at": "2026-07-29T14:27:41.864Z",
+    "remat_set_size": 13919,
+    "caa_open_keys": 1601,
+    "caa_retencao_hours": 72
+  }
+}
