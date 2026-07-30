@@ -76,9 +76,10 @@ function emailMatchKey(v) {
 }
 
 /**
- * Acha contact existente no CRM por CPF → telefone → e-mail.
+ * Acha contact existente no CRM por CPF → e-mail → telefone.
  * O CPF vive no campo do deal, então `searchContacts(cpf)` quase nunca acha —
- * telefone/e-mail são os termos que a busca de contact realmente indexa.
+ * e-mail/telefone são os termos que a busca de contact realmente indexa.
+ * Telefone fica por último (mais sujeito a colisão/normalização DDD+8).
  *
  * A busca é fuzzy: quando o termo não casa, a API devolve a primeira página de
  * contatos (20 itens não relacionados). Só reusamos um hit quando ele confere
@@ -100,8 +101,8 @@ async function findExistingContact({ cpf, phone, email }) {
 
   const attempts = [
     digits(cpf) ? { by: 'cpf', term: digits(cpf) } : null,
-    phoneTerm ? { by: 'phone', term: phoneTerm } : null,
     wantEmail ? { by: 'email', term: wantEmail } : null,
+    phoneTerm ? { by: 'phone', term: phoneTerm } : null,
   ].filter(Boolean);
 
   let rejected = 0;
