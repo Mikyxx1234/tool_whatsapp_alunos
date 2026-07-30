@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-30 — Att de etapas: etapa Sem Rematricula sincroniza Situação em par
+- **Modelo usado:** Executor (Sonnet 4.6).
+- **Problema:** `mode=flags_stage` movia a etapa para **Sem Rematricula** mas deixava o carousel *Situação* intocado (ex.: "Em Curso") porque `fieldValues` só é construído com `doFields=true`. O campo permanecia divergente até o próximo `fields` noturno.
+- **Decisão:** Quando `doFlags && classification.stageName === 'Sem Rematricula'` e `fieldIds.situacao` está mapeado, o serviço insere automaticamente `{ fieldId: fieldIds.situacao, value: 'Sem Rematrícula' }` na fila de escrita do deal, independente de `doFields`. Condições:
+  - Só ocorre se o carousel no cache já **não** for `'Sem Rematrícula'` (comparação via `normalizeSituacaoCrm`), evitando write desnecessário.
+  - Se `doFields=true` (mode=`both`) e `fieldValues` já inclui `fieldIds.situacao`, o entry NÃO é duplicado.
+  - A escrita acontece mesmo se a etapa já estiver correta (situação pode estar errada independentemente).
+- **Contadores novos:** `situacao_sem_remat_updated` (apply) / `situacao_sem_remat_would_update` (dry-run). Expostos no result e contabilizados na fila de trabalho (`needsSemRematSituacao`).
+- **Arquivo:** `server/services/novoCrmFlagsStageSyncService.js`.
+- **Imports adicionados:** `SITUACAO_CRM_SEM_REMATRICULA`, `normalizeSituacaoCrm` de `novoCrmFieldMapping.js`.
+
 ### 2026-07-29 — Dedupe órfãos/incompletos por telefone + e-mail (scope orphans|incomplete|both)
 - **Modelo usado:** Executor (Sonnet 4.6).
 - **Problema:** ~1.041 contacts órfãos (sem deal) e ~3.039 contacts incompletos (deal sem CPF/RGM no espelho) precisavam de tratamento estruturado. Match anterior era só por e-mail; telefone ficava fora.

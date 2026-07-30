@@ -17,7 +17,9 @@ import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
   extractMatriculadosMappedValues,
+  normalizeSituacaoCrm,
   resolveSituacaoCrm,
+  SITUACAO_CRM_SEM_REMATRICULA,
 } from '../utils/novoCrmFieldMapping.js';
 import {
   classifyMatriculado,
@@ -258,6 +260,8 @@ export async function runFlagsStageSync(opts = {}) {
   let skippedNoDeal = 0;
   let skippedMissing = 0;
   let skippedUnchanged = 0;
+  let situacaoSemRematUpdated = 0;
+  let situacaoSemRematWouldUpdate = 0;
   let errors = 0;
   const liveStage = flagsSyncLiveStage();
   const concurrency = dryRun ? 1 : flagsSyncConcurrency();
@@ -411,7 +415,20 @@ export async function runFlagsStageSync(opts = {}) {
         }
       }
 
-      const values = [...flagValues, ...fieldValues];
+      // Sem Rematricula: sincroniza carousel Situação junto com a etapa,
+      // mesmo com doFields=false. Evita escrita se já canônico no cache.
+      const semRematSituacaoValues = [];
+      if (doFlags && classification.stageName === 'Sem Rematricula' && fieldIds.situacao) {
+        const alreadyInFieldValues = doFields && fieldValues.some((fv) => fv.fieldId === fieldIds.situacao);
+        if (!alreadyInFieldValues) {
+          const curSituacao = readDealField(deal, fieldIds.situacao, ['situação', 'situacao', 'situação matrícula']);
+          if (normalizeSituacaoCrm(curSituacao) !== SITUACAO_CRM_SEM_REMATRICULA) {
+            semRematSituacaoValues.push({ fieldId: fieldIds.situacao, value: SITUACAO_CRM_SEM_REMATRICULA });
+          }
+        }
+      }
+
+      const values = [...flagValues, ...fieldValues, ...semRematSituacaoValues];
 
       /**
        * @param {string|null} stageId
@@ -439,7 +456,8 @@ export async function runFlagsStageSync(opts = {}) {
         const d = decideMove(currentStageId, inCaaOpen);
         if (doFlags && flagValues.length) flagsUpdated += 1;
         if (doFields && fieldValues.length) fieldsUpdated += 1;
-        if (!flagValues.length && !fieldValues.length && !d.move) skippedUnchanged += 1;
+        if (semRematSituacaoValues.length) situacaoSemRematWouldUpdate += 1;
+        if (!flagValues.length && !fieldValues.length && !semRematSituacaoValues.length && !d.move) skippedUnchanged += 1;
         if (d.move) stagesMoved += 1;
         else if (d.untouchable) stagesSkippedUntouchable += 1;
         else if (d.unknown) stagesSkippedUnknown += 1;
@@ -458,6 +476,7 @@ export async function runFlagsStageSync(opts = {}) {
             in_caa_open: inCaaOpen,
             flags: classification.flags,
             flags_would_write: flagValues.length,
+            situacao_sem_remat_would_write: semRematSituacaoValues.length > 0,
           });
         }
         continue;
@@ -466,6 +485,7 @@ export async function runFlagsStageSync(opts = {}) {
       const cacheDecide = decideMove(currentStageId, inCaaOpen);
       const needsFlagWrite = flagValues.length > 0;
       const needsFieldWrite = fieldValues.length > 0;
+      const needsSemRematSituacao = semRematSituacaoValues.length > 0;
       const needsMove = Boolean(cacheDecide.move && classification.stageId);
       // Etapa desconhecida no cache: só getDeal se LIVE_STAGE=1; senão skip move.
       if (cacheDecide.unknown) {
@@ -480,13 +500,14 @@ export async function runFlagsStageSync(opts = {}) {
             values,
             needsFlagWrite,
             needsFieldWrite,
+            needsSemRematSituacao,
             needsMove: true,
             needsLiveStage: true,
             fromStageId: currentStageId,
           });
         } else {
           stagesSkippedUnknown += 1;
-          if (!needsFlagWrite && !needsFieldWrite) skippedUnchanged += 1;
+          if (!needsFlagWrite && !needsFieldWrite && !needsSemRematSituacao) skippedUnchanged += 1;
           else {
             workQueue.push({
               dealId,
@@ -498,6 +519,7 @@ export async function runFlagsStageSync(opts = {}) {
               values,
               needsFlagWrite,
               needsFieldWrite,
+              needsSemRematSituacao,
               needsMove: false,
               needsLiveStage: false,
               fromStageId: currentStageId,
@@ -507,7 +529,7 @@ export async function runFlagsStageSync(opts = {}) {
         continue;
       }
 
-      if (!needsFlagWrite && !needsFieldWrite && !needsMove) {
+      if (!needsFlagWrite && !needsFieldWrite && !needsSemRematSituacao && !needsMove) {
         skippedUnchanged += 1;
         if (cacheDecide.untouchable) stagesSkippedUntouchable += 1;
         continue;
@@ -523,6 +545,7 @@ export async function runFlagsStageSync(opts = {}) {
         values,
         needsFlagWrite,
         needsFieldWrite,
+        needsSemRematSituacao,
         needsMove,
         // Default: confia no cache (1 PUT stage). LIVE_STAGE=1 → getDeal antes.
         needsLiveStage: Boolean(liveStage && needsMove),
@@ -567,6 +590,7 @@ export async function runFlagsStageSync(opts = {}) {
             await updateDealCustomFields(item.dealId, item.values);
             if (item.needsFlagWrite) flagsUpdated += 1;
             if (item.needsFieldWrite) fieldsUpdated += 1;
+            if (item.needsSemRematSituacao) situacaoSemRematUpdated += 1;
           }
 
           let stageId = item.fromStageId;
@@ -645,6 +669,8 @@ export async function runFlagsStageSync(opts = {}) {
     matched,
     flags_updated: flagsUpdated,
     fields_updated: fieldsUpdated,
+    situacao_sem_remat_updated: dryRun ? situacaoSemRematWouldUpdate : situacaoSemRematUpdated,
+    situacao_sem_remat_would_update: situacaoSemRematWouldUpdate,
     stages_moved: stagesMoved,
     stages_skipped_untouchable: stagesSkippedUntouchable,
     stages_skipped_unknown: stagesSkippedUnknown,
