@@ -44,6 +44,13 @@ console.log(
       incomplete_scanned: result.incomplete_scanned,
       incomplete_no_match: result.incomplete_no_match,
       incomplete_enriched: result.incomplete_enriched,
+      incomplete_ambiguous: result.incomplete_ambiguous,
+      incomplete_name_mismatch: result.incomplete_name_mismatch,
+      incomplete_live_already_ok: result.incomplete_live_already_ok,
+      incomplete_live_conflict: result.incomplete_live_conflict,
+      incomplete_live_unknown: result.incomplete_live_unknown,
+      perdido_skipped_live: result.perdido_skipped_live,
+      perdido_live_unknown: result.perdido_live_unknown,
       created_deals: result.created_deals,
       errors: result.errors,
       max_creates: result.max_creates,
@@ -54,5 +61,6 @@ console.log(
   )
 );
 console.log('\n[samples]', JSON.stringify(result.samples?.slice(0, 10), null, 2));
+console.log('\n[skip_samples]', JSON.stringify(result.skip_samples?.slice(0, 15), null, 2));
 
 process.exit(result?.ok ? 0 : 1);

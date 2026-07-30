@@ -64,6 +64,8 @@ export function NovoCrmSyncPanel() {
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
   const [dedupePreview, setDedupePreview] = useState<OrphanDedupePreviewResponse | null>(null);
   const [dedupeJobId, setDedupeJobId] = useState<string | null>(null);
+  const [dedupeMode, setDedupeMode] = useState<'preview' | 'apply'>('preview');
+  const [dedupeApplied, setDedupeApplied] = useState(false);
 
   const pollRef = useRef<number | null>(null);
 
@@ -178,9 +180,12 @@ export function NovoCrmSyncPanel() {
                 setDedupeBusy(false);
                 if (r.job.status === 'completed' && r.job.result) {
                   setDedupePreview(r.job.result);
+                  setDedupeApplied(!r.job.result.dry_run);
                   setDedupeMsg(null);
                 } else if (r.job.status === 'failed') {
-                  setDedupeMsg(r.job.error || 'Prévia dedupe falhou');
+                  setDedupeMsg(
+                    r.job.error || (dedupeMode === 'apply' ? 'Dedupe falhou' : 'Prévia dedupe falhou')
+                  );
                 }
                 void loadStatus();
               }
@@ -192,7 +197,7 @@ export function NovoCrmSyncPanel() {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, flagsJobId, provisionJobId, dedupeJobId, loadStatus, stopPoll]);
+  }, [status?.running, flagsJobId, provisionJobId, dedupeJobId, dedupeMode, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastDurationMs =
@@ -332,6 +337,8 @@ export function NovoCrmSyncPanel() {
   const runDedupePreview = async () => {
     if (dedupeBusy || dedupeJobId) return;
     setDedupeBusy(true);
+    setDedupeMode('preview');
+    setDedupeApplied(false);
     setDedupeMsg('Conferindo cada órfão ao vivo no CRM… (leva alguns minutos)');
     setDedupePreview(null);
     try {
@@ -341,6 +348,28 @@ export function NovoCrmSyncPanel() {
       setDedupeBusy(false);
       setDedupeMsg(e instanceof Error ? e.message : 'Falha na prévia dedupe');
     }
+  };
+
+  const confirmDedupeApply = async () => {
+    if (dedupeBusy || dedupeJobId) return;
+    setDedupeBusy(true);
+    setDedupeMode('apply');
+    setDedupeApplied(false);
+    setDedupeMsg('Aplicando no CRM… (confere cada registro ao vivo antes de escrever)');
+    setDedupePreview(null);
+    try {
+      const started = await maintenanceApi.startOrphanDedupe({ scope: 'both' });
+      setDedupeJobId(started.jobId);
+    } catch (e) {
+      setDedupeBusy(false);
+      setDedupeMsg(e instanceof Error ? e.message : 'Falha ao aplicar dedupe');
+    }
+  };
+
+  const dismissDedupePreview = () => {
+    setDedupePreview(null);
+    setDedupeApplied(false);
+    setDedupeMsg(null);
   };
 
   const running = status?.running_sync || null;
@@ -594,7 +623,11 @@ export function NovoCrmSyncPanel() {
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {dedupeBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserRound className="w-3.5 h-3.5" />}
-              {dedupeBusy ? 'Conferindo no CRM…' : 'Prévia dedupe (confere ao vivo)'}
+              {dedupeBusy
+                ? dedupeMode === 'apply'
+                  ? 'Aplicando no CRM…'
+                  : 'Conferindo no CRM…'
+                : 'Prévia dedupe (confere ao vivo)'}
             </button>
             {dedupeMsg && <p className="text-[11px] text-violet-700">{dedupeMsg}</p>}
             {dedupePreview && (
@@ -609,8 +642,52 @@ export function NovoCrmSyncPanel() {
                   <strong>{(dedupePreview.deals_would_create_on_orphan + dedupePreview.deals_would_create_on_sibling).toLocaleString('pt-BR')}</strong>{' '}
                   · sem match no SIAA: {dedupePreview.orphan_no_match.toLocaleString('pt-BR')} · já cobertos por outro cadastro: {dedupePreview.dup_skip_no_deal.toLocaleString('pt-BR')}
                 </p>
-                <p>Com negócio mas sem CPF/RGM: <strong>{dedupePreview.incomplete_total.toLocaleString('pt-BR')}</strong> · duplicados para Perdido: <strong>{dedupePreview.dup_to_perdido.toLocaleString('pt-BR')}</strong> ({(dedupePreview.deals_would_move_perdido ?? 0).toLocaleString('pt-BR')} negócios) · só preencher campos: {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</p>
+                <p>
+                  Com negócio mas sem CPF/RGM:{' '}
+                  <strong>{dedupePreview.incomplete_total.toLocaleString('pt-BR')}</strong> ·
+                  duplicados para Perdido:{' '}
+                  <strong>{dedupePreview.dup_to_perdido.toLocaleString('pt-BR')}</strong> (
+                  {(dedupePreview.deals_would_move_perdido ?? dedupePreview.deals_moved_perdido ?? 0).toLocaleString('pt-BR')}{' '}
+                  negócios) · só preencher campos:{' '}
+                  <strong>{dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</strong>
+                </p>
                 <p>Casados por e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · por telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
+                <p className="text-violet-700/80">
+                  Barrados pela conferência: {(dedupePreview.incomplete_live_already_ok ?? 0).toLocaleString('pt-BR')} já
+                  preenchidos no CRM · {(dedupePreview.incomplete_ambiguous ?? 0).toLocaleString('pt-BR')} e-mail/telefone de
+                  mais de um aluno · {(dedupePreview.incomplete_name_mismatch ?? 0).toLocaleString('pt-BR')} nome divergente
+                  {dedupePreview.incomplete_live_conflict
+                    ? ` · ${dedupePreview.incomplete_live_conflict.toLocaleString('pt-BR')} valor diferente no CRM (não sobrescrito)`
+                    : ''}
+                </p>
+                {dedupeApplied ? (
+                  <p className="pt-1 font-semibold text-violet-900">
+                    Aplicado: {dedupePreview.created_deals.toLocaleString('pt-BR')} negócios criados ·{' '}
+                    {(dedupePreview.deals_moved_perdido ?? 0).toLocaleString('pt-BR')} movidos para Perdido ·{' '}
+                    {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')} campos preenchidos
+                    {dedupePreview.errors
+                      ? ` · ${dedupePreview.errors.toLocaleString('pt-BR')} falhas`
+                      : ''}
+                  </p>
+                ) : (
+                  <div className="flex gap-2 pt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void confirmDedupeApply()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg"
+                    >
+                      <UserRound className="w-3.5 h-3.5" />
+                      Aplicar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={dismissDedupePreview}
+                      className="px-3 py-1.5 text-xs font-medium text-violet-800 border border-violet-300 hover:bg-violet-50 rounded-lg"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

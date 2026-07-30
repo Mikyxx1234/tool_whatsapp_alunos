@@ -5,6 +5,24 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-30 — Dedupe de incompletos: travas de identidade + conferência ao vivo antes de escrever
+- **Modelo usado:** Opus 5 (principal).
+- **Problema:** auditoria dos 1.666 "com negócio mas sem CPF/RGM" mostrou que a decisão saía **só do espelho + match por e-mail/telefone**, sem validar de quem é o dado. Três falhas concretas:
+ 1. **Chave compartilhada:** telefone `11993894205` aparece no SIAA para **LUIZ HENRIQUE** e **PEDRO SILVA BARBOSA**; o serviço pegava `items[0]` (ordem arbitrária do Map) e escreveria o RGM de um no deal do outro.
+ 2. **Pessoa errada:** contact **"Luiz Henrique de Lima Junior"** casou pelo e-mail `pedrosbarbosa05@gmail.com` → receberia o **RGM do Pedro**.
+ 3. **Espelho defasado:** 63 dos 245 enrich já tinham CPF/RGM **corretos no CRM** (write inútil); amostra live mostrou também CPF corrompido `"9"` no deal — esse sim precisa ser sobrescrito.
+- **Decisão:**
+ - **Ambiguidade:** se a chave casada (e-mail/telefone) aponta para **mais de um aluno distinto** no SIAA, não escreve nada (`incomplete_ambiguous`). Não há como saber de quem é o CPF/RGM.
+ - **Nome plausível (`namesPlausiblyMatch`):** nome de contact no CRM é quase sempre apelido ("Bia", "Luh Oliveira", "rubensrock"), então **não** dá para exigir igualdade. Rejeita só o caso perigoso: contact com **2+ tokens** (nome completo plausível) que **não compartilha nenhum token** (igual ou prefixo, ≥3 letras) com o nome da fonte. Apelido de 1 token passa — a evidência ali é o telefone/e-mail. Vale para o nome SIAA (enrich) e para o nome do sibling (Perdido).
+ - **Conferência ao vivo antes de escrever** (`liveDealIdentity`, sob o mesmo `liveCheck`, vale **também em dry-run**):
+ - *Enrich:* lê o deal ao vivo; campo com valor **confiável** já preenchido não é reescrito (`incomplete_live_already_ok`); valor confiável **diferente** do SIAA vira `incomplete_live_conflict` e **não** sobrescreve; valor vazio ou lixo (CPF ≠ 11 dígitos, 6+ zeros à esquerda, todos iguais — pega o `"9"`→`00000000009`) é preenchido.
+ - *Perdido:* confere etapa e campos ao vivo; deal em etapa intocável/já Perdido ou **com CPF/RGM ao vivo** não é movido (`perdido_skipped_live`). Falha de leitura = não escreve (`*_live_unknown`).
+ - **Botão "Aplicar" no card 4** com confirmação inline (mesmo padrão do card de leads novos, pelo motivo do iframe já documentado). Prévia e apply usam o mesmo job assíncrono e o mesmo endpoint (`dry_run=0&async=1`).
+- **Efeito medido (dry-run PROD, 30/07):** enrich **245 → 180** (63 já ok ao vivo, 1 ambíguo, 1 nome divergente); Perdido **12 → 9 negócios** (3 tinham identidade ao vivo); `incomplete_live_conflict=0`.
+- **Contadores novos:** `incomplete_ambiguous`, `incomplete_name_mismatch`, `incomplete_live_already_ok`, `incomplete_live_conflict`, `incomplete_live_unknown`, `perdido_skipped_live`, `perdido_live_unknown` + `skip_samples` no result.
+- **Arquivos:** `novoCrmOrphanAlunoProvisionService.js`, `src/services/maintenanceApi.ts`, `src/components/NovoCrmSyncPanel.tsx`, `scripts/novo-crm-orphan-aluno-dryrun.mjs`.
+- **Lição:** match por e-mail/telefone identifica *o contato*, não *o aluno* — antes de escrever CPF/RGM confirmar que a chave é exclusiva e que o CRM não tem valor bom ali.
+
 ### 2026-07-30 — Falsos órfãos: full sync perdia deals; prévia do dedupe passa a conferir ao vivo
 - **Modelo usado:** Opus 5 (principal).
 - **Problema:** prévia do dedupe (`scope=both`) propunha **1.272 deals novos** para "órfãos". Auditoria ao vivo: **60/60** da amostra **já tinham deal no CRM**, com o **mesmo RGM** que seria criado (ex.: Daniela #65216 / RGM 39792331; Jacira #71102 / 47928417). Cruzando pelo espelho, só 180 pareciam ter RGM em uso — o espelho é que estava errado.

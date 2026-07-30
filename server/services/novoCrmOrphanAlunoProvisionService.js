@@ -69,6 +69,45 @@ async function liveContactHasAnyDeal(contactId) {
   }
 }
 
+function normalizeNameForCompare(v) {
+  return String(v ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Nome do contact no CRM costuma ser apelido ("Bia", "Luh Oliveira") — não dá
+ * para exigir igualdade. Só rejeitamos o caso perigoso: contact com nome
+ * completo plausível que não compartilha nenhum token com o nome da fonte
+ * (e-mail/telefone compartilhado entre pessoas diferentes).
+ * @returns {boolean} true quando é seguro seguir
+ */
+function namesPlausiblyMatch(contactName, sourceName) {
+  const a = normalizeNameForCompare(contactName).split(' ').filter((t) => t.length >= 3);
+  const b = normalizeNameForCompare(sourceName).split(' ').filter((t) => t.length >= 3);
+  if (!a.length || !b.length) return true;
+  const overlap = a.some((ta) =>
+    b.some((tb) => ta === tb || ta.startsWith(tb) || tb.startsWith(ta))
+  );
+  if (overlap) return true;
+  return a.length < 2;
+}
+
+/** CPF live confiável (descarta lixo tipo "9" → "00000000009"). */
+function isLiveCpfTrustworthy(v) {
+  const d = digits(v);
+  return d.length === 11 && !/^0{6}/.test(d) && !/^(\d)\1{10}$/.test(d);
+}
+
+/** RGM live confiável. */
+function isLiveRgmTrustworthy(v) {
+  return digits(v).length >= 7;
+}
+
 function panelFieldValue(dealDetail, names) {
   const wanted = names.map((n) => n.toLowerCase());
   const fields = dealDetail?.dealPanelFields || dealDetail?.customFields || [];
@@ -81,6 +120,26 @@ function panelFieldValue(dealDetail, names) {
     }
   }
   return '';
+}
+
+/**
+ * Lê stage + CPF/RGM de um deal ao vivo. `ok:false` quando a API falhou —
+ * chamador deve tratar como "não sei" e não escrever.
+ */
+async function liveDealIdentity(dealId) {
+  try {
+    const detail = await getDeal(dealId);
+    if (!detail?.id) return { ok: false };
+    return {
+      ok: true,
+      stageId: String(detail?.stage?.id || detail?.stageId || '').trim(),
+      cpf: panelFieldValue(detail, ['cpf', 'documento', 'taxid']),
+      rgm: panelFieldValue(detail, ['rgm']),
+    };
+  } catch (err) {
+    console.warn('[novo-crm-orphan-provision] live deal read failed', dealId, err?.message || err);
+    return { ok: false };
+  }
 }
 
 /**
@@ -460,6 +519,13 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let incompleteScanned = 0;
   let incompleteNoMatch = 0;
   let incompleteEnriched = 0;
+  let incompleteAmbiguous = 0;
+  let incompleteNameMismatch = 0;
+  let incompleteLiveAlreadyOk = 0;
+  let incompleteLiveConflict = 0;
+  let incompleteLiveUnknown = 0;
+  let perdidoSkippedLive = 0;
+  let perdidoLiveUnknown = 0;
   let dealsWouldCreateOnOrphan = 0;
   let dealsWouldCreateOnSibling = 0;
   let createdDeals = 0;
@@ -473,6 +539,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const samples = [];
   /** @type {Array<object>} */
   const errorSamples = [];
+  /** @type {Array<object>} amostras do que foi barrado pelas travas de segurança */
+  const skipSamples = [];
   /** @type {Set<string>} claim `${contactId}:${rgm}` na run — evita spam concorrente/reentry */
   const claimedDealKeys = new Set();
   /** @type {Map<string, { rgms: Set<string>, cpfs: Set<string> }>} identidade live memoizada */
@@ -888,6 +956,28 @@ export async function runOrphanAlunoProvision(opts = {}) {
       else matchedPhone += 1;
 
       const items = [...group.values()];
+
+      // E-mail/telefone compartilhado entre alunos diferentes: não dá para
+      // saber de quem é o CPF/RGM. Não escreve nada.
+      const distinctPeople = new Set(
+        items.map((it) => normalizeNameForCompare(it.mapped?._nome_full)).filter(Boolean)
+      );
+      if (items.length > 1 && distinctPeople.size > 1) {
+        incompleteAmbiguous += 1;
+        if (skipSamples.length < 25) {
+          skipSamples.push({
+            type: 'ambiguous_match',
+            contact_id: row.contact_id,
+            nome: row.nome,
+            match_via: matchVia,
+            match_key: matchedKey,
+            candidatos: [...distinctPeople].slice(0, 4),
+          });
+        }
+        patchJob({ processed: incIdx });
+        continue;
+      }
+
       const emailsSet = new Set(emailCandidates);
       const phonesSet = new Set(phoneCandidates);
       for (const it of items) {
@@ -918,6 +1008,22 @@ export async function runOrphanAlunoProvision(opts = {}) {
           patchJob({ processed: incIdx });
           continue;
         }
+        if (!namesPlausiblyMatch(row.nome, siblingRow.nome)) {
+          incompleteNameMismatch += 1;
+          if (skipSamples.length < 25) {
+            skipSamples.push({
+              type: 'name_mismatch_sibling',
+              contact_id: row.contact_id,
+              nome: row.nome,
+              sibling_contact_id: siblingId,
+              sibling_nome: siblingRow.nome,
+              match_via: matchVia,
+              match_key: matchedKey,
+            });
+          }
+          patchJob({ processed: incIdx });
+          continue;
+        }
         dupToPerdido += 1;
 
         // Collect all deals on this incomplete contact.
@@ -929,9 +1035,29 @@ export async function runOrphanAlunoProvision(opts = {}) {
 
         for (const deal of allDeals) {
           if (!deal?.id) continue;
-          const dealStageId = String(deal?.stageId || deal?.stage_id || '').trim();
+          let dealStageId = String(deal?.stageId || deal?.stage_id || '').trim();
           if (isUntouchableStageId(dealStageId)) continue;
           if (dealStageId === perdidoStageId) continue;
+
+          // Espelho pode estar defasado: confere etapa e campos ao vivo antes
+          // de mover algo para Perdido.
+          if (liveCheck) {
+            const live = await liveDealIdentity(deal.id);
+            if (!live.ok) {
+              perdidoLiveUnknown += 1;
+              continue;
+            }
+            if (isUntouchableStageId(live.stageId) || live.stageId === perdidoStageId) {
+              perdidoSkippedLive += 1;
+              continue;
+            }
+            if (isLiveCpfTrustworthy(live.cpf) || isLiveRgmTrustworthy(live.rgm)) {
+              // Negócio tem identidade no CRM — não é a linha "vazia" duplicada.
+              perdidoSkippedLive += 1;
+              continue;
+            }
+            dealStageId = live.stageId || dealStageId;
+          }
 
           dealsMovedPerdido += 1;
           if (samples.length < 25) {
@@ -979,14 +1105,69 @@ export async function runOrphanAlunoProvision(opts = {}) {
         const hasCpf = Boolean(normalizeCpf(row.cpf_norm));
         const hasRgm = rgmsOnCacheRow(row).size > 0 || Boolean(normalizeRgm(row.rgm_norm));
         const it = items[0];
-        const enrichValues = [
-          (!hasCpf && it?.cpf) ? { fieldId: fieldIds.cpf, value: it.cpf } : null,
-          (!hasRgm && it?.rgm) ? { fieldId: fieldIds.rgm, value: it.rgm } : null,
+
+        if (!namesPlausiblyMatch(row.nome, it?.mapped?._nome_full)) {
+          incompleteNameMismatch += 1;
+          if (skipSamples.length < 25) {
+            skipSamples.push({
+              type: 'name_mismatch_siaa',
+              contact_id: row.contact_id,
+              nome: row.nome,
+              nome_siaa: it?.mapped?._nome_full || null,
+              match_via: matchVia,
+              match_key: matchedKey,
+            });
+          }
+          patchJob({ processed: incIdx });
+          continue;
+        }
+
+        let enrichValues = [
+          (!hasCpf && it?.cpf) ? { fieldId: fieldIds.cpf, value: it.cpf, campo: 'cpf' } : null,
+          (!hasRgm && it?.rgm) ? { fieldId: fieldIds.rgm, value: it.rgm, campo: 'rgm' } : null,
         ].filter(Boolean);
 
         if (!enrichValues.length) {
           patchJob({ processed: incIdx });
           continue;
+        }
+
+        // Espelho pode dizer "vazio" com o CRM já preenchido. Só escreve o que
+        // realmente está vazio/corrompido ao vivo — nunca sobrescreve valor bom.
+        if (liveCheck) {
+          const live = await liveDealIdentity(primaryDeal.id);
+          if (!live.ok) {
+            incompleteLiveUnknown += 1;
+            patchJob({ processed: incIdx });
+            continue;
+          }
+          const before = enrichValues.length;
+          enrichValues = enrichValues.filter((v) => {
+            const liveValue = v.campo === 'cpf' ? live.cpf : live.rgm;
+            const trustworthy =
+              v.campo === 'cpf' ? isLiveCpfTrustworthy(liveValue) : isLiveRgmTrustworthy(liveValue);
+            if (!trustworthy) return true;
+            if (digits(liveValue) !== digits(v.value)) {
+              incompleteLiveConflict += 1;
+              if (skipSamples.length < 25) {
+                skipSamples.push({
+                  type: 'live_conflict',
+                  contact_id: row.contact_id,
+                  nome: row.nome,
+                  deal_id: primaryDeal.id,
+                  campo: v.campo,
+                  valor_crm: liveValue,
+                  valor_siaa: v.value,
+                });
+              }
+            }
+            return false;
+          });
+          if (!enrichValues.length) {
+            if (before) incompleteLiveAlreadyOk += 1;
+            patchJob({ processed: incIdx });
+            continue;
+          }
         }
 
         incompleteEnriched += 1;
@@ -1002,7 +1183,11 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
         if (!dryRun) {
           try {
-            await updateDealCustomFields(primaryDeal.id, enrichValues, { maxRetries: 4 });
+            await updateDealCustomFields(
+              primaryDeal.id,
+              enrichValues.map((v) => ({ fieldId: v.fieldId, value: v.value })),
+              { maxRetries: 4 }
+            );
             if (DELAY_MS > 0) await sleep(DELAY_MS);
           } catch (err) {
             errors += 1;
@@ -1047,6 +1232,13 @@ export async function runOrphanAlunoProvision(opts = {}) {
     incomplete_scanned: incompleteScanned,
     incomplete_no_match: incompleteNoMatch,
     incomplete_enriched: incompleteEnriched,
+    incomplete_ambiguous: incompleteAmbiguous,
+    incomplete_name_mismatch: incompleteNameMismatch,
+    incomplete_live_already_ok: incompleteLiveAlreadyOk,
+    incomplete_live_conflict: incompleteLiveConflict,
+    incomplete_live_unknown: incompleteLiveUnknown,
+    perdido_skipped_live: perdidoSkippedLive,
+    perdido_live_unknown: perdidoLiveUnknown,
     created_deals: dryRun ? 0 : createdDeals,
     errors: dryRun ? 0 : errors,
     skipped_already_has_deal_live: skippedAlreadyHasDeal,
@@ -1061,6 +1253,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
     delay_ms: DELAY_MS,
     stopped_at_max: stoppedAtMax,
     samples,
+    skip_samples: skipSamples,
     error_samples: errorSamples,
   };
 

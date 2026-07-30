@@ -343,6 +343,13 @@ export interface OrphanDedupePreviewResponse {
   incomplete_scanned: number;
   incomplete_no_match: number;
   incomplete_enriched: number;
+  incomplete_ambiguous?: number;
+  incomplete_name_mismatch?: number;
+  incomplete_live_already_ok?: number;
+  incomplete_live_conflict?: number;
+  incomplete_live_unknown?: number;
+  perdido_skipped_live?: number;
+  perdido_live_unknown?: number;
   created_deals: number;
   errors: number;
   skipped_already_has_deal_live?: number;
