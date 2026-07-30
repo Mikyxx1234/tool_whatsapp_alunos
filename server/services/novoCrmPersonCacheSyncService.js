@@ -101,7 +101,12 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
   let deleted = 0;
   let dataLossEvents = 0;
   let maxSourceUpdatedAt = null;
+  let emptyDealsVerified = 0;
+  let emptyDealsVerifyErrors = 0;
+  let dealsRecovered = 0;
   const contactPerPage = Math.min(Math.max(Number(process.env.NOVO_CRM_CACHE_API_CONTACT_PER_PAGE) || 200, 1), 200);
+  const verifyEmptyDeals =
+    String(process.env.NOVO_CRM_CACHE_VERIFY_EMPTY_DEALS ?? '1').trim() !== '0';
 
   try {
     const fullSeenAt = new Date().toISOString();
@@ -157,7 +162,25 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       const pageDeals = new Map();
       if (dealsByContact) {
         for (const c of items) {
-          pageDeals.set(String(c.id), dealsByContact.get(String(c.id)) || []);
+          const cid = String(c.id);
+          let deals = dealsByContact.get(cid) || [];
+          // Índice em lote perde deals (deriva de paginação) e o contact vira
+          // falso órfão no espelho. Confere ao vivo quem ficou sem negócio.
+          if (!deals.length && verifyEmptyDeals) {
+            emptyDealsVerified += 1;
+            try {
+              deals = await apiSource.listDealsForContactId(cid);
+              if (deals.length) dealsRecovered += deals.length;
+            } catch (err) {
+              emptyDealsVerifyErrors += 1;
+              console.warn(
+                `[novo-crm-cache-sync] verificação de deals falhou contact=${cid}:`,
+                err?.message || err
+              );
+              deals = [];
+            }
+          }
+          pageDeals.set(cid, deals);
         }
       } else {
         for (const c of items) {
@@ -222,7 +245,8 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       );
 
       if (truncated && contactsSeen >= contactCap) break;
-      if (res.items.length < contactPerPage) break;
+      // Página curta no meio = deriva de paginação, não fim da lista.
+      if (totalPages != null && page >= totalPages) break;
       page += 1;
       if (batchDelayMs() > 0) await sleep(batchDelayMs());
     }
@@ -256,7 +280,7 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       dataLossEvents,
     });
     console.log(
-      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} ${durationMs}ms`
+      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} deals_recuperados=${dealsRecovered}/${emptyDealsVerified} ${durationMs}ms`
     );
     return {
       ok: true,
@@ -274,6 +298,9 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       truncated,
       contact_cap: contactCap,
       contacts_total: contactsTotal,
+      empty_deals_verified: emptyDealsVerified,
+      empty_deals_verify_errors: emptyDealsVerifyErrors,
+      deals_recovered: dealsRecovered,
     };
   } catch (err) {
     if (logId) {

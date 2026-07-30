@@ -63,6 +63,7 @@ export function NovoCrmSyncPanel() {
   const [dedupeBusy, setDedupeBusy] = useState(false);
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
   const [dedupePreview, setDedupePreview] = useState<OrphanDedupePreviewResponse | null>(null);
+  const [dedupeJobId, setDedupeJobId] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
 
@@ -93,7 +94,7 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    if (status?.running || flagsJobId || provisionJobId) {
+    if (status?.running || flagsJobId || provisionJobId || dedupeJobId) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
         void loadStatus();
@@ -166,12 +167,32 @@ export function NovoCrmSyncPanel() {
             })
             .catch(() => {});
         }
+        if (dedupeJobId) {
+          void maintenanceApi
+            .getOrphanDedupeStatus(dedupeJobId)
+            .then((r) => {
+              if (!r.job) return;
+              setDedupeMsg(r.job.status_message || r.job.phase || null);
+              if (r.job.status !== 'running') {
+                setDedupeJobId(null);
+                setDedupeBusy(false);
+                if (r.job.status === 'completed' && r.job.result) {
+                  setDedupePreview(r.job.result);
+                  setDedupeMsg(null);
+                } else if (r.job.status === 'failed') {
+                  setDedupeMsg(r.job.error || 'Prévia dedupe falhou');
+                }
+                void loadStatus();
+              }
+            })
+            .catch(() => {});
+        }
       }, 3000) as unknown as number;
     } else {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, flagsJobId, provisionJobId, loadStatus, stopPoll]);
+  }, [status?.running, flagsJobId, provisionJobId, dedupeJobId, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastDurationMs =
@@ -309,18 +330,16 @@ export function NovoCrmSyncPanel() {
   };
 
   const runDedupePreview = async () => {
-    if (dedupeBusy) return;
+    if (dedupeBusy || dedupeJobId) return;
     setDedupeBusy(true);
-    setDedupeMsg('Calculando prévia dedupe…');
+    setDedupeMsg('Conferindo cada órfão ao vivo no CRM… (leva alguns minutos)');
     setDedupePreview(null);
     try {
-      const preview = await maintenanceApi.previewOrphanDedupe({ scope: 'both' });
-      setDedupePreview(preview);
-      setDedupeMsg(null);
+      const started = await maintenanceApi.startOrphanDedupePreview({ scope: 'both' });
+      setDedupeJobId(started.jobId);
     } catch (e) {
-      setDedupeMsg(e instanceof Error ? e.message : 'Falha na prévia dedupe');
-    } finally {
       setDedupeBusy(false);
+      setDedupeMsg(e instanceof Error ? e.message : 'Falha na prévia dedupe');
     }
   };
 
@@ -566,24 +585,32 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-violet-900">4. Dedupe órfãos/incompletos</p>
             <p className="text-[11px] text-violet-800/80 flex-1">
-              Prévia: conta contacts sem deal (órfãos) e com deal sem CPF/RGM (incompletos) matchados por e-mail ou telefone. Sibling melhor → deal do ruim vai para Perdido. Sem sibling → enrich leve (CPF/RGM).
+              Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, deal duplicado para Perdido e preenchimento de CPF/RGM.
             </p>
             <button
               type="button"
               onClick={() => void runDedupePreview()}
-              disabled={dedupeBusy}
+              disabled={dedupeBusy || Boolean(dedupeJobId)}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {dedupeBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserRound className="w-3.5 h-3.5" />}
-              {dedupeBusy ? 'Calculando…' : 'Prévia dedupe (scope=both)'}
+              {dedupeBusy ? 'Conferindo no CRM…' : 'Prévia dedupe (confere ao vivo)'}
             </button>
             {dedupeMsg && <p className="text-[11px] text-violet-700">{dedupeMsg}</p>}
             {dedupePreview && (
               <div className="mt-1 text-[11px] text-violet-900 space-y-0.5">
-                <p>Órfãos: <strong>{dedupePreview.orphans_total.toLocaleString('pt-BR')}</strong> · Aluno: <strong>{dedupePreview.orphan_aluno.toLocaleString('pt-BR')}</strong> · Sem match: {dedupePreview.orphan_no_match.toLocaleString('pt-BR')}</p>
-                <p>Dup skip (sem deal): {dedupePreview.dup_skip_no_deal.toLocaleString('pt-BR')} · Deals criaria: <strong>{(dedupePreview.deals_would_create_on_orphan + dedupePreview.deals_would_create_on_sibling).toLocaleString('pt-BR')}</strong></p>
-                <p>Incompletos: <strong>{dedupePreview.incomplete_total.toLocaleString('pt-BR')}</strong> · Dup→Perdido: <strong>{dedupePreview.dup_to_perdido.toLocaleString('pt-BR')}</strong> ({(dedupePreview.deals_would_move_perdido ?? 0).toLocaleString('pt-BR')} deals) · Enrich: {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</p>
-                <p>Match e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
+                <p>
+                  Sem negócio no espelho: <strong>{dedupePreview.orphans_total.toLocaleString('pt-BR')}</strong> ·
+                  já tinham negócio no CRM: <strong>{(dedupePreview.skipped_already_has_deal_live ?? 0).toLocaleString('pt-BR')}</strong>
+                  {dedupePreview.warmed_cache ? ` (${dedupePreview.warmed_cache.toLocaleString('pt-BR')} corrigidos no espelho)` : ''}
+                </p>
+                <p>
+                  Negócios a criar de verdade:{' '}
+                  <strong>{(dedupePreview.deals_would_create_on_orphan + dedupePreview.deals_would_create_on_sibling).toLocaleString('pt-BR')}</strong>{' '}
+                  · sem match no SIAA: {dedupePreview.orphan_no_match.toLocaleString('pt-BR')} · já cobertos por outro cadastro: {dedupePreview.dup_skip_no_deal.toLocaleString('pt-BR')}
+                </p>
+                <p>Com negócio mas sem CPF/RGM: <strong>{dedupePreview.incomplete_total.toLocaleString('pt-BR')}</strong> · duplicados para Perdido: <strong>{dedupePreview.dup_to_perdido.toLocaleString('pt-BR')}</strong> ({(dedupePreview.deals_would_move_perdido ?? 0).toLocaleString('pt-BR')} negócios) · só preencher campos: {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</p>
+                <p>Casados por e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · por telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
               </div>
             )}
           </div>

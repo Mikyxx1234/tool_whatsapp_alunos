@@ -680,6 +680,29 @@ router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res)
     const scope = ['orphans', 'incomplete', 'both'].includes(scopeRaw) ? scopeRaw : 'orphans';
 
     if (isDry) {
+      // A prévia consulta o CRM ao vivo por contact (o espelho gera falsos
+      // órfãos), então demora minutos — async=1 devolve jobId para polling.
+      if (asyncMode) {
+        const started = startOrphanAlunoProvisionApplyBackground({
+          maxCreates,
+          scope,
+          dryRun: true,
+        });
+        if (!started.started) {
+          return res.status(409).json({
+            error: started.error || 'Prévia de dedupe já em andamento',
+            jobId: started.jobId,
+          });
+        }
+        return res.status(202).json({
+          ok: true,
+          status: 'running',
+          jobId: started.jobId,
+          dry_run: true,
+          scope,
+          max_creates: maxCreates || null,
+        });
+      }
       const preview = await previewOrphanAlunoProvision({ maxCreates, scope });
       return res.json(preview);
     }

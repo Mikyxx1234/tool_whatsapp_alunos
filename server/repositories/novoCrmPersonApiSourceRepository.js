@@ -167,35 +167,52 @@ export async function countAllContactsViaApi() {
 
 /**
  * Carrega todos os deals da API indexados por contactId.
- * @param {{ onProgress?: (p: {page:number,totalPages:number|null,seen:number,total:number}) => void, delayMs?: number }} [opts]
+ *
+ * Paginação por offset com ordenação instável: itens migram de página enquanto
+ * o sync roda, então uma página curta no meio NÃO significa fim (parar ali
+ * deixava contacts sem deal no espelho — falsos órfãos). Só encerra quando a
+ * página vem vazia ou `totalPages` é atingido; deduplica por id.
+ *
+ * @param {{ onProgress?: (p: {page:number,totalPages:number|null,seen:number,total:number}) => void, delayMs?: number, maxPages?: number }} [opts]
  */
 export async function loadAllDealsByContactId(opts = {}) {
   assertApiSourceReady();
   const delayMs = Math.max(Number(opts.delayMs) || 80, 0);
+  const maxPages = Math.min(Math.max(Number(opts.maxPages) || 5000, 1), 20000);
   /** @type {Map<string, object[]>} */
   const byContact = new Map();
+  /** @type {Map<string, string>} */
+  const dealToContact = new Map();
   let page = 1;
   let totalPages = null;
   let total = 0;
   let seen = 0;
 
-  while (true) {
+  while (page <= maxPages) {
     const res = await listDealsPage({ page, perPage: 100 });
     total = res.total;
     totalPages = res.totalPages || Math.ceil(total / 100) || null;
     for (const d of res.items) {
+      const did = d?.id ? String(d.id) : '';
+      const cid = d?.contactId ? String(d.contactId) : '';
+      if (!did || !cid || dealToContact.has(did)) continue;
+      dealToContact.set(did, cid);
       seen += 1;
-      const cid = d.contactId ? String(d.contactId) : '';
-      if (!cid) continue;
       const arr = byContact.get(cid) || [];
       arr.push(d);
       byContact.set(cid, arr);
     }
     opts.onProgress?.({ page, totalPages, seen, total });
-    if (!res.items.length || res.items.length < 100) break;
+    if (!res.items.length) break;
     if (totalPages != null && page >= totalPages) break;
     page += 1;
     if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+  }
+
+  if (total && seen < total) {
+    console.warn(
+      `[novo-crm-api-source] índice de deals incompleto: ${seen}/${total} (deriva de paginação) — verificação por contact cobre o restante`
+    );
   }
   return byContact;
 }

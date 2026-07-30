@@ -52,6 +52,7 @@ import {
   updateDealCustomFields,
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
+import { warmContactFromLive } from './novoCrmCacheWarmService.js';
 
 /**
  * Guard live leve: 1 GET deals?contactId=. Se já existe deal, pula (órfão
@@ -465,6 +466,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let errors = 0;
   let skippedAlreadyHasDeal = 0;
   let skippedDuplicateRgm = 0;
+  let warmedCache = 0;
+  let warmCacheErrors = 0;
   let stoppedAtMax = false;
   /** @type {Array<object>} */
   const samples = [];
@@ -748,11 +751,30 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
       }
     } else {
-      // Orphan path: live-check default ON. Com LIVE_CHECK=0 ainda bloqueia se
-      // já claimamos RGM neste processo (reentrada / concorrência).
-      if (!dryRun && liveCheck && (await liveContactHasAnyDeal(row.contact_id))) {
+      // Orphan path: live-check default ON, inclusive na prévia — o índice de
+      // deals do full sync perde registros e cria falsos órfãos no espelho.
+      // Quem já tem negócio ao vivo é sincronizado no espelho e sai da conta.
+      if (liveCheck && (await liveContactHasAnyDeal(row.contact_id))) {
         skippedAlreadyHasDeal += 1;
-        patchJob({ processed: Math.max(i + 1, offset), sent: createdDeals, failed: errors });
+        try {
+          await warmContactFromLive(String(row.contact_id));
+          warmedCache += 1;
+        } catch (err) {
+          warmCacheErrors += 1;
+          console.warn(
+            `[novo-crm-orphan-provision] warm cache contact=${row.contact_id}:`,
+            err?.message || err
+          );
+        }
+        patchJob({
+          processed: Math.max(i + 1, offset),
+          sent: createdDeals,
+          failed: errors,
+          status_message: dryRun
+            ? `Verificados ${scanned}/${orphans.length} · ${skippedAlreadyHasDeal} já tinham negócio · ` +
+              `${dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling} a criar`
+            : undefined,
+        });
         return;
       }
       const orphanRgms = rgmsOnCacheRow(row);
@@ -1027,7 +1049,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
     incomplete_enriched: incompleteEnriched,
     created_deals: dryRun ? 0 : createdDeals,
     errors: dryRun ? 0 : errors,
-    skipped_already_has_deal_live: dryRun ? 0 : skippedAlreadyHasDeal,
+    skipped_already_has_deal_live: skippedAlreadyHasDeal,
+    warmed_cache: warmedCache,
+    warm_cache_errors: warmCacheErrors,
     skipped_duplicate_rgm: skippedDuplicateRgm,
     max_creates: maxCreates,
     offset,
@@ -1065,18 +1089,19 @@ export async function previewOrphanAlunoProvision(opts = {}) {
 }
 
 /**
- * Apply em background. Retorna jobId.
- * @param {{ maxCreates?: number, offset?: number, liveCheck?: boolean, scope?: 'orphans'|'incomplete'|'both' }} opts
+ * Prévia (com verificação ao vivo) ou apply em background. Retorna jobId.
+ * @param {{ maxCreates?: number, offset?: number, liveCheck?: boolean, scope?: 'orphans'|'incomplete'|'both', dryRun?: boolean }} opts
  */
 export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
   if (runningJobId && jobs.get(runningJobId)?.status === 'running') {
     return { started: false, jobId: runningJobId, error: 'Provisionamento de órfãos já em andamento' };
   }
+  const dryRun = opts.dryRun === true;
   const jobId = randomUUID();
   const entry = {
     jobId,
     status: 'running',
-    dry_run: false,
+    dry_run: dryRun,
     total: 0,
     processed: 0,
     sent: 0,
@@ -1096,7 +1121,7 @@ export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
     offset: opts.offset,
     liveCheck: opts.liveCheck,
     scope: opts.scope,
-    dryRun: false,
+    dryRun,
     jobId,
   })
     .then((result) => {

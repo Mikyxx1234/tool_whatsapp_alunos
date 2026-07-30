@@ -345,6 +345,9 @@ export interface OrphanDedupePreviewResponse {
   incomplete_enriched: number;
   created_deals: number;
   errors: number;
+  skipped_already_has_deal_live?: number;
+  warmed_cache?: number;
+  warm_cache_errors?: number;
   stopped_at_max: boolean;
   samples: unknown[];
 }
@@ -591,6 +594,20 @@ export const maintenanceApi = {
     const params = new URLSearchParams({ dry_run: '1', scope: opts?.scope ?? 'both' });
     if (opts?.max != null) params.set('max', String(opts.max));
     return jsonFetch<OrphanDedupePreviewResponse>(
+      `/api/maintenance/provision-orphan-alunos-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Inicia prévia dedupe em background (verifica cada órfão ao vivo no CRM). */
+  startOrphanDedupePreview(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '1',
+      async: '1',
+      scope: opts?.scope ?? 'both',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<OrphanDedupeStartResponse>(
       `/api/maintenance/provision-orphan-alunos-novo-crm?${params.toString()}`,
       { method: 'POST', body: '{}' }
     );

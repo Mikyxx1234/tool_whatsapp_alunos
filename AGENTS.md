@@ -5,6 +5,25 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-30 — Falsos órfãos: full sync perdia deals; prévia do dedupe passa a conferir ao vivo
+- **Modelo usado:** Opus 5 (principal).
+- **Problema:** prévia do dedupe (`scope=both`) propunha **1.272 deals novos** para "órfãos". Auditoria ao vivo: **60/60** da amostra **já tinham deal no CRM**, com o **mesmo RGM** que seria criado (ex.: Daniela #65216 / RGM 39792331; Jacira #71102 / 47928417). Cruzando pelo espelho, só 180 pareciam ter RGM em uso — o espelho é que estava errado.
+- **Causa raiz (espelho, não CRM):** `loadAllDealsByContactId` pagina **todos** os deals (`perPage=100`) antes de varrer contacts. Duas falhas somadas:
+ 1. **Parada precoce:** `if (res.items.length < 100) break` — página curta no meio (ordenação instável / deriva) encerrava o índice.
+ 2. **Deriva de paginação sem dedupe:** probe de 395 páginas devolveu 39.465 itens mas só **39.264 ids únicos** (201 duplicados = 201 perdidos em ~100 s). Numa run de ~3,5 h a perda escala.
+ Contact sem deal no índice → `mapApiSnapshot` grava snapshot **sem deals** → `upsertSnapshot` sobrescreve (data-loss é logado mas não bloqueia) → contact vira **falso órfão**. Espelho tinha 37.793 deals contra **39.465** na API (~1.672 a menos ≈ os 1.453 falsos órfãos).
+- **Não é** o `NOVO_CRM_DATABASE_URL`: aquele banco é de outra org/defasado (max deal 49.067, os contacts nem existem lá) e **não** é usado — `NOVO_CRM_CACHE_SOURCE=api`.
+- **Decisão:**
+ - **Paginação de deals:** só encerra em página vazia ou `page >= totalPages`; dedupe por `deal.id`; loga quando `seen < total`.
+ - **Verificação por contact:** no full sync via API, contact que ficou **sem deal** no índice em lote é conferido com `listDealsForContactId` antes de gravar (`NOVO_CRM_CACHE_VERIFY_EMPTY_DEALS=1` default). Contadores `empty_deals_verified` / `deals_recovered`.
+ - **Contacts também não param cedo:** `if (res.items.length < contactPerPage) break` virou `page >= totalPages`.
+ - **Prévia do dedupe confere ao vivo:** o live-check do path órfão passa a valer **também em dry-run**; quem já tem deal é sincronizado no espelho via `warmContactFromLive` e sai da conta (`skipped_already_has_deal_live`, `warmed_cache`).
+ - **Prévia vira job assíncrono** (`dry_run=1&async=1` → jobId + polling), porque a verificação ao vivo leva minutos. UI mostra progresso e resultado em texto claro.
+ - **Warm compartilhado:** novo `server/services/novoCrmCacheWarmService.js#warmContactFromLive` (contact + deals + campos → `upsertSnapshot`), reusável por provision, dedupe e reparo.
+- **Reparo do estoque atual:** `scripts/novo-crm-repair-missing-deals.mjs` (`--dry`, `--limit=`) varre quem está sem negócio no espelho, confere ao vivo e re-sincroniza. Run 30/07: dos 1.453, ~96% tinham deal — o reparo também recupera CPF/RGM dessas linhas.
+- **Arquivos:** `novoCrmPersonApiSourceRepository.js`, `novoCrmPersonCacheSyncService.js`, `novoCrmOrphanAlunoProvisionService.js`, `novoCrmCacheWarmService.js`, `server/routes/maintenance.js`, `src/services/maintenanceApi.ts`, `src/components/NovoCrmSyncPanel.tsx`, `scripts/novo-crm-repair-missing-deals.mjs`.
+- **Lição:** número de "órfão" saído só do espelho não é confiável para escrita em massa — confirmar ao vivo antes de criar (mesmo princípio já adotado em `mode=new`).
+
 ### 2026-07-30 — Leads novos (`mode=new`): dedup por RGM + anti-dupe por telefone/e-mail
 - **Modelo usado:** Opus 5 (principal).
 - **Problema:** prévia de `mode=new` listava 47 pessoas, mas **27 já existiam no CRM** (ex.: deals #103440/#103441, criados 28/07 pelo fluxo CSV Atendimento, com CPF/RGM já preenchidos). Duas causas somadas:
