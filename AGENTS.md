@@ -5,6 +5,21 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-30 — Leads novos (`mode=new`): dedup por RGM + anti-dupe por telefone/e-mail
+- **Modelo usado:** Opus 5 (principal).
+- **Problema:** prévia de `mode=new` listava 47 pessoas, mas **27 já existiam no CRM** (ex.: deals #103440/#103441, criados 28/07 pelo fluxo CSV Atendimento, com CPF/RGM já preenchidos). Duas causas somadas:
+ 1. **Seleção só por CPF:** `existingCpfs` vinha de `loadExistingCpfRgmSets()` mas o `rgms` era ignorado. Nessas 27 pessoas o `cpf_norm` do espelho está **corrompido** (`00000000009` — valor curto no campo CPF do deal + `padStart(11,'0')`), enquanto o `rgm_norm` está correto → passavam como novas. Espelho tem **119** linhas com RGM válido e CPF inválido/ausente (65 delas com `00000000009`).
+ 2. **Anti-dupe inútil:** o pré-create fazia só `searchContacts(cpf)`, que retorna **0** — o CPF vive no campo do *deal*, a busca de contact não indexa. Resultado: criaria contact + deal duplicados (mesmo padrão do incidente de 28/07).
+- **Decisão:**
+ - Dedup de seleção considera **CPF ou RGM** do espelho (`skipped_cache` / `skipped_cache_rgm`). RGM é obrigatório porque é o campo confiável quando o CPF do espelho está corrompido.
+ - Anti-dupe pré-create passa a ser `findExistingContact({ cpf, phone, email })`: tenta **CPF → telefone → e-mail**. Telefone/e-mail são os termos que a busca de contact realmente indexa (validado: telefone acha 1 hit exato; CPF acha 0).
+ - **Validação obrigatória do hit:** a busca é fuzzy — termo que não casa devolve a **primeira página inteira** (20 contatos aleatórios; reproduzido com e-mail AD). Só reusa o contact se o telefone/e-mail dele confere, ou se a busca devolveu **um único item** (retorno exato). Sem isso, o provision reusaria um contact aleatório.
+ - Chave de telefone = DDD + 8 últimos dígitos (unifica `+55` e o 9 do celular; mesma canonização de `normalize_phone_br`).
+- **Contadores novos:** `skipped_cache_rgm`, `matched_by_cpf`, `matched_by_phone`, `matched_by_email`, `search_fuzzy_rejected`.
+- **Validado (dry-run PROD, 30/07):** 47 → **20 realmente novos** + `skipped_cache_rgm=27`. Busca por telefone: existente → 1 hit validado; inexistente → 0 itens (cria).
+- **Pendente (não corrigido aqui):** os 119 `cpf_norm` corrompidos no espelho continuam corrompidos — `normalizeCpf` com `padStart(11,'0')` transforma lixo curto (ex. `9`) em CPF falso. Reavaliar piso mínimo de dígitos no padStart.
+- **Arquivo:** `server/services/novoCrmMatriculadosProvisionService.js`.
+
 ### 2026-07-30 — Att de etapas: etapa Sem Rematricula sincroniza Situação em par
 - **Modelo usado:** Executor (Sonnet 4.6).
 - **Problema:** `mode=flags_stage` movia a etapa para **Sem Rematricula** mas deixava o carousel *Situação* intocado (ex.: "Em Curso") porque `fieldValues` só é construído com `doFields=true`. O campo permanecia divergente até o próximo `fields` noturno.

@@ -59,6 +59,69 @@ function normName(s) {
     .trim();
 }
 
+/**
+ * Chave de telefone BR comparável: descarta +55 e usa DDD + 8 últimos dígitos.
+ * Unifica celular com e sem o 9 (mesma canonização de `normalize_phone_br`).
+ */
+function phoneMatchKey(v) {
+  const d = digits(v);
+  if (!d) return '';
+  const local = d.length > 11 && d.startsWith('55') ? d.slice(2) : d;
+  if (local.length < 10) return local;
+  return local.slice(0, 2) + local.slice(-8);
+}
+
+function emailMatchKey(v) {
+  return String(v ?? '').trim().toLowerCase();
+}
+
+/**
+ * Acha contact existente no CRM por CPF → telefone → e-mail.
+ * O CPF vive no campo do deal, então `searchContacts(cpf)` quase nunca acha —
+ * telefone/e-mail são os termos que a busca de contact realmente indexa.
+ *
+ * A busca é fuzzy: quando o termo não casa, a API devolve a primeira página de
+ * contatos (20 itens não relacionados). Só reusamos um hit quando ele confere
+ * com o telefone/e-mail da pessoa, ou quando a busca devolveu um único item
+ * (retorno exato — o fallback fuzzy vem sempre com página cheia).
+ *
+ * @param {{ cpf?: string, phone?: string, email?: string }} ids
+ * @returns {Promise<{ contact: object|null, matchedBy: 'cpf'|'phone'|'email'|null, rejected: number }>}
+ */
+async function findExistingContact({ cpf, phone, email }) {
+  const phoneTerm = digits(phone);
+  const wantPhone = phoneMatchKey(phone);
+  const wantEmail = emailMatchKey(email);
+  const isSamePerson = (item) => {
+    if (wantPhone && phoneMatchKey(item?.phone) === wantPhone) return true;
+    if (wantEmail && emailMatchKey(item?.email) === wantEmail) return true;
+    return false;
+  };
+
+  const attempts = [
+    digits(cpf) ? { by: 'cpf', term: digits(cpf) } : null,
+    phoneTerm ? { by: 'phone', term: phoneTerm } : null,
+    wantEmail ? { by: 'email', term: wantEmail } : null,
+  ].filter(Boolean);
+
+  let rejected = 0;
+  for (const attempt of attempts) {
+    const found = await searchContacts(attempt.term);
+    const items = (found.items || []).filter((it) => it?.id);
+    if (!items.length) continue;
+    const hit = items.find(isSamePerson) || (items.length === 1 ? items[0] : null);
+    if (hit) {
+      return {
+        contact: hit,
+        matchedBy: /** @type {'cpf'|'phone'|'email'} */ (attempt.by),
+        rejected,
+      };
+    }
+    rejected += items.length;
+  }
+  return { contact: null, matchedBy: null, rejected };
+}
+
 /** Nome inválido = vazio ou igual/contido no nome do curso (dado ruim do SIAA). */
 function isBadStudentName(nome, curso) {
   const n = normName(nome);
@@ -233,19 +296,26 @@ export async function runMatriculadosProvision(opts = {}) {
     loadIdSetFromBase('provavel-evasao'),
   ]);
 
-  // Idempotência: CPFs já no cache do CRM (sync noturno) → não recria.
+  // Idempotência: CPF/RGM já no cache do CRM (sync noturno) → não recria.
   // Torna a run repetível (a busca por CPF na API não acha, pois o CPF vive
-  // no deal; o cache extrai cpf_norm do deal, então é a fonte confiável).
+  // no deal; o cache extrai cpf_norm/rgm_norm do deal, então é a fonte confiável).
+  // O RGM é obrigatório no dedup porque o cpf_norm do espelho pode estar
+  // corrompido (valor curto no campo CPF do deal + padStart → ex. 00000000009):
+  // nesses casos o CPF não casa e a pessoa passaria como nova.
   // mode=new SEMPRE usa cache dedup (é a regra de seleção).
   const useCacheDedup =
     mode === 'new' ||
     String(process.env.NOVO_CRM_PROVISION_USE_CACHE_DEDUP || '1').trim() !== '0';
   let existingCpfs = new Set();
+  let existingRgms = new Set();
   if (useCacheDedup) {
     try {
       const sets = await cacheRepo.loadExistingCpfRgmSets();
       existingCpfs = sets.cpfs;
-      console.log(`[novo-crm-provision] cache dedup: ${existingCpfs.size} CPFs já no cache`);
+      existingRgms = sets.rgms;
+      console.log(
+        `[novo-crm-provision] cache dedup: ${existingCpfs.size} CPFs · ${existingRgms.size} RGMs já no cache`
+      );
     } catch (err) {
       console.warn('[novo-crm-provision] cache dedup indisponível:', err?.message || err);
     }
@@ -347,8 +417,11 @@ export async function runMatriculadosProvision(opts = {}) {
 
   let skippedBadName = 0;
   let skippedCache = 0;
+  let skippedCacheRgm = 0;
   let skippedNotDelta = 0;
   let updatedExisting = 0;
+  const matchedBy = { cpf: 0, phone: 0, email: 0 };
+  let searchFuzzyRejected = 0;
 
   // mode=new + snapshot anterior: só quem apareceu agora (delta).
   // Cache-miss continua obrigatório (processPerson / existingCpfs).
@@ -403,6 +476,16 @@ export async function runMatriculadosProvision(opts = {}) {
       skippedCache += 1;
       return;
     }
+    if (existingRgms.size) {
+      const rgmHit = personRows.some((r) => {
+        const rgm = digits(extractMatriculadosMappedValues(r).rgm);
+        return rgm && existingRgms.has(rgm);
+      });
+      if (rgmHit) {
+        skippedCacheRgm += 1;
+        return;
+      }
+    }
 
     const firstMapped = extractMatriculadosMappedValues(personRows[0]);
     const nome = firstMapped._nome_full || firstMapped.primeiro_nome || 'Aluno SIAA';
@@ -456,13 +539,19 @@ export async function runMatriculadosProvision(opts = {}) {
       return;
     }
 
-    // Anti-dupe best-effort: busca por CPF no CRM.
+    // Anti-dupe: busca no CRM por CPF, telefone e e-mail.
     // Se já existe no funil → atualiza card (campos) / cria deal faltante.
     // Se não existe → cria contact + deal(s).
     let existing = null;
     try {
-      const found = await searchContacts(cpf);
-      existing = found.items?.[0] || null;
+      const found = await findExistingContact({
+        cpf,
+        phone: firstMapped._phone || firstMapped.telefone_comercial,
+        email: firstMapped._email,
+      });
+      existing = found.contact;
+      if (found.matchedBy) matchedBy[found.matchedBy] += 1;
+      searchFuzzyRejected += found.rejected;
     } catch (err) {
       noteError({ cpf, error: `search: ${err?.message || err}` });
       return;
@@ -591,10 +680,15 @@ export async function runMatriculadosProvision(opts = {}) {
     updated_existing: updatedExisting,
     skipped_existing: skippedExisting,
     skipped_cache: skippedCache,
+    skipped_cache_rgm: skippedCacheRgm,
     skipped_not_delta: skippedNotDelta,
     skipped_no_cpf: skippedNoCpf,
     skipped_duplicate_rgm: skippedDupRgm,
     skipped_bad_name: skippedBadName,
+    matched_by_cpf: matchedBy.cpf,
+    matched_by_phone: matchedBy.phone,
+    matched_by_email: matchedBy.email,
+    search_fuzzy_rejected: searchFuzzyRejected,
     errors,
     aborted,
     abort_reason: abortReason,
