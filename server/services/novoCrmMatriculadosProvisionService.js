@@ -23,6 +23,7 @@
 import { randomUUID } from 'crypto';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
+import * as apiSourceRepo from '../repositories/novoCrmPersonApiSourceRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
   classifyMatriculado,
@@ -39,7 +40,6 @@ import {
   createContact,
   createDeal,
   isNovoCrmApiConfigured,
-  listDealsPage,
   searchContacts,
   updateDealCustomFields,
 } from './novoCrmClient.js';
@@ -120,6 +120,21 @@ async function findExistingContact({ cpf, phone, email }) {
     rejected += items.length;
   }
   return { contact: null, matchedBy: null, rejected };
+}
+
+/**
+ * Sincroniza somente o contact encontrado ao vivo para o espelho local.
+ * Não altera o CRM. É usado pela prévia/apply para fechar a defasagem entre
+ * o full noturno e os leads criados durante o dia por outros cenários.
+ */
+async function warmExistingContactCache(contact) {
+  const deals = await apiSourceRepo.listDealsForContactId(String(contact.id));
+  const details = await apiSourceRepo.fetchDealDetailsByIds(
+    deals.map((d) => String(d.id)).filter(Boolean),
+    { concurrency: 2, delayMs: 0 }
+  );
+  const snapshot = apiSourceRepo.mapApiSnapshot(contact, deals, details);
+  await cacheRepo.upsertSnapshot(snapshot, { syncLogId: null, fullSeenAt: null });
 }
 
 /** Nome inválido = vazio ou igual/contido no nome do curso (dado ruim do SIAA). */
@@ -420,6 +435,8 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedCacheRgm = 0;
   let skippedNotDelta = 0;
   let updatedExisting = 0;
+  let warmedCache = 0;
+  let warmCacheErrors = 0;
   const matchedBy = { cpf: 0, phone: 0, email: 0 };
   let searchFuzzyRejected = 0;
 
@@ -440,8 +457,11 @@ export async function runMatriculadosProvision(opts = {}) {
   const personList = [...groups.entries()].slice(offset);
   touchProvisionJob(jobId, {
     phase: 'provisioning',
-    status_message: `Provisionando (${personList.length} candidatos, mode=${mode})…`,
-    total: Math.min(personList.length, maxCreates),
+    status_message:
+      mode === 'new'
+        ? `Verificando ${personList.length} candidatos ao vivo no CRM…`
+        : `Provisionando (${personList.length} candidatos, mode=${mode})…`,
+    total: personList.length,
   });
 
   const noteError = (sample) => {
@@ -521,27 +541,9 @@ export async function runMatriculadosProvision(opts = {}) {
       };
     });
 
-    if (dryRun) {
-      if (!claimSlot()) return;
-      createdDeals += classifications.length;
-      if (createdSamples.length < 15) {
-        createdSamples.push({
-          dry_run: true,
-          cpf,
-          nome,
-          deals: classifications.map((c) => ({
-            rgm: c.rgm,
-            stage: c.classification.stageName,
-            flags: c.classification.flags,
-          })),
-        });
-      }
-      return;
-    }
-
-    // Anti-dupe: busca no CRM por CPF, telefone e e-mail.
-    // Se já existe no funil → atualiza card (campos) / cria deal faltante.
-    // Se não existe → cria contact + deal(s).
+    // Verificação live direcionada: o espelho é noturno, mas outros cenários
+    // criam leads durante o dia. Tanto a prévia quanto o apply consultam o CRM
+    // ao vivo e sincronizam hits no espelho sem alterar o card.
     let existing = null;
     try {
       const found = await findExistingContact({
@@ -557,76 +559,99 @@ export async function runMatriculadosProvision(opts = {}) {
       return;
     }
 
-    if (aborted || !claimSlot()) return;
-
-    let contact = existing;
-    let reusedContact = Boolean(existing?.id);
-    if (!contact?.id) {
-      try {
-        contact = await createContact({
-          name: nome,
-          email: firstMapped._email || null,
-          phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
-          source: 'SIAA',
-        });
-      } catch (err) {
-        // Desfaz reserva do slot — create falhou.
-        if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
-        noteError({ cpf, error: `contact: ${err?.message || err}` });
-        console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
-        return;
-      }
-    } else {
-      // Slot conta pessoa processada; não é "created" no sentido estrito.
+    if (existing?.id) {
       updatedExisting += 1;
       skippedExisting += 1;
-    }
-
-    /** @type {object[]} */
-    let existingDeals = [];
-    if (reusedContact) {
       try {
-        const page = await listDealsPage({ contactId: contact.id, perPage: 50 });
-        existingDeals = page.items || [];
+        await warmExistingContactCache(existing);
+        warmedCache += 1;
       } catch (err) {
+        warmCacheErrors += 1;
         console.warn(
-          `[novo-crm-provision] list deals cpf=${cpf}:`,
+          `[novo-crm-provision] warm cache contact=${existing.id} cpf=${cpf}:`,
           err?.message || err
         );
       }
+      if (createdSamples.length < 15) {
+        createdSamples.push({
+          dry_run: dryRun,
+          cpf,
+          nome,
+          existing_contact_id: existing.id,
+          action: 'sync_only',
+        });
+      }
+      touchProvisionJob(jobId, {
+        processed: scanned,
+        status_message:
+          `Verificados ${scanned}/${personList.length} · ` +
+          `${updatedExisting} já existem · ${createdContacts} a criar`,
+      });
+      return;
+    }
+
+    if (dryRun) {
+      if (!claimSlot()) return;
+      createdDeals += classifications.length;
+      if (createdSamples.length < 15) {
+        createdSamples.push({
+          dry_run: true,
+          cpf,
+          nome,
+          action: 'would_create',
+          deals: classifications.map((c) => ({
+            rgm: c.rgm,
+            stage: c.classification.stageName,
+            flags: c.classification.flags,
+          })),
+        });
+      }
+      touchProvisionJob(jobId, {
+        processed: scanned,
+        sent: createdContacts,
+        failed: errors,
+        status_message:
+          `Verificados ${scanned}/${personList.length} · ` +
+          `${updatedExisting} já existem · ${createdContacts} a criar`,
+      });
+      return;
+    }
+
+    if (aborted || !claimSlot()) return;
+
+    let contact = null;
+    try {
+      contact = await createContact({
+        name: nome,
+        email: firstMapped._email || null,
+        phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
+        source: 'SIAA',
+      });
+    } catch (err) {
+      // Desfaz reserva do slot — create falhou.
+      if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
+      noteError({ cpf, error: `contact: ${err?.message || err}` });
+      console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
+      return;
     }
 
     const dealSummaries = [];
     for (const c of classifications) {
       if (aborted) break;
       try {
-        let deal = null;
-        if (reusedContact && existingDeals.length > 0) {
-          // Reusa o 1º deal aberto (ou qualquer) quando há 1 RGM; multi-RGM
-          // cria deals extras se já houver ao menos um.
-          if (classifications.length === 1 || existingDeals.length === 0) {
-            deal = existingDeals.find((d) => String(d.status || '').toUpperCase() === 'OPEN')
-              || existingDeals[0];
-          } else if (dealSummaries.length === 0 && existingDeals.length > 0) {
-            deal = existingDeals.find((d) => String(d.status || '').toUpperCase() === 'OPEN')
-              || existingDeals[0];
-          }
-        }
-        if (!deal?.id) {
-          deal = await createDeal({
-            title: nome,
-            contactId: contact.id,
-            stageId: c.classification.stageId,
-          });
-          createdDeals += 1;
-        }
+        const deal = await createDeal({
+          title: nome,
+          contactId: contact.id,
+          stageId: c.classification.stageId,
+        });
+        createdDeals += 1;
         await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
         dealSummaries.push({
           dealId: deal.id,
           number: deal.number,
           rgm: c.rgm,
           stage: c.classification.stageName,
-          reused: reusedContact,
+          reused: false,
         });
       } catch (err) {
         noteError({ cpf, rgm: c.rgm, error: `deal: ${err?.message || err}` });
@@ -639,7 +664,7 @@ export async function runMatriculadosProvision(opts = {}) {
         contactId: contact.id,
         cpf,
         nome,
-        reused_contact: reusedContact,
+        reused_contact: false,
         deals: dealSummaries,
       });
     }
@@ -675,7 +700,7 @@ export async function runMatriculadosProvision(opts = {}) {
     mode,
     scanned,
     processed_people: createdContacts,
-    created_contacts: Math.max(0, createdContacts - updatedExisting),
+    created_contacts: createdContacts,
     created_deals: createdDeals,
     updated_existing: updatedExisting,
     skipped_existing: skippedExisting,
@@ -689,6 +714,8 @@ export async function runMatriculadosProvision(opts = {}) {
     matched_by_phone: matchedBy.phone,
     matched_by_email: matchedBy.email,
     search_fuzzy_rejected: searchFuzzyRejected,
+    warmed_cache: warmedCache,
+    warm_cache_errors: warmCacheErrors,
     errors,
     aborted,
     abort_reason: abortReason,
@@ -706,8 +733,8 @@ export async function runMatriculadosProvision(opts = {}) {
     phase: 'done',
     status_message: aborted
       ? abortReason
-      : `Concluído: ${result.created_contacts} novos · ${updatedExisting} atualizados · ${createdDeals} deals`,
-    processed: createdContacts,
+      : `Concluído: ${result.created_contacts} novos · ${updatedExisting} já existiam · ${createdDeals} deals`,
+    processed: scanned,
     sent: createdDeals,
     failed: errors,
   });
@@ -760,7 +787,7 @@ export function startMatriculadosProvisionBackground(opts = {}) {
 }
 
 /**
- * Apply em background com jobId (polling na UI).
+ * Prévia ou apply em background com jobId (polling na UI).
  * @param {{ dryRun?: boolean, maxCreates?: number, offset?: number, mode?: 'new'|'all' }} opts
  */
 export function startMatriculadosProvisionApplyBackground(opts = {}) {
@@ -773,17 +800,18 @@ export function startMatriculadosProvisionApplyBackground(opts = {}) {
   }
   const jobId = randomUUID();
   const mode = normalizeProvisionMode(opts.mode);
+  const dryRun = opts.dryRun === true;
   const entry = {
     jobId,
     status: 'running',
-    dry_run: false,
+    dry_run: dryRun,
     mode,
     total: 0,
     processed: 0,
     sent: 0,
     failed: 0,
     phase: 'starting',
-    status_message: 'Iniciando…',
+    status_message: dryRun ? 'Iniciando verificação ao vivo…' : 'Iniciando criação…',
     started_at: new Date().toISOString(),
     finished_at: null,
     result: null,
@@ -793,7 +821,7 @@ export function startMatriculadosProvisionApplyBackground(opts = {}) {
   runningProvisionJobId = jobId;
 
   activePromise = runMatriculadosProvision({
-    dryRun: false,
+    dryRun,
     maxCreates: opts.maxCreates,
     offset: opts.offset,
     mode,

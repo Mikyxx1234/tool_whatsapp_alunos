@@ -258,6 +258,8 @@ export interface NovoCrmProvisionPreviewResponse {
   matched_by_phone?: number;
   matched_by_email?: number;
   search_fuzzy_rejected?: number;
+  warmed_cache?: number;
+  warm_cache_errors?: number;
   errors: number;
   max_creates: number;
   prior_snapshot_id?: string | null;
@@ -266,6 +268,8 @@ export interface NovoCrmProvisionPreviewResponse {
     cpf?: string;
     nome?: string;
     reused_contact?: boolean;
+    existing_contact_id?: string;
+    action?: 'sync_only' | 'would_create';
     deals?: Array<{ rgm?: string; stage?: string }>;
   }>;
   error_samples: Array<{ cpf?: string; error: string }>;
@@ -542,6 +546,20 @@ export const maintenanceApi = {
     });
     if (opts?.max != null) params.set('max', String(opts.max));
     return jsonFetch<NovoCrmProvisionPreviewResponse>(
+      `/api/maintenance/provision-matriculados-novo-crm?${params.toString()}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Inicia prévia com verificação live no CRM e warm cirúrgico do espelho. */
+  startNovoCrmProvisionPreview(opts?: { mode?: NovoCrmProvisionMode; max?: number }) {
+    const params = new URLSearchParams({
+      dry_run: '1',
+      async: '1',
+      mode: opts?.mode || 'new',
+    });
+    if (opts?.max != null) params.set('max', String(opts.max));
+    return jsonFetch<NovoCrmProvisionStartResponse>(
       `/api/maintenance/provision-matriculados-novo-crm?${params.toString()}`,
       { method: 'POST', body: '{}' }
     );

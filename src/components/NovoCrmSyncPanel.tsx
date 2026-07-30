@@ -13,6 +13,7 @@ import {
 import {
   maintenanceApi,
   type NovoCrmCacheStatusResponse,
+  type NovoCrmProvisionPreviewResponse,
   type NovoCrmRegressionEvent,
   type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
@@ -38,6 +39,30 @@ type AlertsPreview = {
   error: string | null;
   alerts: NovoCrmRegressionEvent[] | null;
 };
+
+function confirmNovoCrmProvision(preview: NovoCrmProvisionPreviewResponse) {
+  const max = preview.max_creates || 200;
+  const hitCap = preview.created_contacts >= max;
+  const foundLive = preview.updated_existing ?? 0;
+  const skippedRgm = preview.skipped_cache_rgm ?? 0;
+  return window.confirm(
+    `Criação de leads novos — verificação ao vivo concluída\n\n` +
+      `A criar: ${preview.created_contacts.toLocaleString('pt-BR')} pessoas` +
+      ` · ${preview.created_deals.toLocaleString('pt-BR')} deals` +
+      (hitCap ? ` (teto ${max}/run — sobra fica pra próxima)` : '') +
+      `\n` +
+      `Já existiam no CRM hoje: ${foundLive.toLocaleString('pt-BR')}` +
+      ` (sincronizados no espelho; cards não alterados)\n` +
+      `Já estavam no espelho: ${preview.skipped_cache.toLocaleString('pt-BR')} por CPF` +
+      ` · ${skippedRgm.toLocaleString('pt-BR')} por RGM\n` +
+      (preview.skipped_not_delta
+        ? `Já no snapshot anterior: ${preview.skipped_not_delta.toLocaleString('pt-BR')}\n`
+        : '') +
+      (preview.errors ? `Falhas na verificação: ${preview.errors.toLocaleString('pt-BR')}\n` : '') +
+      `\nO apply repetirá a busca ao vivo antes de cada criação.\n\n` +
+      `Confirmar criação somente dos ${preview.created_contacts.toLocaleString('pt-BR')} ausentes?`
+  );
+}
 
 export function NovoCrmSyncPanel() {
   const [status, setStatus] = useState<NovoCrmCacheStatusResponse | null>(null);
@@ -122,22 +147,56 @@ export function NovoCrmSyncPanel() {
         if (provisionJobId) {
           void maintenanceApi
             .getNovoCrmProvisionStatus(provisionJobId)
-            .then((r) => {
+            .then(async (r) => {
               if (!r.job) return;
               setProvisionMsg(r.job.status_message || r.job.phase || null);
               if (r.job.status !== 'running') {
+                stopPoll();
                 setProvisionJobId(null);
-                setProvisionBusy(false);
                 if (r.job.status === 'completed') {
                   const res = r.job.result;
-                  setProvisionMsg(
-                    `Leads novos: ${res?.created_contacts ?? 0} contatos · ${res?.created_deals ?? 0} deals` +
-                      (res?.updated_existing
-                        ? ` · ${res.updated_existing} já existiam (card atualizado)`
-                        : '') +
-                      (res?.errors ? ` · ${res.errors} erros` : '')
-                  );
+                  if (r.job.dry_run && res) {
+                    setProvisionBusy(false);
+                    if (!res.created_contacts) {
+                      setProvisionMsg(
+                        `Verificação concluída: ninguém para criar` +
+                          (res.updated_existing
+                            ? ` · ${res.updated_existing} já existiam no CRM e foram sincronizados`
+                            : '')
+                      );
+                    } else if (confirmNovoCrmProvision(res)) {
+                      setProvisionBusy(true);
+                      setProvisionMsg('Criando somente os leads ausentes…');
+                      try {
+                        const started = await maintenanceApi.startNovoCrmProvision({
+                          mode: 'new',
+                          max: res.max_creates,
+                        });
+                        setProvisionJobId(started.jobId);
+                      } catch (e) {
+                        setProvisionBusy(false);
+                        setProvisionMsg(
+                          e instanceof Error ? e.message : 'Falha ao iniciar criação de leads'
+                        );
+                      }
+                    } else {
+                      setProvisionMsg(
+                        `Criação cancelada · ${res.created_contacts} ausentes · ` +
+                          `${res.updated_existing ?? 0} já existiam no CRM`
+                      );
+                    }
+                  } else {
+                    setProvisionBusy(false);
+                    setProvisionMsg(
+                      `Leads novos: ${res?.created_contacts ?? 0} contatos · ${res?.created_deals ?? 0} deals` +
+                        (res?.updated_existing
+                          ? ` · ${res.updated_existing} já existiam (só sincronizados)`
+                          : '') +
+                        (res?.errors ? ` · ${res.errors} erros` : '')
+                    );
+                  }
                 } else if (r.job.status === 'failed') {
+                  setProvisionBusy(false);
                   setProvisionMsg(r.job.error || 'Criação de leads falhou');
                 }
                 void loadStatus();
@@ -243,41 +302,14 @@ export function NovoCrmSyncPanel() {
   const runNewLeadsProvision = async () => {
     if (provisionBusy || provisionJobId) return;
     setProvisionBusy(true);
-    setProvisionMsg('Calculando prévia de leads novos…');
+    setProvisionMsg('Verificando candidatos ao vivo no CRM…');
     try {
-      // max = teto real do apply: assim o número da prévia é o que será criado
-      // (com max menor, a contagem saía truncada e parecia menor do que é).
-      const previewMax = 200;
-      const preview = await maintenanceApi.previewNovoCrmProvision({
+      const started = await maintenanceApi.startNovoCrmProvisionPreview({
         mode: 'new',
-        max: previewMax,
+        max: 200,
       });
-      const skippedRgm = preview.skipped_cache_rgm ?? 0;
-      const hitCap = preview.created_contacts >= previewMax;
-      const ok = window.confirm(
-        `Criação de leads novos (prévia)\n\n` +
-          `A criar: ${preview.created_contacts.toLocaleString('pt-BR')} pessoas` +
-          ` · ${preview.created_deals.toLocaleString('pt-BR')} deals` +
-          (hitCap ? ` (teto ${previewMax}/run — sobra fica pra próxima)` : '') +
-          `\n` +
-          `Já no CRM (pulados): ${preview.skipped_cache.toLocaleString('pt-BR')} por CPF` +
-          ` · ${skippedRgm.toLocaleString('pt-BR')} por RGM\n` +
-          (preview.skipped_not_delta
-            ? `Já no snapshot anterior: ${preview.skipped_not_delta.toLocaleString('pt-BR')}\n`
-            : '') +
-          `\nSó cria quem está no matriculados atual e ainda não está no espelho local\n` +
-          `(dedup por CPF ou RGM).\n` +
-          `Se o contact já existir no CRM (CPF, telefone ou e-mail), atualiza o card.\n\n` +
-          `Confirmar criação?`
-      );
-      if (!ok) {
-        setProvisionMsg('Cancelado.');
-        setProvisionBusy(false);
-        return;
-      }
-      const started = await maintenanceApi.startNovoCrmProvision({ mode: 'new' });
       setProvisionJobId(started.jobId);
-      setProvisionMsg('Criação de leads novos em andamento…');
+      setProvisionMsg('Verificação ao vivo em andamento…');
     } catch (e) {
       setProvisionMsg(e instanceof Error ? e.message : 'Falha na criação de leads');
       setProvisionBusy(false);
@@ -473,7 +505,8 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-sky-900">3. Criação de leads novos</p>
             <p className="text-[11px] text-sky-800/80 flex-1">
-              Só quem entrou no matriculados e ainda não está no espelho (~10–150/dia). Cap 200.
+              Verifica os candidatos ao vivo no CRM, sincroniza quem já existe e cria somente os
+              ausentes. Cap 200.
             </p>
             <button
               type="button"
@@ -486,7 +519,7 @@ export function NovoCrmSyncPanel() {
               ) : (
                 <UserPlus className="w-3.5 h-3.5" />
               )}
-              {provisionJobId ? 'Criando…' : 'Criação de leads novos'}
+              {provisionJobId ? 'Verificando / criando…' : 'Criação de leads novos'}
             </button>
           </div>
 

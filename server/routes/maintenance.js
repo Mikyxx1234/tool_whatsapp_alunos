@@ -392,6 +392,27 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
 
     if (reallyDry) {
+      if (asyncMode) {
+        const started = startMatriculadosProvisionApplyBackground({
+          dryRun: true,
+          maxCreates: maxCreates || (mode === 'new' ? 200 : 50),
+          mode,
+        });
+        if (!started.started) {
+          return res.status(409).json({
+            error: started.error || 'Verificação de leads já em andamento',
+            jobId: started.jobId,
+          });
+        }
+        return res.status(202).json({
+          ok: true,
+          status: 'running',
+          jobId: started.jobId,
+          dry_run: true,
+          mode,
+          max_creates: maxCreates || null,
+        });
+      }
       const preview = await runMatriculadosProvision({
         dryRun: true,
         maxCreates: maxCreates || (mode === 'new' ? 50 : 50),
