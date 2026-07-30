@@ -40,30 +40,6 @@ type AlertsPreview = {
   alerts: NovoCrmRegressionEvent[] | null;
 };
 
-function confirmNovoCrmProvision(preview: NovoCrmProvisionPreviewResponse) {
-  const max = preview.max_creates || 200;
-  const hitCap = preview.created_contacts >= max;
-  const foundLive = preview.updated_existing ?? 0;
-  const skippedRgm = preview.skipped_cache_rgm ?? 0;
-  return window.confirm(
-    `Criação de leads novos — verificação ao vivo concluída\n\n` +
-      `A criar: ${preview.created_contacts.toLocaleString('pt-BR')} pessoas` +
-      ` · ${preview.created_deals.toLocaleString('pt-BR')} deals` +
-      (hitCap ? ` (teto ${max}/run — sobra fica pra próxima)` : '') +
-      `\n` +
-      `Já existiam no CRM hoje: ${foundLive.toLocaleString('pt-BR')}` +
-      ` (sincronizados no espelho; cards não alterados)\n` +
-      `Já estavam no espelho: ${preview.skipped_cache.toLocaleString('pt-BR')} por CPF` +
-      ` · ${skippedRgm.toLocaleString('pt-BR')} por RGM\n` +
-      (preview.skipped_not_delta
-        ? `Já no snapshot anterior: ${preview.skipped_not_delta.toLocaleString('pt-BR')}\n`
-        : '') +
-      (preview.errors ? `Falhas na verificação: ${preview.errors.toLocaleString('pt-BR')}\n` : '') +
-      `\nO apply repetirá a busca ao vivo antes de cada criação.\n\n` +
-      `Confirmar criação somente dos ${preview.created_contacts.toLocaleString('pt-BR')} ausentes?`
-  );
-}
-
 export function NovoCrmSyncPanel() {
   const [status, setStatus] = useState<NovoCrmCacheStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,6 +56,9 @@ export function NovoCrmSyncPanel() {
   const [provisionJobId, setProvisionJobId] = useState<string | null>(null);
   const [provisionMsg, setProvisionMsg] = useState<string | null>(null);
   const [provisionBusy, setProvisionBusy] = useState(false);
+  const [provisionPreview, setProvisionPreview] = useState<NovoCrmProvisionPreviewResponse | null>(
+    null
+  );
 
   const [dedupeBusy, setDedupeBusy] = useState(false);
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
@@ -164,26 +143,9 @@ export function NovoCrmSyncPanel() {
                             ? ` · ${res.updated_existing} já existiam no CRM e foram sincronizados`
                             : '')
                       );
-                    } else if (confirmNovoCrmProvision(res)) {
-                      setProvisionBusy(true);
-                      setProvisionMsg('Criando somente os leads ausentes…');
-                      try {
-                        const started = await maintenanceApi.startNovoCrmProvision({
-                          mode: 'new',
-                          max: res.max_creates,
-                        });
-                        setProvisionJobId(started.jobId);
-                      } catch (e) {
-                        setProvisionBusy(false);
-                        setProvisionMsg(
-                          e instanceof Error ? e.message : 'Falha ao iniciar criação de leads'
-                        );
-                      }
                     } else {
-                      setProvisionMsg(
-                        `Criação cancelada · ${res.created_contacts} ausentes · ` +
-                          `${res.updated_existing ?? 0} já existiam no CRM`
-                      );
+                      setProvisionPreview(res);
+                      setProvisionMsg('Verificação ao vivo concluída — confirme abaixo.');
                     }
                   } else {
                     setProvisionBusy(false);
@@ -302,6 +264,7 @@ export function NovoCrmSyncPanel() {
   const runNewLeadsProvision = async () => {
     if (provisionBusy || provisionJobId) return;
     setProvisionBusy(true);
+    setProvisionPreview(null);
     setProvisionMsg('Verificando candidatos ao vivo no CRM…');
     try {
       const started = await maintenanceApi.startNovoCrmProvisionPreview({
@@ -314,6 +277,35 @@ export function NovoCrmSyncPanel() {
       setProvisionMsg(e instanceof Error ? e.message : 'Falha na criação de leads');
       setProvisionBusy(false);
     }
+  };
+
+  const confirmNewLeadsApply = async () => {
+    const preview = provisionPreview;
+    if (!preview || provisionJobId) return;
+    setProvisionPreview(null);
+    setProvisionBusy(true);
+    setProvisionMsg('Criando somente os leads ausentes…');
+    try {
+      const started = await maintenanceApi.startNovoCrmProvision({
+        mode: 'new',
+        max: preview.max_creates,
+      });
+      setProvisionJobId(started.jobId);
+    } catch (e) {
+      setProvisionBusy(false);
+      setProvisionMsg(e instanceof Error ? e.message : 'Falha ao iniciar criação de leads');
+    }
+  };
+
+  const dismissNewLeadsPreview = () => {
+    const preview = provisionPreview;
+    setProvisionPreview(null);
+    setProvisionMsg(
+      preview
+        ? `Criação descartada · ${preview.created_contacts} ausentes · ` +
+            `${preview.updated_existing ?? 0} já existiam no CRM (sincronizados)`
+        : null
+    );
   };
 
   const runDedupePreview = async () => {
@@ -521,6 +513,54 @@ export function NovoCrmSyncPanel() {
               )}
               {provisionJobId ? 'Verificando / criando…' : 'Criação de leads novos'}
             </button>
+            {provisionPreview && (
+              <div className="mt-1 rounded-lg border border-sky-300 bg-white p-3 text-[11px] text-sky-900 space-y-1">
+                <p className="font-semibold text-xs">Verificação ao vivo concluída</p>
+                <p>
+                  A criar:{' '}
+                  <strong>{provisionPreview.created_contacts.toLocaleString('pt-BR')}</strong>{' '}
+                  pessoas · {provisionPreview.created_deals.toLocaleString('pt-BR')} deals
+                  {provisionPreview.created_contacts >= (provisionPreview.max_creates || 200)
+                    ? ` (teto ${provisionPreview.max_creates || 200}/run)`
+                    : ''}
+                </p>
+                <p>
+                  Já existiam no CRM:{' '}
+                  <strong>{(provisionPreview.updated_existing ?? 0).toLocaleString('pt-BR')}</strong>{' '}
+                  (sincronizados no espelho; cards não alterados)
+                </p>
+                <p>
+                  Já estavam no espelho:{' '}
+                  {provisionPreview.skipped_cache.toLocaleString('pt-BR')} por CPF ·{' '}
+                  {(provisionPreview.skipped_cache_rgm ?? 0).toLocaleString('pt-BR')} por RGM
+                </p>
+                {provisionPreview.errors ? (
+                  <p className="text-rose-700">
+                    Falhas na verificação: {provisionPreview.errors.toLocaleString('pt-BR')}
+                  </p>
+                ) : null}
+                <p className="text-sky-700/80">
+                  O apply repete a busca ao vivo imediatamente antes de cada criação.
+                </p>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => void confirmNewLeadsApply()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    Criar {provisionPreview.created_contacts.toLocaleString('pt-BR')} leads
+                  </button>
+                  <button
+                    type="button"
+                    onClick={dismissNewLeadsPreview}
+                    className="px-3 py-1.5 text-xs font-medium text-sky-800 border border-sky-300 hover:bg-sky-50 rounded-lg"
+                  >
+                    Descartar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
