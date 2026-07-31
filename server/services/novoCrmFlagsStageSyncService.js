@@ -10,12 +10,28 @@
  * CAA open ≤72h → Retenção; após 72h segue SIAA (pode sair de Retenção).
  * Apply otimizado: só reescreve flag quando (a) valor conhecido diverge, ou
  * (b) campo vazio e próximo=Sim (não grava vazio→Não — evita flood de PUTs).
+ *
+ * Entrada + saída (31/07/2026): o relatório do dia é a verdade. O loop
+ * principal (entrada) preenche/corrige quem TEM matRow. Um passo INVERSO
+ * varre TODOS os deals do cache com flag=Sim / etapa Sem Rematricula e
+ * fecha quem SAIU da base (merge por dealId com a fila do loop principal):
+ *   - Flags (doc/inad/bb/evasao): cache=Sim + identidade fora do índice → Não.
+ *   - Sem Rematricula: fora do remat + tem matRow → classifyMatriculado(false).
+ * Identidade = cpf/rgm; email/phone só se ÚNICOS no relatório. Sanity: se
+ * `nRows < NOVO_CRM_FLAGS_EXIT_SANITY_RATIO * simCount` (ou nRows=0), a saída
+ * daquela fila é pulada (upload incompleto).
  */
 
 import { randomUUID } from 'node:crypto';
 import * as baseUploadRepo from '../repositories/baseUploadRepository.js';
 import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
+import {
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+  normalizeRgm,
+} from '../utils/novoCrmCacheNormalize.js';
 import {
   extractMatriculadosMappedValues,
   normalizeSituacaoCrm,
@@ -48,10 +64,66 @@ function simNao(v) {
   return v ? 'Sim' : 'Não';
 }
 
-function inSet(set, cpf, rgm) {
-  if (cpf && set.has(`cpf:${cpf}`)) return true;
-  if (rgm && set.has(`rgm:${rgm}`)) return true;
+/**
+ * Índice de identidade de uma base satélite (rematrícula/docs/inad/bb/evasão).
+ * cpf/rgm sempre entram; email/phone só entram se ÚNICOS no relatório
+ * (repetido = ambíguo, não usar pra match). `nRows` = linhas do snapshot,
+ * usado no guard de sanity da saída (não zerar tudo por upload incompleto).
+ * @typedef {{ cpf: Set<string>, rgm: Set<string>, email: Set<string>, phone: Set<string>, nRows: number }} IdentityIndex
+ */
+
+/** @returns {{cpf:string,rgm:string,email:string,phone:string}} */
+function pickIdentityFromRow(row) {
+  return {
+    cpf: normalizeCpf(row.CPF ?? row.cpf ?? row.Cpf),
+    rgm: normalizeRgm(row.RGM ?? row.rgm ?? row.Rgm),
+    email: normalizeEmail(row.Email ?? row['E-mail'] ?? row.email ?? row['e-mail']),
+    phone: normalizePhone(
+      row.Telefone ?? row.Celular ?? row['Fone celular'] ?? row['Fone Celular'] ?? row.phone
+    ),
+  };
+}
+
+/** @returns {Promise<IdentityIndex>} */
+async function loadIdentityIndexFromBase(category) {
+  /** @type {IdentityIndex} */
+  const index = { cpf: new Set(), rgm: new Set(), email: new Set(), phone: new Set(), nRows: 0 };
+  const snap = await baseUploadRepo.getLatestSnapshot(category);
+  if (!snap?.id) return index;
+  const emailCount = new Map();
+  const phoneCount = new Map();
+  await baseUploadRepo.forEachRowDataForSnapshot(category, snap.id, (row) => {
+    index.nRows += 1;
+    const id = pickIdentityFromRow(row);
+    if (id.cpf) index.cpf.add(id.cpf);
+    if (id.rgm) index.rgm.add(id.rgm);
+    if (id.email) emailCount.set(id.email, (emailCount.get(id.email) || 0) + 1);
+    if (id.phone) phoneCount.set(id.phone, (phoneCount.get(id.phone) || 0) + 1);
+  });
+  for (const [email, n] of emailCount) if (n === 1) index.email.add(email);
+  for (const [phone, n] of phoneCount) if (n === 1) index.phone.add(phone);
+  return index;
+}
+
+/**
+ * @param {IdentityIndex} index
+ * @param {{cpf?:string, rgm?:string, email?:string, phone?:string}} identity
+ */
+function identityInIndex(index, identity = {}) {
+  if (!index) return false;
+  const { cpf, rgm, email, phone } = identity;
+  if (cpf && index.cpf.has(cpf)) return true;
+  if (rgm && index.rgm.has(rgm)) return true;
+  if (email && index.email.has(email)) return true;
+  if (phone && index.phone.has(phone)) return true;
   return false;
+}
+
+/** Ratio mínimo nRows/simCount pra permitir saída (Sim→Não / sair de Sem Rematricula). */
+function flagsExitSanityRatio() {
+  const v = Number(process.env.NOVO_CRM_FLAGS_EXIT_SANITY_RATIO);
+  if (!Number.isFinite(v)) return 0.7;
+  return Math.min(Math.max(v, 0), 1);
 }
 
 /** Normaliza valor de flag CRM para comparar Sim/Não. */
@@ -139,19 +211,6 @@ function isDealMissingError(err) {
   );
 }
 
-async function loadIdSetFromBase(category) {
-  const set = new Set();
-  const snap = await baseUploadRepo.getLatestSnapshot(category);
-  if (!snap?.id) return set;
-  await baseUploadRepo.forEachRowDataForSnapshot(category, snap.id, (row) => {
-    const cpf = digits(row.CPF || row.cpf || row.Cpf);
-    const rgm = digits(row.RGM || row.rgm || row.Rgm);
-    if (cpf.length >= 11) set.add(`cpf:${cpf}`);
-    if (rgm) set.add(`rgm:${rgm}`);
-  });
-  return set;
-}
-
 function findCustom(deal, names) {
   const wanted = names.map((n) => n.toLowerCase());
   for (const f of deal?.customFields || []) {
@@ -220,28 +279,47 @@ export async function runFlagsStageSync(opts = {}) {
   patchJob({ phase: 'loading_bases', status_message: 'Carregando bases…' });
 
   const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
-    loadIdSetFromBase('rematricula'),
+    loadIdentityIndexFromBase('rematricula'),
     caaProtocolsRepo.loadOpenCaaT0Map(),
-    loadIdSetFromBase('docs-pendentes'),
-    loadIdSetFromBase('inadimplentes-vencidos'),
-    loadIdSetFromBase('acessos-blackboard'),
-    loadIdSetFromBase('provavel-evasao'),
+    loadIdentityIndexFromBase('docs-pendentes'),
+    loadIdentityIndexFromBase('inadimplentes-vencidos'),
+    loadIdentityIndexFromBase('acessos-blackboard'),
+    loadIdentityIndexFromBase('provavel-evasao'),
   ]);
   const caaRetencaoHours = getCaaRetencaoHours();
   const stageIds = getNovoCrmStageIds();
   const retencaoStageId = String(stageIds.Retenção || '').trim();
+  const semRematStageId = String(stageIds['Sem Rematricula'] || '').trim();
 
   /** @type {Map<string, Record<string, unknown>>} */
   const byCpf = new Map();
   /** @type {Map<string, Record<string, unknown>>} */
   const byRgm = new Map();
+  /** @type {Map<string, Record<string, unknown>>} — só e-mails únicos no relatório */
+  const byEmail = new Map();
+  /** @type {Map<string, Record<string, unknown>>} — só telefones únicos no relatório */
+  const byPhone = new Map();
+  const emailRowCount = new Map();
+  const phoneRowCount = new Map();
   await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
     const m = extractMatriculadosMappedValues(row);
     const cpf = digits(m.cpf);
     const rgm = digits(m.rgm);
     if (cpf.length >= 11) keepBestRow(byCpf, cpf, row);
     if (rgm) keepBestRow(byRgm, rgm, row);
+    const rowEmails = new Set([normalizeEmail(m._email), normalizeEmail(m.e_mail_ad)].filter(Boolean));
+    for (const email of rowEmails) {
+      emailRowCount.set(email, (emailRowCount.get(email) || 0) + 1);
+      keepBestRow(byEmail, email, row);
+    }
+    const phone = normalizePhone(m._phone);
+    if (phone) {
+      phoneRowCount.set(phone, (phoneRowCount.get(phone) || 0) + 1);
+      keepBestRow(byPhone, phone, row);
+    }
   });
+  for (const [email, n] of emailRowCount) if (n > 1) byEmail.delete(email);
+  for (const [phone, n] of phoneRowCount) if (n > 1) byPhone.delete(phone);
 
   patchJob({ phase: 'loading_cache', status_message: 'Carregando espelho local…' });
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({
@@ -274,6 +352,10 @@ export async function runFlagsStageSync(opts = {}) {
   const errorSamples = [];
   /** @type {Array<object>} */
   const workQueue = [];
+  let flagsExitCleared = 0;
+  let stagesExitRemat = 0;
+  /** @type {Record<string, number>} */
+  const exitSkippedSanity = {};
 
   const noteError = (sample) => {
     errors += 1;
@@ -309,6 +391,8 @@ export async function runFlagsStageSync(opts = {}) {
     }
 
     const cpfCache = digits(row.cpf_norm);
+    const emailCache = normalizeEmail(row.email_norm);
+    const phoneCache = normalizePhone(row.phone_norm);
 
     for (const deal of deals) {
       if (aborted || scanned >= maxDeals) break outer;
@@ -327,7 +411,11 @@ export async function runFlagsStageSync(opts = {}) {
       const rgmDeal = digits(findCustom(deal, ['rgm']) || row.rgm_norm);
       const cpfDeal = digits(findCustom(deal, ['cpf']) || cpfCache);
       const matRow =
-        (rgmDeal && byRgm.get(rgmDeal)) || (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) || null;
+        (rgmDeal && byRgm.get(rgmDeal)) ||
+        (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) ||
+        (emailCache && byEmail.get(emailCache)) ||
+        (phoneCache && byPhone.get(phoneCache)) ||
+        null;
       if (!matRow) {
         skippedNoMatch += 1;
         continue;
@@ -337,16 +425,24 @@ export async function runFlagsStageSync(opts = {}) {
       const mapped = extractMatriculadosMappedValues(matRow);
       const cpf = digits(mapped.cpf) || cpfDeal;
       const rgm = digits(mapped.rgm) || rgmDeal;
+      const emailForMatch = normalizeEmail(mapped._email) || normalizeEmail(mapped.e_mail_ad);
+      const phoneForMatch = normalizePhone(mapped._phone || mapped.telefone_comercial);
+      const identity = {
+        cpf: normalizeCpf(cpf),
+        rgm: normalizeRgm(rgm),
+        email: emailForMatch,
+        phone: phoneForMatch,
+      };
       const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
       const inCaaOpen = Boolean(caaT0);
       const inCaaFresh = isCaaWithinRetencaoWindow(caaT0);
       const classification = classifyMatriculado(matRow, {
-        inRematricula: inSet(remat, cpf, rgm),
+        inRematricula: identityInIndex(remat, identity),
         inCaaFresh,
-        inDoc: inSet(doc, cpf, rgm),
-        inInad: inSet(inad, cpf, rgm),
-        inBb: inSet(bb, cpf, rgm),
-        inEvasao: inSet(evasao, cpf, rgm),
+        inDoc: identityInIndex(doc, identity),
+        inInad: identityInIndex(inad, identity),
+        inBb: identityInIndex(bb, identity),
+        inEvasao: identityInIndex(evasao, identity),
       });
       stagesByTarget[classification.stageName] =
         (stagesByTarget[classification.stageName] || 0) + 1;
@@ -410,7 +506,7 @@ export async function runFlagsStageSync(opts = {}) {
         }
         const situacao = resolveSituacaoCrm(
           mapped.situacao || matRow['Situação Matrícula'],
-          { inRematricula: inSet(remat, cpf, rgm) }
+          { inRematricula: identityInIndex(remat, identity) }
         );
         if (situacao && fieldIds.situacao) {
           fieldValues.push({ fieldId: fieldIds.situacao, value: situacao });
@@ -571,6 +667,261 @@ export async function runFlagsStageSync(opts = {}) {
     }
   }
 
+  // ===== Passo INVERSO (saída): fecha flags/etapa de quem SAIU da base do dia. =====
+  // Varre TODOS os deals do cache com flag=Sim / etapa Sem Remat. Quem já foi
+  // enfileirado no loop principal (matched) é mesclado por dealId (idempotente).
+  if (doFlags && !aborted) {
+    patchJob({ phase: 'processing_exit', status_message: 'Verificando saídas (entrada/saída)…' });
+
+    const sanityRatio = flagsExitSanityRatio();
+    const exitFlagDefs = [
+      {
+        key: 'doc_pendentes',
+        fieldId: fieldIds.doc_pendentes,
+        names: ['doc pendentes', 'doc_pendentes', 'docpendente'],
+        index: doc,
+      },
+      {
+        key: 'inadimplente',
+        fieldId: fieldIds.inadimplente,
+        names: ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
+        index: inad,
+      },
+      {
+        key: 'acessoblack',
+        fieldId: fieldIds.acessoblack,
+        names: ['acessoblack', 'acesso black'],
+        index: bb,
+      },
+      { key: 'evasao', fieldId: fieldIds.evasao, names: ['evasao', 'evasão'], index: evasao },
+    ];
+
+    /** @type {Record<string, number>} */
+    const flagSimCount = { doc_pendentes: 0, inadimplente: 0, acessoblack: 0, evasao: 0 };
+    /** @type {Array<{dealId:string, fieldId:string, key:string, cpf:string, rgm:string}>} */
+    const flagExitCandidates = [];
+    let semRematSimCount = 0;
+    /** @type {Array<{dealId:string, deal:object, cpf:string, rgm:string, matRow:object, currentStageId:string}>} */
+    const semRematExitCandidates = [];
+
+    for (const row of cacheRows) {
+      const deals = dealsFromCacheRow(row);
+      if (!deals.length) continue;
+      const cpfCache = normalizeCpf(row.cpf_norm);
+      const emailCache = normalizeEmail(row.email_norm);
+      const phoneCache = normalizePhone(row.phone_norm);
+
+      for (const deal of deals) {
+        const dealId = String(deal.id || '').trim();
+        if (!dealId) continue;
+
+        const rgmDeal = normalizeRgm(findCustom(deal, ['rgm']) || row.rgm_norm);
+        const cpfDeal = normalizeCpf(findCustom(deal, ['cpf']) || cpfCache);
+        const identity = { cpf: cpfDeal, rgm: rgmDeal, email: emailCache, phone: phoneCache };
+
+        for (const def of exitFlagDefs) {
+          if (!def.fieldId) continue;
+          const cur = normFlagValue(readDealField(deal, def.fieldId, def.names));
+          if (cur !== 'sim') continue;
+          flagSimCount[def.key] += 1;
+          if (!identityInIndex(def.index, identity)) {
+            flagExitCandidates.push({
+              dealId,
+              fieldId: def.fieldId,
+              key: def.key,
+              cpf: cpfDeal,
+              rgm: rgmDeal,
+            });
+          }
+        }
+
+        const currentStageId = String(deal.stageId || '').trim() || null;
+        if (semRematStageId && currentStageId === semRematStageId) {
+          semRematSimCount += 1;
+          if (!identityInIndex(remat, identity)) {
+            const matRow =
+              (rgmDeal && byRgm.get(rgmDeal)) ||
+              (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) ||
+              (emailCache && byEmail.get(emailCache)) ||
+              (phoneCache && byPhone.get(phoneCache)) ||
+              null;
+            // Sem matRow não dá pra reclassificar com segurança — deixa a etapa como está.
+            if (matRow) {
+              semRematExitCandidates.push({
+                dealId,
+                deal,
+                cpf: cpfDeal,
+                rgm: rgmDeal,
+                matRow,
+                currentStageId,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    /** @type {Record<string, boolean>} */
+    const flagsExitAllowed = {};
+    for (const def of exitFlagDefs) {
+      const base = def.index;
+      const simCount = flagSimCount[def.key];
+      const allowed = base.nRows > 0 && base.nRows >= sanityRatio * simCount;
+      flagsExitAllowed[def.key] = allowed;
+      if (!allowed) {
+        exitSkippedSanity[def.key] = flagExitCandidates.filter((c) => c.key === def.key).length;
+      }
+    }
+    const semRematExitAllowed = remat.nRows > 0 && remat.nRows >= sanityRatio * semRematSimCount;
+    if (!semRematExitAllowed) exitSkippedSanity.sem_rematricula = semRematExitCandidates.length;
+
+    const workQueueByDealId = new Map(workQueue.map((item) => [item.dealId, item]));
+
+    // --- Flags: Sim→Não quando a identidade some da base (sanity permitindo) ---
+    for (const def of exitFlagDefs) {
+      if (!flagsExitAllowed[def.key]) continue;
+      const candidates = flagExitCandidates.filter((c) => c.key === def.key);
+      for (const c of candidates) {
+        if (dryRun) {
+          flagsExitCleared += 1;
+          if (samples.length < 20) {
+            samples.push({
+              dry_run: true,
+              exit: true,
+              dealId: c.dealId,
+              cpf: c.cpf,
+              rgm: c.rgm,
+              flag: def.key,
+              from: 'Sim',
+              to: 'Não',
+            });
+          }
+          continue;
+        }
+        let item = workQueueByDealId.get(c.dealId);
+        if (!item) {
+          item = {
+            dealId: c.dealId,
+            cpf: c.cpf,
+            rgm: c.rgm,
+            inCaaOpen: false,
+            inCaaFresh: false,
+            classification: null,
+            values: [],
+            needsFlagWrite: false,
+            needsFieldWrite: false,
+            needsSemRematSituacao: false,
+            needsMove: false,
+            needsLiveStage: false,
+            fromStageId: null,
+          };
+          workQueueByDealId.set(c.dealId, item);
+          workQueue.push(item);
+        }
+        if (!item.values.some((v) => v.fieldId === def.fieldId)) {
+          item.values.push({ fieldId: def.fieldId, value: 'Não' });
+          item.needsFlagWrite = true;
+          item.exitFlagCount = (item.exitFlagCount || 0) + 1;
+        }
+      }
+    }
+
+    // --- Sem Rematricula: sai quando some do índice de rematrícula (só com matRow) ---
+    if (semRematExitAllowed) {
+      for (const c of semRematExitCandidates) {
+        const existing = workQueueByDealId.get(c.dealId);
+        if (existing?.needsMove) continue; // já tratado pelo loop principal.
+
+        const mapped = extractMatriculadosMappedValues(c.matRow);
+        const cpf = digits(mapped.cpf) || c.cpf;
+        const rgm = digits(mapped.rgm) || c.rgm;
+        const emailForMatch = normalizeEmail(mapped._email) || normalizeEmail(mapped.e_mail_ad);
+        const phoneForMatch = normalizePhone(mapped._phone || mapped.telefone_comercial);
+        const exitIdentity = {
+          cpf: normalizeCpf(cpf),
+          rgm: normalizeRgm(rgm),
+          email: emailForMatch,
+          phone: phoneForMatch,
+        };
+        const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
+        const inCaaOpen = Boolean(caaT0);
+        const inCaaFresh = isCaaWithinRetencaoWindow(caaT0);
+        const classification = classifyMatriculado(c.matRow, {
+          inRematricula: false,
+          inCaaFresh,
+          inDoc: identityInIndex(doc, exitIdentity),
+          inInad: identityInIndex(inad, exitIdentity),
+          inBb: identityInIndex(bb, exitIdentity),
+          inEvasao: identityInIndex(evasao, exitIdentity),
+        });
+
+        const situacaoValues = [];
+        if (fieldIds.situacao) {
+          const curSituacao = readDealField(c.deal, fieldIds.situacao, [
+            'situação',
+            'situacao',
+            'situação matrícula',
+          ]);
+          const novaSituacao = resolveSituacaoCrm(mapped.situacao || c.matRow['Situação Matrícula'], {
+            inRematricula: false,
+          });
+          if (novaSituacao && normalizeSituacaoCrm(curSituacao) !== normalizeSituacaoCrm(novaSituacao)) {
+            situacaoValues.push({ fieldId: fieldIds.situacao, value: novaSituacao });
+          }
+        }
+
+        if (dryRun) {
+          stagesExitRemat += 1;
+          if (samples.length < 20) {
+            samples.push({
+              dry_run: true,
+              exit: true,
+              dealId: c.dealId,
+              cpf,
+              rgm,
+              from: 'Sem Rematricula',
+              to: classification.stageName,
+              situacao_would_write: situacaoValues.length > 0,
+            });
+          }
+          continue;
+        }
+
+        let item = workQueueByDealId.get(c.dealId);
+        if (!item) {
+          item = {
+            dealId: c.dealId,
+            cpf,
+            rgm,
+            inCaaOpen,
+            inCaaFresh,
+            classification,
+            values: [],
+            needsFlagWrite: false,
+            needsFieldWrite: false,
+            needsSemRematSituacao: false,
+            needsMove: false,
+            needsLiveStage: false,
+            fromStageId: c.currentStageId,
+          };
+          workQueueByDealId.set(c.dealId, item);
+          workQueue.push(item);
+        } else {
+          item.classification = classification;
+          item.inCaaOpen = inCaaOpen;
+          item.inCaaFresh = inCaaFresh;
+          if (!item.fromStageId) item.fromStageId = c.currentStageId;
+        }
+        if (situacaoValues.length && !item.values.some((v) => v.fieldId === fieldIds.situacao)) {
+          item.values.push(...situacaoValues);
+          item.needsSemRematSituacao = true;
+        }
+        item.needsMove = true;
+        item.isExitRemat = true;
+      }
+    }
+  }
+
   if (!dryRun && workQueue.length && !aborted) {
     patchJob({
       phase: 'writing',
@@ -608,6 +959,7 @@ export async function runFlagsStageSync(opts = {}) {
             if (item.needsFlagWrite) flagsUpdated += 1;
             if (item.needsFieldWrite) fieldsUpdated += 1;
             if (item.needsSemRematSituacao) situacaoSemRematUpdated += 1;
+            if (item.exitFlagCount) flagsExitCleared += item.exitFlagCount;
           }
 
           let stageId = item.fromStageId;
@@ -633,6 +985,7 @@ export async function runFlagsStageSync(opts = {}) {
             if (d.move) {
               await updateDeal(item.dealId, { stageId: item.classification.stageId });
               stagesMoved += 1;
+              if (item.isExitRemat) stagesExitRemat += 1;
             } else if (d.untouchable) {
               stagesSkippedUntouchable += 1;
             } else if (d.unknown) {
@@ -685,12 +1038,15 @@ export async function runFlagsStageSync(opts = {}) {
     scanned,
     matched,
     flags_updated: flagsUpdated,
+    flags_exit_cleared: flagsExitCleared,
     fields_updated: fieldsUpdated,
     situacao_sem_remat_updated: dryRun ? situacaoSemRematWouldUpdate : situacaoSemRematUpdated,
     situacao_sem_remat_would_update: situacaoSemRematWouldUpdate,
     stages_moved: stagesMoved,
+    stages_exit_remat: stagesExitRemat,
     stages_skipped_untouchable: stagesSkippedUntouchable,
     stages_skipped_unknown: stagesSkippedUnknown,
+    exit_skipped_sanity: exitSkippedSanity,
     skipped_no_match: skippedNoMatch,
     skipped_no_deal: skippedNoDeal,
     skipped_missing: skippedMissing,
@@ -735,9 +1091,12 @@ export async function runFlagsStageSync(opts = {}) {
         scanned,
         matched,
         flags_updated: flagsUpdated,
+        flags_exit_cleared: flagsExitCleared,
         fields_updated: fieldsUpdated,
         stages_moved: stagesMoved,
+        stages_exit_remat: stagesExitRemat,
         stages_skipped_untouchable: stagesSkippedUntouchable,
+        exit_skipped_sanity: exitSkippedSanity,
         skipped_unchanged: skippedUnchanged,
         errors,
         aborted,

@@ -5,6 +5,23 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-31 — Att de etapas: entrada + saída (passo inverso) por relatório do dia
+- **Modelo usado:** Opus (principal, spec) + Executor (Sonnet, implementação). `novoCrmFlagsStageSyncService.js`.
+- **Problema:** o sync só cobria **entrada** — preenchia/corrigia flag e etapa quando o aluno **está** na base do dia (docs/inad/bb/evasão/rematrícula), usando match por CPF/RGM (`digits()` puro, sem padStart). Quem **saiu** da base (documento entregue, quitou, voltou a ter acesso, saiu da evasão, fez rematrícula) só era corrigido se o deal **também** desse match com `matriculados` no mesmo ciclo — deals sem esse match nunca eram revisitados, então flag Sim e etapa Sem Rematricula ficavam presas para sempre mesmo com a pessoa fora da base.
+- **Decisão:** relatório do dia = verdade, em dois passos:
+  1. **Índice de identidade** por base satélite (`loadIdentityIndexFromBase`): cpf/rgm sempre (via `normalizeCpf`/`normalizeRgm`, recupera CPF com zero à esquerda perdido); email/phone só se **únicos** no relatório (repetido = ambíguo, não usa pra match). Guarda `nRows` do snapshot pro guard de sanity. `identityInIndex(index, {cpf,rgm,email,phone})` checa nessa ordem.
+  2. **Passo inverso** roda depois do loop principal, sobre **todos** os deals do cache com flag=Sim / etapa Sem Rematricula (merge por `dealId` com a fila do loop principal — idempotente):
+     - **Flags** (doc/inad/bb/evasão): deal com flag=Sim e identidade **fora** do índice da base → enqueue Não.
+     - **Sem Rematricula**: deal na etapa e identidade fora do índice de rematrícula **e com matRow** no relatório de matriculados (sem matRow não reclassifica — sem dado pra saber o destino) → `classifyMatriculado(inRematricula:false, …)` decide a nova etapa (respeita intocáveis via o mesmo `decideMoveWork`) e atualiza o carousel Situação se mudou.
+  3. **Sanity por fila:** se `nRows === 0` ou `nRows < NOVO_CRM_FLAGS_EXIT_SANITY_RATIO (default 0.7) × simCount` (simCount = **todos** os deals com Sim/na etapa no cache), a saída **daquela fila inteira** é pulada — upload incompleto/corrompido não pode zerar a base inteira. Contado em `exit_skipped_sanity` (obj por fila). `nRows` é contado no `forEach` do snapshot (não confia só em `row_count` metadata).
+  4. **Merge por dealId** antes de escrever — mesmo deal pode acumular flags de saída + reclassificação de etapa num único PUT.
+- **Matriculados (match, sem trocar a política existente):** além de `byCpf`/`byRgm`, indexa `byEmail`/`byPhone` do relatório (`_email`, `e_mail_ad`, `_phone`), também só se únicos. No loop principal, se cpf/rgm do deal não baterem, tenta `email_norm`/`phone_norm` do cache antes de desistir (`skipped_no_match`). Política de escrita do loop principal **não muda**: vazio→Sim preenche, diverge corrige, vazio→Não não grava em massa.
+- **CAA:** fila local (`caaProtocolsRepository`) não mudou — Retenção continua vencendo por CAA open ≤72h independente do passo inverso.
+- **Counters novos:** `flags_exit_cleared`, `stages_exit_remat`, `exit_skipped_sanity` (result + `saveFlagsStageLastRun`). Dry-run também passa pelo passo inverso e conta would-clear/samples (`exit:true` nas amostras).
+- **Não fiz:** não liguei o cron (`NOVO_CRM_FLAGS_SYNC_ENABLED` continua a decidir), não mudei concurrency, não toquei no dedupe de duplicados/incompletos (WIP separado), sem testes automatizados (fora do escopo pedido).
+- **Risco residual:** identidade do passo inverso usa os campos **do próprio deal** (CPF/RGM do custom field + email/phone do cache), não do matRow — em teoria pode divergir do que o loop principal usaria se o deal tivesse dado match ali (raro; CPF/RGM tendem a ser consistentes entre deal e SIAA). Base satélite com>0 linhas mas ainda assim incompleta (ex.: faltando metade dos alunos reais) pode passar no sanity ratio e gerar saída indevida — o ratio é uma heurística, não uma garantia.
+- **Arquivos:** `server/services/novoCrmFlagsStageSyncService.js`, `.env.example`.
+
 ### 2026-07-31 — Att de etapas: mapear Financeira PROD + preencher flag vazia→Sim + log persistente
 - **Modelo usado:** Composer/Auto (implementação). Diagnóstico na sessão anterior.
 - **Problema:** contagens CRM pós-Att divergiam das bases Relatórios (docs ~5501 vs ~7983; financeira/inad sem write; evasão/BB próximos mas não iguais). Cron Att OFF em PROD (`NOVO_CRM_FLAGS_SYNC_ENABLED=0`); só botão manual. Última Att não sobrevivia a restart (jobs só em memória).
