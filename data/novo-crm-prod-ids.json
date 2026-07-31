@@ -1,7 +1,5 @@
 {
   "base": "https://crm.eduit.com.br",
-  "organizationId": "cmrmbn2lh0uz2nm016beqgbwb",
-  "organizationName": "Cruzeiro EaD",
   "pipeline": {
     "id": "cmrwd5vun0149pd01qlqltsum",
     "name": "ACADÊMICO"
@@ -19,6 +17,7 @@
   },
   "fields": {
     "NOVO_CRM_FIELD_ACESSO_BLACK": "cmrwthwwi00ndpf013k1vi40y",
+    "NOVO_CRM_FIELD_ATUALIZADO": "cms9c1gfk0sl0jq011ywjyxfo",
     "NOVO_CRM_FIELD_CPF": "cmrnpd33ekm5snm01jecpmevp",
     "NOVO_CRM_FIELD_CURSO": "cmrmextum18srnm0168l8c9al",
     "NOVO_CRM_FIELD_DOC_PENDENTES": "cmrwtcinz00fzpf015c4o0o1c",

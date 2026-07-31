@@ -429,7 +429,8 @@ export async function runMatriculadosProvision(opts = {}) {
       { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
       { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
       { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
-    ].filter(Boolean);
+      fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
+    ].filter((x) => x && x.fieldId);
 
   let skippedBadName = 0;
   let skippedCache = 0;

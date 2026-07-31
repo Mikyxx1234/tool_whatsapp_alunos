@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-31 — Campo Atualizado?=Sim + Sem Remat sem CPF/RGM → Perdido
+- **Modelo usado:** Composer. Pedido do usuário.
+- **Atualizado?:** custom field PROD `cms9c1gfk0sl0jq011ywjyxfo` (`NOVO_CRM_FIELD_ATUALIZADO`). Toda Att (flags_stage) e sync noturna de campos (`mode=fields`) e provision de leads novos gravam **Sim** no deal tocado — filtro operacional no Kanban (esconde captura não sincronizada).
+- **Sem Rematrícula + sem CPF + sem RGM → Perdido** (além da regra órfão fora do remat). Pega cards tipo Roseducadora (CSV Atendimento vazio). Quem tem CPF/RGM (ex. Carla) permanece e segue reclassificação se saiu do relatório remat.
+- **Arquivos:** `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `data/novo-crm-prod-ids.json`, `.env.example`.
+- **Ops:** no Easypanel pode setar `NOVO_CRM_FIELD_ATUALIZADO=cms9c1gfk0sl0jq011ywjyxfo` (ou deixar o JSON PROD). Manter `NOVO_CRM_FIELD_INADIMPLENTE=cmrwtc7xp00fnpf015srkz771` (nunca `-`).
+
 ### 2026-07-31 — Sem Rematrícula: órfão (fora remat + sem matriculados) → Perdido
 - **Modelo usado:** Composer. Escolha do usuário (opção 1).
 - **Problema:** após Att entrada/saída, Sem Rematrícula ~5835 vs base remat ~5689 (~150–200 a mais). Muitos cards são captura WhatsApp / sem RGM — a saída só reclassificava quem tinha matRow.

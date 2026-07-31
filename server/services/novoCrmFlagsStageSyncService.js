@@ -61,6 +61,16 @@ function simNao(v) {
   return v ? 'Sim' : 'Não';
 }
 
+/** Marca deal como tocado pela nossa sync (campo Atualizado?=Sim). */
+function ensureAtualizadoSim(values, fieldIds) {
+  const id = String(fieldIds?.atualizado || '').trim();
+  if (!id) return values || [];
+  const list = Array.isArray(values) ? values : [];
+  if (list.some((v) => String(v?.fieldId || '').trim() === id)) return list;
+  list.push({ fieldId: id, value: 'Sim' });
+  return list;
+}
+
 /**
  * Índice de identidade de uma base satélite (rematrícula/docs/inad/bb/evasão).
  * Fluxo: ler o que o arquivo trouxer → enriquecer via matriculados (RGM/CPF)
@@ -787,8 +797,21 @@ export async function runFlagsStageSync(opts = {}) {
         const currentStageId = String(deal.stageId || '').trim() || null;
         if (semRematStageId && currentStageId === semRematStageId) {
           semRematSimCount += 1;
-          if (!identityInIndex(remat, identity)) {
-            // Com matRow → reclassifica SIAA; sem matRow (captura/WhatsApp) → Perdido.
+          const noCpfRgm = !cpfDeal && !rgmDeal;
+          // Sem CPF e sem RGM → captura/não sincronizado → Perdido.
+          // Fora do remat: com matRow reclassifica; sem matRow → Perdido.
+          if (noCpfRgm) {
+            semRematExitCandidates.push({
+              dealId,
+              deal,
+              cpf: identity.cpf,
+              rgm: identity.rgm,
+              matRow: null,
+              currentStageId,
+              orphan: true,
+              reason: 'no_cpf_rgm',
+            });
+          } else if (!identityInIndex(remat, identity)) {
             semRematExitCandidates.push({
               dealId,
               deal,
@@ -797,6 +820,7 @@ export async function runFlagsStageSync(opts = {}) {
               matRow: matForIdentity || null,
               currentStageId,
               orphan: !matForIdentity,
+              reason: matForIdentity ? 'left_remat_base' : 'no_mat_match',
             });
           }
         }
@@ -1047,6 +1071,10 @@ export async function runFlagsStageSync(opts = {}) {
         if (idx >= workQueue.length) return;
         const item = workQueue[idx];
         try {
+          // Todo deal que a Att/fields toca recebe Atualizado?=Sim (filtro operacional).
+          if (fieldIds.atualizado && (item.needsMove || (item.values && item.values.length))) {
+            item.values = ensureAtualizadoSim(item.values || [], fieldIds);
+          }
           if (item.values?.length) {
             await updateDealCustomFields(item.dealId, item.values);
             if (item.needsFlagWrite) flagsUpdated += 1;

@@ -139,6 +139,8 @@ export function getNovoCrmDealFieldIds() {
     doc_pendentes: envId('NOVO_CRM_FIELD_DOC_PENDENTES', 'cmrtjumbj007nua48rqjbzzj8'),
     inadimplente: envId('NOVO_CRM_FIELD_INADIMPLENTE', 'cmrtjygzx008bua48uiugpx9u'),
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
+    // PROD: "Atualizado?" — marcado Sim quando Att/fields sync toca o deal.
+    atualizado: envId('NOVO_CRM_FIELD_ATUALIZADO', ''),
   };
 }
 
