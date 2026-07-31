@@ -16,7 +16,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   2. Nova política de write: **vazio + próximo=Sim → preenche**; **vazio + Não → não grava** (evita flood de PUTs); valor existente que diverge → corrige.
   3. Persistir última Att apply em `novo_crm_cache_sync_state` key=`flags_stage_last` (JSON no `cursor_id`); expor em `GET /api/maintenance/novo-crm-cache-status` como `last_flags_sync` + linha no card "Att de etapas".
 - **Ops:** se Easypanel tiver `NOVO_CRM_FIELD_INADIMPLENTE=-`, isso **continua desligando** o flag (env vence o JSON) — remover/zerar a var. Após deploy, clicar **Att de etapas** de novo para backfill empty→Sim. Cron noturno continua OFF até pedido explícito.
-- **Ritmo (31/07 follow-up):** concurrency default da Att **8 → 3** (`NOVO_CRM_FLAGS_SYNC_CONCURRENCY`) — 8 workers + rate alto gerava rajadas de 429 em `/custom-fields`. Em PROD preferir rate ≤3 (`NOVO_CRM_API_RATE_PER_SECOND`), não 8.
+- **Ritmo (31/07 follow-up):** concurrency default da Att **8 → 5** (`NOVO_CRM_FLAGS_SYNC_CONCURRENCY`) — 8 workers gerava 429 em `/custom-fields`; 3 ficou lento demais. Em PROD preferir rate ≤3–4 (`NOVO_CRM_API_RATE_PER_SECOND`), não 8. Se 429 voltar → 3; se sobrar folga → testar 6 via env.
 - **Arquivos:** `data/novo-crm-prod-ids.json`, `novoCrmFlagsStageSyncService.js`, `novoCrmPersonCacheRepository.js`, `routes/maintenance.js`, `maintenanceApi.ts`, `NovoCrmSyncPanel.tsx`, `.env.example`.
 
 ### 2026-07-30 — Dedupe de duplicados (`scope=duplicates`): mesma pessoa, dois cartões completos

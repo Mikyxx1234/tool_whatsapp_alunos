@@ -110,9 +110,9 @@ function maxErrorsBeforeAbort() {
   return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 2000);
 }
 
-/** Workers paralelos no apply (rate limit global do client ainda vale). Default 3 (anti-429). */
+/** Workers paralelos no apply (rate limit global do client ainda vale). Default 5 (anti-429 vs throughput). */
 function flagsSyncConcurrency() {
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_CONCURRENCY) || 3, 1), 24);
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_CONCURRENCY) || 5, 1), 24);
 }
 
 /**
