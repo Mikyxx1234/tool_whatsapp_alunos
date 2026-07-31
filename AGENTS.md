@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-31 — Att: enriquecer satélite via matriculados (match completo)
+- **Modelo usado:** Opus Strategist (diagnóstico) + Composer (implementação).
+- **Problema:** bases satélite (ex. evasão) muitas vezes só trazem **RGM** — sem CPF/telefone/e-mail. O índice satélite indexava só colunas do arquivo → match fraco no CRM; docs/evasão/remat longe das bases Relatórios.
+- **Decisão:** **matriculados = base "sim"**. Fluxo: satélite (RGM/o que tiver) → lookup em matriculados → completa CPF/e-mail/fone → indexa tudo no índice da fila → match no espelho. Ordem: carrega matriculados (`byRgm`/`byCpf`/`byEmail`/`byPhone`) **antes**; `loadIdentityIndexFromBase(cat, {byRgm,byCpf})` chama `enrichIdentityFromMatriculados`. Passo inverso usa a **mesma** cadeia (deal → matriculados → identity). CPF via `normalizeCpf` (padStart 11). Email/phone continuam só se únicos.
+- **Preservado:** entrada+saída, sanity 70%, empty→Não em massa, intocáveis, concurrency.
+- **Arquivo:** `novoCrmFlagsStageSyncService.js`.
+
 ### 2026-07-31 — Att de etapas: entrada + saída (passo inverso) por relatório do dia
 - **Modelo usado:** Opus (principal, spec) + Executor (Sonnet, implementação). `novoCrmFlagsStageSyncService.js`.
 - **Problema:** o sync só cobria **entrada** — preenchia/corrigia flag e etapa quando o aluno **está** na base do dia (docs/inad/bb/evasão/rematrícula), usando match por CPF/RGM (`digits()` puro, sem padStart). Quem **saiu** da base (documento entregue, quitou, voltou a ter acesso, saiu da evasão, fez rematrícula) só era corrigido se o deal **também** desse match com `matriculados` no mesmo ciclo — deals sem esse match nunca eram revisitados, então flag Sim e etapa Sem Rematricula ficavam presas para sempre mesmo com a pessoa fora da base.

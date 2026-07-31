@@ -11,15 +11,11 @@
  * Apply otimizado: só reescreve flag quando (a) valor conhecido diverge, ou
  * (b) campo vazio e próximo=Sim (não grava vazio→Não — evita flood de PUTs).
  *
- * Entrada + saída (31/07/2026): o relatório do dia é a verdade. O loop
- * principal (entrada) preenche/corrige quem TEM matRow. Um passo INVERSO
- * varre TODOS os deals do cache com flag=Sim / etapa Sem Rematricula e
- * fecha quem SAIU da base (merge por dealId com a fila do loop principal):
- *   - Flags (doc/inad/bb/evasao): cache=Sim + identidade fora do índice → Não.
- *   - Sem Rematricula: fora do remat + tem matRow → classifyMatriculado(false).
- * Identidade = cpf/rgm; email/phone só se ÚNICOS no relatório. Sanity: se
- * `nRows < NOVO_CRM_FLAGS_EXIT_SANITY_RATIO * simCount` (ou nRows=0), a saída
- * daquela fila é pulada (upload incompleto).
+ * Entrada + saída (31/07/2026): o relatório do dia é a verdade. Matriculados
+ * é a base "sim": satélites (evasão/docs/…) enriquecem identidade via
+ * RGM/CPF → CPF/e-mail/fone do matriculados antes do match no CRM. Loop
+ * principal (entrada) + passo inverso (saída Sim→Não / sai Sem Rematricula).
+ * Email/phone só se ÚNICOS. Sanity: nRows < ratio × simCount → pula saída.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -66,9 +62,9 @@ function simNao(v) {
 
 /**
  * Índice de identidade de uma base satélite (rematrícula/docs/inad/bb/evasão).
- * cpf/rgm sempre entram; email/phone só entram se ÚNICOS no relatório
- * (repetido = ambíguo, não usar pra match). `nRows` = linhas do snapshot,
- * usado no guard de sanity da saída (não zerar tudo por upload incompleto).
+ * Fluxo: ler o que o arquivo trouxer → enriquecer via matriculados (RGM/CPF)
+ * para completar cpf/email/telefone → indexar. Email/phone só entram se
+ * ÚNICOS no índice final. `nRows` = linhas do snapshot satélite.
  * @typedef {{ cpf: Set<string>, rgm: Set<string>, email: Set<string>, phone: Set<string>, nRows: number }} IdentityIndex
  */
 
@@ -76,7 +72,7 @@ function simNao(v) {
 function pickIdentityFromRow(row) {
   return {
     cpf: normalizeCpf(row.CPF ?? row.cpf ?? row.Cpf),
-    rgm: normalizeRgm(row.RGM ?? row.rgm ?? row.Rgm),
+    rgm: normalizeRgm(row.RGM ?? row.rgm ?? row.Rgm ?? row.RGM_ALUN),
     email: normalizeEmail(row.Email ?? row['E-mail'] ?? row.email ?? row['e-mail']),
     phone: normalizePhone(
       row.Telefone ?? row.Celular ?? row['Fone celular'] ?? row['Fone Celular'] ?? row.phone
@@ -84,17 +80,44 @@ function pickIdentityFromRow(row) {
   };
 }
 
-/** @returns {Promise<IdentityIndex>} */
-async function loadIdentityIndexFromBase(category) {
+/**
+ * Completa identidade satélite com dados do matriculados (RGM → CPF/e-mail/fone).
+ * Ex.: evasão só traz RGM; matriculados devolve o restante pro match no CRM.
+ * @param {{cpf:string,rgm:string,email:string,phone:string}} id
+ * @param {Map<string, Record<string, unknown>>|null|undefined} byRgm
+ * @param {Map<string, Record<string, unknown>>|null|undefined} byCpf
+ */
+function enrichIdentityFromMatriculados(id, byRgm, byCpf) {
+  if (!byRgm && !byCpf) return id;
+  const matRow =
+    (id.rgm && byRgm?.get(id.rgm)) || (id.cpf && byCpf?.get(id.cpf)) || null;
+  if (!matRow) return id;
+  const m = extractMatriculadosMappedValues(matRow);
+  return {
+    cpf: id.cpf || normalizeCpf(m.cpf),
+    rgm: id.rgm || normalizeRgm(m.rgm),
+    email: id.email || normalizeEmail(m._email) || normalizeEmail(m.e_mail_ad),
+    phone: id.phone || normalizePhone(m._phone || m.telefone_comercial),
+  };
+}
+
+/**
+ * @param {string} category
+ * @param {{ byRgm?: Map<string, Record<string, unknown>>, byCpf?: Map<string, Record<string, unknown>> }|null} [matLookups]
+ * @returns {Promise<IdentityIndex>}
+ */
+async function loadIdentityIndexFromBase(category, matLookups = null) {
   /** @type {IdentityIndex} */
   const index = { cpf: new Set(), rgm: new Set(), email: new Set(), phone: new Set(), nRows: 0 };
   const snap = await baseUploadRepo.getLatestSnapshot(category);
   if (!snap?.id) return index;
   const emailCount = new Map();
   const phoneCount = new Map();
+  const byRgm = matLookups?.byRgm || null;
+  const byCpf = matLookups?.byCpf || null;
   await baseUploadRepo.forEachRowDataForSnapshot(category, snap.id, (row) => {
     index.nRows += 1;
-    const id = pickIdentityFromRow(row);
+    const id = enrichIdentityFromMatriculados(pickIdentityFromRow(row), byRgm, byCpf);
     if (id.cpf) index.cpf.add(id.cpf);
     if (id.rgm) index.rgm.add(id.rgm);
     if (id.email) emailCount.set(id.email, (emailCount.get(id.email) || 0) + 1);
@@ -276,20 +299,7 @@ export async function runFlagsStageSync(opts = {}) {
     throw err;
   }
 
-  patchJob({ phase: 'loading_bases', status_message: 'Carregando bases…' });
-
-  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
-    loadIdentityIndexFromBase('rematricula'),
-    caaProtocolsRepo.loadOpenCaaT0Map(),
-    loadIdentityIndexFromBase('docs-pendentes'),
-    loadIdentityIndexFromBase('inadimplentes-vencidos'),
-    loadIdentityIndexFromBase('acessos-blackboard'),
-    loadIdentityIndexFromBase('provavel-evasao'),
-  ]);
-  const caaRetencaoHours = getCaaRetencaoHours();
-  const stageIds = getNovoCrmStageIds();
-  const retencaoStageId = String(stageIds.Retenção || '').trim();
-  const semRematStageId = String(stageIds['Sem Rematricula'] || '').trim();
+  patchJob({ phase: 'loading_bases', status_message: 'Carregando matriculados + bases…' });
 
   /** @type {Map<string, Record<string, unknown>>} */
   const byCpf = new Map();
@@ -301,18 +311,20 @@ export async function runFlagsStageSync(opts = {}) {
   const byPhone = new Map();
   const emailRowCount = new Map();
   const phoneRowCount = new Map();
+  // Matriculados PRIMEIRO — base "sim" pra completar identidade das satélites
+  // (evasão etc. muitas vezes só trazem RGM → puxamos CPF/e-mail/fone aqui).
   await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
     const m = extractMatriculadosMappedValues(row);
-    const cpf = digits(m.cpf);
-    const rgm = digits(m.rgm);
-    if (cpf.length >= 11) keepBestRow(byCpf, cpf, row);
+    const cpf = normalizeCpf(m.cpf);
+    const rgm = normalizeRgm(m.rgm);
+    if (cpf) keepBestRow(byCpf, cpf, row);
     if (rgm) keepBestRow(byRgm, rgm, row);
     const rowEmails = new Set([normalizeEmail(m._email), normalizeEmail(m.e_mail_ad)].filter(Boolean));
     for (const email of rowEmails) {
       emailRowCount.set(email, (emailRowCount.get(email) || 0) + 1);
       keepBestRow(byEmail, email, row);
     }
-    const phone = normalizePhone(m._phone);
+    const phone = normalizePhone(m._phone || m.telefone_comercial);
     if (phone) {
       phoneRowCount.set(phone, (phoneRowCount.get(phone) || 0) + 1);
       keepBestRow(byPhone, phone, row);
@@ -320,6 +332,20 @@ export async function runFlagsStageSync(opts = {}) {
   });
   for (const [email, n] of emailRowCount) if (n > 1) byEmail.delete(email);
   for (const [phone, n] of phoneRowCount) if (n > 1) byPhone.delete(phone);
+
+  const matLookups = { byRgm, byCpf };
+  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
+    loadIdentityIndexFromBase('rematricula', matLookups),
+    caaProtocolsRepo.loadOpenCaaT0Map(),
+    loadIdentityIndexFromBase('docs-pendentes', matLookups),
+    loadIdentityIndexFromBase('inadimplentes-vencidos', matLookups),
+    loadIdentityIndexFromBase('acessos-blackboard', matLookups),
+    loadIdentityIndexFromBase('provavel-evasao', matLookups),
+  ]);
+  const caaRetencaoHours = getCaaRetencaoHours();
+  const stageIds = getNovoCrmStageIds();
+  const retencaoStageId = String(stageIds.Retenção || '').trim();
+  const semRematStageId = String(stageIds['Sem Rematricula'] || '').trim();
 
   patchJob({ phase: 'loading_cache', status_message: 'Carregando espelho local…' });
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({
@@ -390,7 +416,7 @@ export async function runFlagsStageSync(opts = {}) {
       continue;
     }
 
-    const cpfCache = digits(row.cpf_norm);
+    const cpfCache = normalizeCpf(row.cpf_norm);
     const emailCache = normalizeEmail(row.email_norm);
     const phoneCache = normalizePhone(row.phone_norm);
 
@@ -408,11 +434,11 @@ export async function runFlagsStageSync(opts = {}) {
       const dealId = String(deal.id || '').trim();
       if (!dealId) continue;
 
-      const rgmDeal = digits(findCustom(deal, ['rgm']) || row.rgm_norm);
-      const cpfDeal = digits(findCustom(deal, ['cpf']) || cpfCache);
+      const rgmDeal = normalizeRgm(findCustom(deal, ['rgm']) || row.rgm_norm);
+      const cpfDeal = normalizeCpf(findCustom(deal, ['cpf']) || cpfCache);
       const matRow =
         (rgmDeal && byRgm.get(rgmDeal)) ||
-        (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) ||
+        (cpfDeal && byCpf.get(cpfDeal)) ||
         (emailCache && byEmail.get(emailCache)) ||
         (phoneCache && byPhone.get(phoneCache)) ||
         null;
@@ -423,13 +449,14 @@ export async function runFlagsStageSync(opts = {}) {
       matched += 1;
 
       const mapped = extractMatriculadosMappedValues(matRow);
-      const cpf = digits(mapped.cpf) || cpfDeal;
-      const rgm = digits(mapped.rgm) || rgmDeal;
-      const emailForMatch = normalizeEmail(mapped._email) || normalizeEmail(mapped.e_mail_ad);
-      const phoneForMatch = normalizePhone(mapped._phone || mapped.telefone_comercial);
+      const cpf = normalizeCpf(mapped.cpf) || cpfDeal;
+      const rgm = normalizeRgm(mapped.rgm) || rgmDeal;
+      const emailForMatch = normalizeEmail(mapped._email) || normalizeEmail(mapped.e_mail_ad) || emailCache;
+      const phoneForMatch =
+        normalizePhone(mapped._phone || mapped.telefone_comercial) || phoneCache;
       const identity = {
-        cpf: normalizeCpf(cpf),
-        rgm: normalizeRgm(rgm),
+        cpf,
+        rgm,
         email: emailForMatch,
         phone: phoneForMatch,
       };
@@ -717,7 +744,26 @@ export async function runFlagsStageSync(opts = {}) {
 
         const rgmDeal = normalizeRgm(findCustom(deal, ['rgm']) || row.rgm_norm);
         const cpfDeal = normalizeCpf(findCustom(deal, ['cpf']) || cpfCache);
-        const identity = { cpf: cpfDeal, rgm: rgmDeal, email: emailCache, phone: phoneCache };
+        // Mesma cadeia do loop principal: deal → matriculados → identidade completa.
+        const matForIdentity =
+          (rgmDeal && byRgm.get(rgmDeal)) ||
+          (cpfDeal && byCpf.get(cpfDeal)) ||
+          (emailCache && byEmail.get(emailCache)) ||
+          (phoneCache && byPhone.get(phoneCache)) ||
+          null;
+        let identity = { cpf: cpfDeal, rgm: rgmDeal, email: emailCache, phone: phoneCache };
+        if (matForIdentity) {
+          const mappedId = extractMatriculadosMappedValues(matForIdentity);
+          identity = {
+            cpf: normalizeCpf(mappedId.cpf) || cpfDeal,
+            rgm: normalizeRgm(mappedId.rgm) || rgmDeal,
+            email:
+              normalizeEmail(mappedId._email) ||
+              normalizeEmail(mappedId.e_mail_ad) ||
+              emailCache,
+            phone: normalizePhone(mappedId._phone || mappedId.telefone_comercial) || phoneCache,
+          };
+        }
 
         for (const def of exitFlagDefs) {
           if (!def.fieldId) continue;
@@ -729,8 +775,8 @@ export async function runFlagsStageSync(opts = {}) {
               dealId,
               fieldId: def.fieldId,
               key: def.key,
-              cpf: cpfDeal,
-              rgm: rgmDeal,
+              cpf: identity.cpf,
+              rgm: identity.rgm,
             });
           }
         }
@@ -739,19 +785,14 @@ export async function runFlagsStageSync(opts = {}) {
         if (semRematStageId && currentStageId === semRematStageId) {
           semRematSimCount += 1;
           if (!identityInIndex(remat, identity)) {
-            const matRow =
-              (rgmDeal && byRgm.get(rgmDeal)) ||
-              (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) ||
-              (emailCache && byEmail.get(emailCache)) ||
-              (phoneCache && byPhone.get(phoneCache)) ||
-              null;
+            const matRow = matForIdentity;
             // Sem matRow não dá pra reclassificar com segurança — deixa a etapa como está.
             if (matRow) {
               semRematExitCandidates.push({
                 dealId,
                 deal,
-                cpf: cpfDeal,
-                rgm: rgmDeal,
+                cpf: identity.cpf,
+                rgm: identity.rgm,
                 matRow,
                 currentStageId,
               });
@@ -833,13 +874,13 @@ export async function runFlagsStageSync(opts = {}) {
         if (existing?.needsMove) continue; // já tratado pelo loop principal.
 
         const mapped = extractMatriculadosMappedValues(c.matRow);
-        const cpf = digits(mapped.cpf) || c.cpf;
-        const rgm = digits(mapped.rgm) || c.rgm;
+        const cpf = normalizeCpf(mapped.cpf) || c.cpf;
+        const rgm = normalizeRgm(mapped.rgm) || c.rgm;
         const emailForMatch = normalizeEmail(mapped._email) || normalizeEmail(mapped.e_mail_ad);
         const phoneForMatch = normalizePhone(mapped._phone || mapped.telefone_comercial);
         const exitIdentity = {
-          cpf: normalizeCpf(cpf),
-          rgm: normalizeRgm(rgm),
+          cpf,
+          rgm,
           email: emailForMatch,
           phone: phoneForMatch,
         };
