@@ -142,6 +142,115 @@ async function liveDealIdentity(dealId) {
   }
 }
 
+const DEDUPE_PANEL_FIELDS = [
+  'cpf',
+  'rgm',
+  'curso',
+  'polo',
+  'situação',
+  'situacao',
+  'nível',
+  'nivel',
+  'e-mail',
+  'email',
+  'e-mail ad',
+  'email ad',
+  'documentos pendentes',
+  'doc pendentes',
+  'inadimplente',
+  'acesso blackboard',
+  'acessoblack',
+  'evasão',
+  'evasao',
+];
+
+/** Telefone BR plausível: DDD + 8/9 dígitos (com ou sem 55). */
+function isPlausibleBrPhone(v) {
+  const d = digits(v);
+  const local = d.startsWith('55') ? d.slice(2) : d;
+  return local.length === 10 || local.length === 11;
+}
+
+function isPlausibleEmail(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v ?? '').trim());
+}
+
+/**
+ * Leitura live rica de um deal para escolher qual card sobrevive num grupo de
+ * duplicados. `ok:false` = não sei → grupo inteiro é pulado.
+ */
+async function liveDealForDedupe(dealId) {
+  try {
+    const detail = await getDeal(dealId);
+    if (!detail?.id) return { ok: false };
+    const fields = detail?.dealPanelFields || detail?.customFields || [];
+    let filled = 0;
+    for (const f of fields) {
+      const name = String(f?.name || f?.label || '').trim().toLowerCase();
+      if (!DEDUPE_PANEL_FIELDS.includes(name)) continue;
+      if (f?.value != null && String(f.value).trim() !== '') filled += 1;
+    }
+    const contact = detail.contact || {};
+    return {
+      ok: true,
+      dealId: String(detail.id),
+      number: detail.number ?? null,
+      title: detail.title || null,
+      stageId: String(detail?.stage?.id || detail?.stageId || '').trim(),
+      stageName: detail?.stage?.name || null,
+      rgm: panelFieldValue(detail, ['rgm']),
+      cpf: panelFieldValue(detail, ['cpf', 'documento', 'taxid']),
+      ownerId: detail.ownerId || detail.owner?.id || null,
+      filledFields: filled,
+      notes: (detail.notes || []).length + (detail.activities || []).length,
+      createdAt: detail.createdAt || null,
+      contactId: String(detail.contactId || contact.id || ''),
+      contactName: contact.name || null,
+      contactEmailOk: isPlausibleEmail(contact.email),
+      contactPhoneOk: isPlausibleBrPhone(contact.phone),
+      conversations: (contact.conversations || []).length,
+    };
+  } catch (err) {
+    console.warn('[novo-crm-orphan-provision] live dedupe read failed', dealId, err?.message || err);
+    return { ok: false };
+  }
+}
+
+/**
+ * Score de sobrevivência de um card duplicado (maior vence).
+ * Ordem acordada: dono → campos SIAA preenchidos → e-mail → telefone →
+ * conversa (desempate) → mais antigo (fora do score, no sort).
+ *
+ * A conversa fica no *contato*, não no negócio, e não se perde quando o card
+ * vai para Perdido — por isso pesa menos que a qualidade do cadastro
+ * (pares 30/07: o card com conversa era o "Lead #21136153" sem e-mail).
+ */
+function dedupeSurvivorScore(d) {
+  let s = 0;
+  if (d.ownerId) s += 1000;
+  s += (d.filledFields || 0) * 10;
+  if (d.contactEmailOk) s += 30;
+  if (d.contactPhoneOk) s += 20;
+  if (d.conversations > 0) s += 15;
+  if (d.notes > 0) s += 5;
+  return s;
+}
+
+function pickDedupeSurvivor(deals) {
+  return [...deals].sort((a, b) => {
+    const diff = dedupeSurvivorScore(b) - dedupeSurvivorScore(a);
+    if (diff) return diff;
+    const ta = Date.parse(a.createdAt || '') || Number.MAX_SAFE_INTEGER;
+    const tb = Date.parse(b.createdAt || '') || Number.MAX_SAFE_INTEGER;
+    if (ta !== tb) return ta - tb;
+    return Number(a.number || 0) - Number(b.number || 0);
+  })[0];
+}
+
+function dealStageIdFromCache(deal) {
+  return String(deal?.stageId || deal?.stage?.id || '').trim();
+}
+
 /**
  * Identidade live no CRM (RGMs + CPFs em TODOS os deals do contact).
  * Usado no path sibling — cache local fica stale entre runs / com SKIP_FIELDS.
@@ -428,7 +537,8 @@ function buildDealValues(fieldIds, mapped, row, classification) {
     { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
     { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
     { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
-  ].filter(Boolean);
+    fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
+  ].filter((x) => x && x.fieldId);
 }
 
 /**
@@ -446,9 +556,12 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || defaultMaxCreates(), 1), 20000);
   const jobId = opts.jobId || null;
   const scopeRaw = String(opts.scope || 'orphans').trim().toLowerCase();
-  const scope = ['orphans', 'incomplete', 'both'].includes(scopeRaw) ? scopeRaw : 'orphans';
+  const scope = ['orphans', 'incomplete', 'duplicates', 'both'].includes(scopeRaw)
+    ? scopeRaw
+    : 'orphans';
   const doOrphans = scope === 'orphans' || scope === 'both';
   const doIncomplete = scope === 'incomplete' || scope === 'both';
+  const doDuplicates = scope === 'duplicates' || scope === 'both';
 
   if (!dryRun) {
     if (!isNovoCrmApiConfigured()) {
@@ -526,6 +639,14 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let incompleteLiveUnknown = 0;
   let perdidoSkippedLive = 0;
   let perdidoLiveUnknown = 0;
+  let dupGroups = 0;
+  let dupDealsExtra = 0;
+  let dupDealsMoved = 0;
+  let dupResolvedLive = 0;
+  let dupLiveUnknown = 0;
+  let dupCrossContact = 0;
+  let dupNameMismatch = 0;
+  let dupStoppedAtMax = false;
   let dealsWouldCreateOnOrphan = 0;
   let dealsWouldCreateOnSibling = 0;
   let createdDeals = 0;
@@ -1206,6 +1327,158 @@ export async function runOrphanAlunoProvision(opts = {}) {
     }
   }
 
+  // === DUPLICATES PASS ===
+  // Mesma pessoa (mesmo RGM) com 2+ cartões em etapa mexível. Não é coberto
+  // pelos passes acima: os dois cards têm CPF/RGM, então nenhum é "órfão" nem
+  // "incompleto". Mantém 1 card por score e manda os outros para Perdido.
+  if (doDuplicates) {
+    const maxMoves = Math.min(
+      Math.max(Number(process.env.NOVO_CRM_DEDUPE_MAX_MOVES) || 1000, 1),
+      20000
+    );
+    patchJob({ phase: 'duplicates', status_message: 'Procurando cartões duplicados…' });
+
+    /** @type {Map<string, Array<{ dealId: string, contactId: string }>>} */
+    const dealsByRgm = new Map();
+    for (const row of cacheRows) {
+      for (const deal of dealsFromCacheRow(row)) {
+        const dealId = String(deal?.id || '').trim();
+        if (!dealId) continue;
+        const rgm = normalizeRgm(dealCustomValue(deal, ['rgm']));
+        if (!rgm) continue;
+        const stageId = dealStageIdFromCache(deal);
+        if (!stageId || stageId === perdidoStageId || isUntouchableStageId(stageId)) continue;
+        let arr = dealsByRgm.get(rgm);
+        if (!arr) {
+          arr = [];
+          dealsByRgm.set(rgm, arr);
+        }
+        if (!arr.some((d) => d.dealId === dealId)) {
+          arr.push({ dealId, contactId: String(row.contact_id) });
+        }
+      }
+    }
+
+    const groups = [...dealsByRgm.entries()].filter(([, ds]) => ds.length > 1);
+    dupGroups = groups.length;
+    patchJob({
+      total: groups.length,
+      processed: 0,
+      status_message: `Conferindo ${groups.length} pessoas com 2+ cartões…`,
+    });
+
+    let groupIdx = 0;
+    for (const [rgm, cands] of groups) {
+      groupIdx += 1;
+      if (dupDealsMoved >= maxMoves) {
+        dupStoppedAtMax = true;
+        break;
+      }
+
+      // Conferência ao vivo: espelho não decide sozinho quem morre.
+      const live = [];
+      let unknown = false;
+      for (const c of cands) {
+        const d = await liveDealForDedupe(c.dealId);
+        if (!d.ok) {
+          unknown = true;
+          break;
+        }
+        if (DELAY_MS > 0) await sleep(DELAY_MS);
+        if (normalizeRgm(d.rgm) !== rgm) continue;
+        if (!d.stageId || d.stageId === perdidoStageId || isUntouchableStageId(d.stageId)) continue;
+        live.push(d);
+      }
+      if (unknown) {
+        dupLiveUnknown += 1;
+        patchJob({ processed: groupIdx });
+        continue;
+      }
+      if (live.length < 2) {
+        dupResolvedLive += 1;
+        patchJob({ processed: groupIdx });
+        continue;
+      }
+
+      // Mesmo RGM+CPF não basta: e-mail/telefone de assessoria ou CPF
+      // compartilhado gera "CHARLES" × "SARA" no mesmo grupo. Só dedupe se
+      // nomes casam (ou é o mesmo contact_id).
+      const anchor = pickDedupeSurvivor(live);
+      const samePerson = live.filter(
+        (d) =>
+          d.dealId === anchor.dealId ||
+          d.contactId === anchor.contactId ||
+          namesPlausiblyMatch(d.contactName || d.title, anchor.contactName || anchor.title)
+      );
+      if (samePerson.length < live.length) {
+        dupNameMismatch += 1;
+        if (skipSamples.length < 25) {
+          skipSamples.push({
+            type: 'dup_name_mismatch',
+            rgm,
+            cpf: anchor.cpf || null,
+            nomes: live.map((d) => d.contactName || d.title),
+          });
+        }
+      }
+      if (samePerson.length < 2) {
+        patchJob({ processed: groupIdx });
+        continue;
+      }
+
+      const survivor = pickDedupeSurvivor(samePerson);
+      const losers = samePerson.filter((d) => d.dealId !== survivor.dealId);
+      dupDealsExtra += losers.length;
+      if (new Set(samePerson.map((d) => d.contactId)).size > 1) dupCrossContact += 1;
+
+      if (samples.length < 25) {
+        samples.push({
+          type: 'dup_deal',
+          rgm,
+          mesmo_cadastro: new Set(samePerson.map((d) => d.contactId)).size === 1,
+          mantido: {
+            deal: survivor.number,
+            titulo: survivor.title,
+            etapa: survivor.stageName,
+            campos: survivor.filledFields,
+            conversas: survivor.conversations,
+            score: dedupeSurvivorScore(survivor),
+          },
+          para_perdido: losers.map((l) => ({
+            deal: l.number,
+            titulo: l.title,
+            etapa: l.stageName,
+            campos: l.filledFields,
+            conversas: l.conversations,
+            score: dedupeSurvivorScore(l),
+          })),
+        });
+      }
+
+      if (dryRun) {
+        dupDealsMoved += losers.length;
+      } else {
+        for (const l of losers) {
+          try {
+            await updateDeal(l.dealId, { stageId: perdidoStageId });
+            dupDealsMoved += 1;
+            if (DELAY_MS > 0) await sleep(DELAY_MS);
+          } catch (err) {
+            errors += 1;
+            if (errorSamples.length < 25) {
+              errorSamples.push({
+                dup_rgm: rgm,
+                deal_id: l.dealId,
+                error: err?.message || String(err),
+              });
+            }
+          }
+        }
+      }
+      patchJob({ processed: groupIdx, failed: errors });
+    }
+  }
+
   const result = {
     ok: true,
     dry_run: dryRun,
@@ -1239,6 +1512,16 @@ export async function runOrphanAlunoProvision(opts = {}) {
     incomplete_live_unknown: incompleteLiveUnknown,
     perdido_skipped_live: perdidoSkippedLive,
     perdido_live_unknown: perdidoLiveUnknown,
+    dup_deal_groups: dupGroups,
+    dup_deals_extra: dupDealsExtra,
+    dup_cross_contact: dupCrossContact,
+    dup_resolved_live: dupResolvedLive,
+    dup_live_unknown: dupLiveUnknown,
+    dup_name_mismatch: dupNameMismatch,
+    dup_stopped_at_max: dupStoppedAtMax,
+    ...(dryRun
+      ? { dup_deals_would_move_perdido: dupDealsMoved }
+      : { dup_deals_moved_perdido: dupDealsMoved }),
     created_deals: dryRun ? 0 : createdDeals,
     errors: dryRun ? 0 : errors,
     skipped_already_has_deal_live: skippedAlreadyHasDeal,
