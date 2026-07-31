@@ -346,6 +346,7 @@ export async function runFlagsStageSync(opts = {}) {
   const stageIds = getNovoCrmStageIds();
   const retencaoStageId = String(stageIds.Retenção || '').trim();
   const semRematStageId = String(stageIds['Sem Rematricula'] || '').trim();
+  const perdidoStageId = String(stageIds.Perdido || '').trim();
 
   patchJob({ phase: 'loading_cache', status_message: 'Carregando espelho local…' });
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({
@@ -380,6 +381,7 @@ export async function runFlagsStageSync(opts = {}) {
   const workQueue = [];
   let flagsExitCleared = 0;
   let stagesExitRemat = 0;
+  let stagesExitRematOrphan = 0;
   /** @type {Record<string, number>} */
   const exitSkippedSanity = {};
 
@@ -785,18 +787,16 @@ export async function runFlagsStageSync(opts = {}) {
         if (semRematStageId && currentStageId === semRematStageId) {
           semRematSimCount += 1;
           if (!identityInIndex(remat, identity)) {
-            const matRow = matForIdentity;
-            // Sem matRow não dá pra reclassificar com segurança — deixa a etapa como está.
-            if (matRow) {
-              semRematExitCandidates.push({
-                dealId,
-                deal,
-                cpf: identity.cpf,
-                rgm: identity.rgm,
-                matRow,
-                currentStageId,
-              });
-            }
+            // Com matRow → reclassifica SIAA; sem matRow (captura/WhatsApp) → Perdido.
+            semRematExitCandidates.push({
+              dealId,
+              deal,
+              cpf: identity.cpf,
+              rgm: identity.rgm,
+              matRow: matForIdentity || null,
+              currentStageId,
+              orphan: !matForIdentity,
+            });
           }
         }
       }
@@ -867,11 +867,62 @@ export async function runFlagsStageSync(opts = {}) {
       }
     }
 
-    // --- Sem Rematricula: sai quando some do índice de rematrícula (só com matRow) ---
+    // --- Sem Rematricula: fora do remat → reclassifica (com matRow) ou Perdido (órfão) ---
     if (semRematExitAllowed) {
       for (const c of semRematExitCandidates) {
         const existing = workQueueByDealId.get(c.dealId);
         if (existing?.needsMove) continue; // já tratado pelo loop principal.
+
+        // Órfão: sem match matriculados → Perdido (limpa captura/WhatsApp da fila).
+        if (c.orphan || !c.matRow) {
+          if (!perdidoStageId) continue;
+          const classification = { stageName: 'Perdido', stageId: perdidoStageId };
+          if (dryRun) {
+            stagesExitRematOrphan += 1;
+            if (samples.length < 20) {
+              samples.push({
+                dry_run: true,
+                exit: true,
+                orphan: true,
+                dealId: c.dealId,
+                cpf: c.cpf,
+                rgm: c.rgm,
+                from: 'Sem Rematricula',
+                to: 'Perdido',
+              });
+            }
+            continue;
+          }
+          let item = workQueueByDealId.get(c.dealId);
+          if (!item) {
+            item = {
+              dealId: c.dealId,
+              cpf: c.cpf,
+              rgm: c.rgm,
+              inCaaOpen: false,
+              inCaaFresh: false,
+              classification,
+              values: [],
+              needsFlagWrite: false,
+              needsFieldWrite: false,
+              needsSemRematSituacao: false,
+              needsMove: true,
+              needsLiveStage: false,
+              fromStageId: c.currentStageId,
+              isExitRemat: true,
+              isExitRematOrphan: true,
+            };
+            workQueueByDealId.set(c.dealId, item);
+            workQueue.push(item);
+          } else {
+            item.classification = classification;
+            item.needsMove = true;
+            item.isExitRemat = true;
+            item.isExitRematOrphan = true;
+            if (!item.fromStageId) item.fromStageId = c.currentStageId;
+          }
+          continue;
+        }
 
         const mapped = extractMatriculadosMappedValues(c.matRow);
         const cpf = normalizeCpf(mapped.cpf) || c.cpf;
@@ -1026,7 +1077,8 @@ export async function runFlagsStageSync(opts = {}) {
             if (d.move) {
               await updateDeal(item.dealId, { stageId: item.classification.stageId });
               stagesMoved += 1;
-              if (item.isExitRemat) stagesExitRemat += 1;
+              if (item.isExitRematOrphan) stagesExitRematOrphan += 1;
+              else if (item.isExitRemat) stagesExitRemat += 1;
             } else if (d.untouchable) {
               stagesSkippedUntouchable += 1;
             } else if (d.unknown) {

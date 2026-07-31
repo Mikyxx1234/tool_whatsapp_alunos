@@ -5,6 +5,12 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-31 — Sem Rematrícula: órfão (fora remat + sem matriculados) → Perdido
+- **Modelo usado:** Composer. Escolha do usuário (opção 1).
+- **Problema:** após Att entrada/saída, Sem Rematrícula ~5835 vs base remat ~5689 (~150–200 a mais). Muitos cards são captura WhatsApp / sem RGM — a saída só reclassificava quem tinha matRow.
+- **Decisão:** no passo inverso, se está em Sem Rematrícula, **fora** do relatório remat de hoje e **sem** match em matriculados → move para **Perdido** (conversa no contato permanece). Com matRow continua reclassificando via SIAA. Contador `stages_exit_remat_orphan`. Sanity 70% da fila remat continua valendo.
+- **Arquivo:** `novoCrmFlagsStageSyncService.js`.
+
 ### 2026-07-31 — Att: enriquecer satélite via matriculados (match completo)
 - **Modelo usado:** Opus Strategist (diagnóstico) + Composer (implementação).
 - **Problema:** bases satélite (ex. evasão) muitas vezes só trazem **RGM** — sem CPF/telefone/e-mail. O índice satélite indexava só colunas do arquivo → match fraco no CRM; docs/evasão/remat longe das bases Relatórios.
