@@ -14,7 +14,8 @@
  * Entrada + saída (31/07/2026): o relatório do dia é a verdade. Matriculados
  * é a base "sim": satélites (evasão/docs/…) enriquecem identidade via
  * RGM/CPF → CPF/e-mail/fone do matriculados antes do match no CRM. Loop
- * principal (entrada) + passo inverso (saída Sim→Não / sai Sem Rematricula).
+ * principal (entrada) + passo inverso (saída Sim→Não / sai Sem Rematricula;
+ * órfão sem match matriculados → Perdido).
  * Email/phone só se ÚNICOS. Sanity: nRows < ratio × simCount → pula saída.
  */
 
@@ -1137,6 +1138,7 @@ export async function runFlagsStageSync(opts = {}) {
     situacao_sem_remat_would_update: situacaoSemRematWouldUpdate,
     stages_moved: stagesMoved,
     stages_exit_remat: stagesExitRemat,
+    stages_exit_remat_orphan: stagesExitRematOrphan,
     stages_skipped_untouchable: stagesSkippedUntouchable,
     stages_skipped_unknown: stagesSkippedUnknown,
     exit_skipped_sanity: exitSkippedSanity,
@@ -1188,6 +1190,7 @@ export async function runFlagsStageSync(opts = {}) {
         fields_updated: fieldsUpdated,
         stages_moved: stagesMoved,
         stages_exit_remat: stagesExitRemat,
+        stages_exit_remat_orphan: stagesExitRematOrphan,
         stages_skipped_untouchable: stagesSkippedUntouchable,
         exit_skipped_sanity: exitSkippedSanity,
         skipped_unchanged: skippedUnchanged,
