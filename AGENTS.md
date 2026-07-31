@@ -5,6 +5,19 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-07-31 — Att de etapas: mapear Financeira PROD + preencher flag vazia→Sim + log persistente
+- **Modelo usado:** Composer/Auto (implementação). Diagnóstico na sessão anterior.
+- **Problema:** contagens CRM pós-Att divergiam das bases Relatórios (docs ~5501 vs ~7983; financeira/inad sem write; evasão/BB próximos mas não iguais). Cron Att OFF em PROD (`NOVO_CRM_FLAGS_SYNC_ENABLED=0`); só botão manual. Última Att não sobrevivia a restart (jobs só em memória).
+- **Causas:**
+  1. `NOVO_CRM_FIELD_INADIMPLENTE` ausente em `data/novo-crm-prod-ids.json` (e `.env.example` documentava `-` = skip) → Att **não gravava** Situação Financeira. No CRM o campo real é `situacaofinanceira` (`cmrwtc7xp00fnpf015srkz771`), não um field `inadimplente`.
+  2. Regra antiga `if (!cur || cur === next) continue` — **nunca preenchia flag vazia**, só corrigia valor já presente e divergente → milhares de docs/etc sem Sim.
+- **Decisão:**
+  1. Mapear `NOVO_CRM_FIELD_INADIMPLENTE` → id PROD de `situacaofinanceira`; aliases de leitura incluem `situacaofinanceira` / `situacao financeira`.
+  2. Nova política de write: **vazio + próximo=Sim → preenche**; **vazio + Não → não grava** (evita flood de PUTs); valor existente que diverge → corrige.
+  3. Persistir última Att apply em `novo_crm_cache_sync_state` key=`flags_stage_last` (JSON no `cursor_id`); expor em `GET /api/maintenance/novo-crm-cache-status` como `last_flags_sync` + linha no card "Att de etapas".
+- **Ops:** se Easypanel tiver `NOVO_CRM_FIELD_INADIMPLENTE=-`, isso **continua desligando** o flag (env vence o JSON) — remover/zerar a var. Após deploy, clicar **Att de etapas** de novo para backfill empty→Sim. Cron noturno continua OFF até pedido explícito.
+- **Arquivos:** `data/novo-crm-prod-ids.json`, `novoCrmFlagsStageSyncService.js`, `novoCrmPersonCacheRepository.js`, `routes/maintenance.js`, `maintenanceApi.ts`, `NovoCrmSyncPanel.tsx`, `.env.example`.
+
 ### 2026-07-30 — Dedupe de incompletos: travas de identidade + conferência ao vivo antes de escrever
 - **Modelo usado:** Opus 5 (principal).
 - **Problema:** auditoria dos 1.666 "com negócio mas sem CPF/RGM" mostrou que a decisão saía **só do espelho + match por e-mail/telefone**, sem validar de quem é o dado. Três falhas concretas:

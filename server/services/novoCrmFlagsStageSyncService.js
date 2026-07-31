@@ -8,7 +8,8 @@
  *
  * Intocáveis (não move etapa): Ganho, Cancelado; Retenção sem CAA open (manual).
  * CAA open ≤72h → Retenção; após 72h segue SIAA (pode sair de Retenção).
- * Apply otimizado: pula flags/getDeal quando o cache já está alinhado.
+ * Apply otimizado: só reescreve flag quando (a) valor conhecido diverge, ou
+ * (b) campo vazio e próximo=Sim (não grava vazio→Não — evita flood de PUTs).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -357,18 +358,34 @@ export async function runFlagsStageSync(opts = {}) {
       const flagValues = [];
       if (doFlags) {
         const flagPairs = [
-          [fieldIds.doc_pendentes, simNao(classification.flags.doc_pendentes), ['doc pendentes', 'doc_pendentes']],
-          [fieldIds.inadimplente, simNao(classification.flags.inadimplente), ['inadimplente']],
-          [fieldIds.acessoblack, simNao(classification.flags.acessoblack), ['acessoblack', 'acesso black']],
+          [
+            fieldIds.doc_pendentes,
+            simNao(classification.flags.doc_pendentes),
+            ['doc pendentes', 'doc_pendentes', 'docpendente'],
+          ],
+          [
+            fieldIds.inadimplente,
+            simNao(classification.flags.inadimplente),
+            // PROD usa o custom field `situacaofinanceira` (não existe `inadimplente`).
+            ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
+          ],
+          [
+            fieldIds.acessoblack,
+            simNao(classification.flags.acessoblack),
+            ['acessoblack', 'acesso black'],
+          ],
           [fieldIds.evasao, simNao(classification.flags.evasao), ['evasao', 'evasão']],
         ];
         for (const [fieldId, value, names] of flagPairs) {
           if (!fieldId) continue;
           const cur = normFlagValue(readDealField(deal, fieldId, names));
           const next = normFlagValue(value);
-          // Sem valor no cache → não reescreve (era o gargalo: 4 PUTs por deal).
-          // Só corrige quando já conhecemos o valor e ele diverge.
-          if (!cur || cur === next) continue;
+          // Política (31/07/2026):
+          // - vazio + próximo=Sim → preenche (corrige subcontagem vs bases)
+          // - vazio + próximo=Não → NÃO grava (evita 4 PUTs × N deals = gargalo antigo)
+          // - já tem valor e diverge → corrige
+          if (cur === next) continue;
+          if (!cur && next !== 'sim') continue;
           flagValues.push({ fieldId, value });
         }
       }
@@ -706,6 +723,31 @@ export async function runFlagsStageSync(opts = {}) {
         ? 'Prévia pronta'
         : 'Sync concluído',
   });
+
+  // Persiste última Att (apply real) — jobs em memória somem no restart.
+  if (!dryRun) {
+    try {
+      await cacheRepo.saveFlagsStageLastRun({
+        finished_at: new Date().toISOString(),
+        ok: !aborted,
+        mode,
+        dry_run: false,
+        scanned,
+        matched,
+        flags_updated: flagsUpdated,
+        fields_updated: fieldsUpdated,
+        stages_moved: stagesMoved,
+        stages_skipped_untouchable: stagesSkippedUntouchable,
+        skipped_unchanged: skippedUnchanged,
+        errors,
+        aborted,
+        abort_reason: abortReason || null,
+        matriculados_snapshot_id: matSnap.id,
+      });
+    } catch (err) {
+      console.warn('[novo-crm-flags-sync] save last run failed:', err?.message || err);
+    }
+  }
 
   console.log('[novo-crm-flags-sync] done', JSON.stringify({ ...result, samples: undefined }));
   return result;

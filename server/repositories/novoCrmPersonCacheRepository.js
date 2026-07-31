@@ -140,6 +140,46 @@ export async function updateSyncState({ cursorUpdatedAt, cursorId = null }) {
   );
 }
 
+const FLAGS_STAGE_LAST_KEY = 'flags_stage_last';
+
+/**
+ * Persiste resumo da última Att de etapas (sobrevive a restart; jobs em memória não).
+ * @param {object} summary
+ */
+export async function saveFlagsStageLastRun(summary) {
+  const payload = JSON.stringify(summary || {});
+  await query(
+    `insert into novo_crm_cache_sync_state (key, cursor_updated_at, cursor_id, updated_at)
+     values ($1, now(), $2, now())
+     on conflict (key) do update set
+       cursor_updated_at = now(),
+       cursor_id = excluded.cursor_id,
+       updated_at = now()`,
+    [FLAGS_STAGE_LAST_KEY, payload]
+  );
+}
+
+/** @returns {Promise<object|null>} */
+export async function getFlagsStageLastRun() {
+  const { rows } = await query(
+    `select cursor_id, cursor_updated_at, updated_at
+       from novo_crm_cache_sync_state
+      where key = $1`,
+    [FLAGS_STAGE_LAST_KEY]
+  );
+  const row = rows[0];
+  if (!row?.cursor_id) return null;
+  try {
+    const parsed = JSON.parse(row.cursor_id);
+    return {
+      ...parsed,
+      finished_at: parsed.finished_at || row.updated_at || row.cursor_updated_at || null,
+    };
+  } catch {
+    return { raw: row.cursor_id, finished_at: row.updated_at || null };
+  }
+}
+
 async function loadExisting(contactId) {
   const { rows } = await query(
     `select contact_id, primary_deal_id, raw_data, filled_field_count, content_hash, is_deleted
@@ -319,6 +359,7 @@ export async function getCacheStats() {
     { rows: eventRows },
     { rows: stateRows },
     { rows: gapRows },
+    lastFlagsRun,
   ] = await Promise.all([
     query(
       `select count(*)::int as total,
@@ -368,6 +409,7 @@ export async function getCacheStats() {
               )::int as incomplete_fields
          from novo_crm_person_cache`
     ),
+    getFlagsStageLastRun(),
   ]);
 
   return {
@@ -381,6 +423,7 @@ export async function getCacheStats() {
     running: runningRows[0] || null,
     open_data_loss_events: eventRows[0]?.open_events ?? 0,
     state: stateRows[0] || null,
+    last_flags_sync: lastFlagsRun || null,
   };
 }
 

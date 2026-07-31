@@ -100,6 +100,22 @@ export interface NovoCrmCacheLastSync {
   error_message: string | null;
 }
 
+export interface NovoCrmFlagsLastSync {
+  finished_at?: string | null;
+  ok?: boolean;
+  mode?: string;
+  scanned?: number;
+  matched?: number;
+  flags_updated?: number;
+  fields_updated?: number;
+  stages_moved?: number;
+  stages_skipped_untouchable?: number;
+  errors?: number;
+  aborted?: boolean;
+  abort_reason?: string | null;
+  matriculados_snapshot_id?: string | null;
+}
+
 export interface NovoCrmCacheStatusResponse {
   ok: boolean;
   cache_total: number;
@@ -110,6 +126,7 @@ export interface NovoCrmCacheStatusResponse {
   running: boolean;
   running_sync: NovoCrmCacheRunningSync | null;
   last_sync: NovoCrmCacheLastSync | null;
+  last_flags_sync?: NovoCrmFlagsLastSync | null;
   state: { cursor_updated_at: string | null } | null;
   open_data_loss_events: number;
 }

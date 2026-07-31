@@ -218,6 +218,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       running: Boolean(stats.running),
       running_sync: stats.running,
       last_sync: stats.last_sync,
+      last_flags_sync: stats.last_flags_sync || null,
       state: stats.state,
       open_data_loss_events: stats.open_data_loss_events,
     });
