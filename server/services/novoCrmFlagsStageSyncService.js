@@ -3,7 +3,7 @@
  *
  * Modes:
  *   flags_stage — atualiza as 4 flags (Sim/Não) + move etapa (respeitando intocáveis)
- *   fields      — sobrescreve campos SIAA (curso/polo/situação/email/rgm/cpf/nasc)
+ *   fields      — sobrescreve campos SIAA + alinha etapa (remat/cancel/SIAA) + Situação
  *   both        — fields + flags_stage
  *
  * Intocáveis (não move etapa): Ganho, Cancelado; Retenção sem CAA open (manual).
@@ -17,6 +17,19 @@
  * principal (entrada) + passo inverso (saída Sim→Não / sai Sem Rematricula;
  * órfão sem match matriculados → Perdido).
  * Email/phone só se ÚNICOS. Sanity: nRows < ratio × simCount → pula saída.
+ *
+ * Situação + remat (03/08/2026): mode=fields também move etapa (não só
+ * flags_stage). Quem está no remat mas em Graduação volta pra Sem Rematrícula;
+ * quem saiu do remat recebe Situação Em Curso/Cancelado e etapa SIAA.
+ * Cancelado/Trancado SIAA vence o label "Sem Rematrícula" no carousel.
+ * Em Atendimento é intocável pra etapa (só campos/flags) — fila humana.
+ *
+ * Situação piggyback (03/08 tarde): flags_stage alinhava carousel Situação
+ * só quando o alvo era Sem Rematrícula (entrada remat). Deals já em Grad/Pós/
+ * Acol com Sit vazia/errada (∅→Em Curso, Sit=Sem Rematrícula com out_remat)
+ * ficavam skip no Att — o align script pegava. Agora sempre alinha Situação
+ * via resolveSituacaoCrm quando canMoveStages (flags ou fields), se o cache
+ * divergir — sem reescrever os demais campos SIAA do mode=fields.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -278,6 +291,9 @@ export async function runFlagsStageSync(opts = {}) {
   const mode = ['flags_stage', 'fields', 'both'].includes(opts.mode) ? opts.mode : 'flags_stage';
   const doFlags = mode === 'flags_stage' || mode === 'both';
   const doFields = mode === 'fields' || mode === 'both';
+  // Fields também alinha etapa (remat ↔ Graduação/Pós/Perdido) — noturno PROD
+  // roda flags_stage=OFF, então só fields movia se liberarmos aqui.
+  const canMoveStages = doFlags || doFields;
   const maxDeals = Math.min(Math.max(Number(opts.maxDeals) || 50000, 1), 100000);
   const jobId = opts.jobId || null;
   const errorBudget = maxErrorsBeforeAbort();
@@ -568,15 +584,28 @@ export async function runFlagsStageSync(opts = {}) {
         }
       }
 
-      // Sem Rematricula: sincroniza carousel Situação junto com a etapa,
-      // mesmo com doFields=false. Evita escrita se já canônico no cache.
+      // carousel Situação: sempre alinha com remat/SIAA quando Att/fields
+      // mexe no deal (canMoveStages). Antes: só se alvo = Sem Rematricula —
+      // buraco que deixava Grad com Sit vazia/errada após mode=flags_stage.
+      // resolveSituacaoCrm: Cancel/Tranc SIAA > remat > situação SIAA.
       const semRematSituacaoValues = [];
-      if (doFlags && classification.stageName === 'Sem Rematricula' && fieldIds.situacao) {
-        const alreadyInFieldValues = doFields && fieldValues.some((fv) => fv.fieldId === fieldIds.situacao);
+      if (canMoveStages && fieldIds.situacao) {
+        const alreadyInFieldValues =
+          doFields && fieldValues.some((fv) => fv.fieldId === fieldIds.situacao);
         if (!alreadyInFieldValues) {
-          const curSituacao = readDealField(deal, fieldIds.situacao, ['situação', 'situacao', 'situação matrícula']);
-          if (normalizeSituacaoCrm(curSituacao) !== SITUACAO_CRM_SEM_REMATRICULA) {
-            semRematSituacaoValues.push({ fieldId: fieldIds.situacao, value: SITUACAO_CRM_SEM_REMATRICULA });
+          const curSituacao = readDealField(deal, fieldIds.situacao, [
+            'situação',
+            'situacao',
+            'situação matrícula',
+          ]);
+          const targetSit = resolveSituacaoCrm(mapped.situacao || matRow['Situação Matrícula'], {
+            inRematricula: identityInIndex(remat, identity),
+          });
+          if (
+            targetSit &&
+            normalizeSituacaoCrm(curSituacao) !== normalizeSituacaoCrm(targetSit)
+          ) {
+            semRematSituacaoValues.push({ fieldId: fieldIds.situacao, value: targetSit });
           }
         }
       }
@@ -588,7 +617,7 @@ export async function runFlagsStageSync(opts = {}) {
        * @param {boolean} caaOpen
        */
       const decideMove = (stageId, caaOpen) => {
-        if (!doFlags || !classification.stageId) {
+        if (!canMoveStages || !classification.stageId) {
           return { move: false, untouchable: false, unknown: false };
         }
         if (!stageId) return { move: false, untouchable: false, unknown: true };
@@ -642,7 +671,7 @@ export async function runFlagsStageSync(opts = {}) {
       const needsMove = Boolean(cacheDecide.move && classification.stageId);
       // Etapa desconhecida no cache: só getDeal se LIVE_STAGE=1; senão skip move.
       if (cacheDecide.unknown) {
-        if (liveStage && doFlags && classification.stageId) {
+        if (liveStage && canMoveStages && classification.stageId) {
           workQueue.push({
             dealId,
             cpf,
@@ -710,31 +739,34 @@ export async function runFlagsStageSync(opts = {}) {
   // ===== Passo INVERSO (saída): fecha flags/etapa de quem SAIU da base do dia. =====
   // Varre TODOS os deals do cache com flag=Sim / etapa Sem Remat. Quem já foi
   // enfileirado no loop principal (matched) é mesclado por dealId (idempotente).
-  if (doFlags && !aborted) {
+  // mode=fields também roda saída de Sem Rematrícula (reclassifica + Situação).
+  if ((doFlags || doFields) && !aborted) {
     patchJob({ phase: 'processing_exit', status_message: 'Verificando saídas (entrada/saída)…' });
 
     const sanityRatio = flagsExitSanityRatio();
-    const exitFlagDefs = [
-      {
-        key: 'doc_pendentes',
-        fieldId: fieldIds.doc_pendentes,
-        names: ['doc pendentes', 'doc_pendentes', 'docpendente'],
-        index: doc,
-      },
-      {
-        key: 'inadimplente',
-        fieldId: fieldIds.inadimplente,
-        names: ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
-        index: inad,
-      },
-      {
-        key: 'acessoblack',
-        fieldId: fieldIds.acessoblack,
-        names: ['acessoblack', 'acesso black'],
-        index: bb,
-      },
-      { key: 'evasao', fieldId: fieldIds.evasao, names: ['evasao', 'evasão'], index: evasao },
-    ];
+    const exitFlagDefs = doFlags
+      ? [
+          {
+            key: 'doc_pendentes',
+            fieldId: fieldIds.doc_pendentes,
+            names: ['doc pendentes', 'doc_pendentes', 'docpendente'],
+            index: doc,
+          },
+          {
+            key: 'inadimplente',
+            fieldId: fieldIds.inadimplente,
+            names: ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
+            index: inad,
+          },
+          {
+            key: 'acessoblack',
+            fieldId: fieldIds.acessoblack,
+            names: ['acessoblack', 'acesso black'],
+            index: bb,
+          },
+          { key: 'evasao', fieldId: fieldIds.evasao, names: ['evasao', 'evasão'], index: evasao },
+        ]
+      : [];
 
     /** @type {Record<string, number>} */
     const flagSimCount = { doc_pendentes: 0, inadimplente: 0, acessoblack: 0, evasao: 0 };
@@ -1049,7 +1081,7 @@ export async function runFlagsStageSync(opts = {}) {
     let cursor = 0;
     let written = 0;
     const decideMoveWork = (stageId, caaOpen, classification) => {
-      if (!doFlags || !classification.stageId) {
+      if (!canMoveStages || !classification?.stageId) {
         return { move: false, untouchable: false, unknown: false };
       }
       if (!stageId) return { move: false, untouchable: false, unknown: true };

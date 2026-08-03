@@ -39,6 +39,14 @@ if (apply) {
   process.env.NOVO_CRM_PROVISION_ALLOW_PROD = '1';
 }
 
+// Calm rate + error budget (404 missing deals são skip, não contam).
+if (!process.env.NOVO_CRM_API_RATE_PER_SECOND) {
+  process.env.NOVO_CRM_API_RATE_PER_SECOND = '5';
+}
+if (!process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) {
+  process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS = '500';
+}
+
 console.log(
   `[reclassify] base=${base} dry=${!apply} max=${maxDeals} pipeline=${ids.pipeline?.name || '?'}`
 );

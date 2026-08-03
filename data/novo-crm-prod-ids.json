@@ -13,7 +13,8 @@
     "NOVO_CRM_STAGE_RETENCAO": "cmrximn3z0ak9o1010qmv5lbs",
     "NOVO_CRM_STAGE_CANCELADO": "cmrwmeoi10nzvpa01hhjv0azt",
     "NOVO_CRM_STAGE_GANHO": "cmrwd5vuo014gpd01x3vwc5fv",
-    "NOVO_CRM_STAGE_PERDIDO": "cmrwd5vuo014hpd01imhgkp0y"
+    "NOVO_CRM_STAGE_PERDIDO": "cmrwd5vuo014hpd01imhgkp0y",
+    "NOVO_CRM_STAGE_EM_ATENDIMENTO": "cmrxn1r190v2vo101kaqh4cup"
   },
   "fields": {
     "NOVO_CRM_FIELD_ACESSO_BLACK": "cmrwthwwi00ndpf013k1vi40y",
@@ -38,6 +39,7 @@
     "Retenção": "cmrximn3z0ak9o1010qmv5lbs",
     "Cancelado": "cmrwmeoi10nzvpa01hhjv0azt",
     "Ganho": "cmrwd5vuo014gpd01x3vwc5fv",
-    "Perdido": "cmrwd5vuo014hpd01imhgkp0y"
+    "Perdido": "cmrwd5vuo014hpd01imhgkp0y",
+    "Em Atendimento": "cmrxn1r190v2vo101kaqh4cup"
   }
 }

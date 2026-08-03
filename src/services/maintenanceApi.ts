@@ -367,6 +367,14 @@ export interface OrphanDedupePreviewResponse {
   incomplete_live_unknown?: number;
   perdido_skipped_live?: number;
   perdido_live_unknown?: number;
+  dup_deal_groups?: number;
+  dup_deals_extra?: number;
+  dup_cross_contact?: number;
+  dup_resolved_live?: number;
+  dup_live_unknown?: number;
+  dup_stopped_at_max?: boolean;
+  dup_deals_would_move_perdido?: number;
+  dup_deals_moved_perdido?: number;
   created_deals: number;
   errors: number;
   skipped_already_has_deal_live?: number;
@@ -614,7 +622,7 @@ export const maintenanceApi = {
   },
 
   /** Prévia síncrona dedupe órfãos/incompletos (scope=both por padrão aqui). */
-  previewOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+  previewOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'duplicates' | 'both'; max?: number }) {
     const params = new URLSearchParams({ dry_run: '1', scope: opts?.scope ?? 'both' });
     if (opts?.max != null) params.set('max', String(opts.max));
     return jsonFetch<OrphanDedupePreviewResponse>(
@@ -624,7 +632,7 @@ export const maintenanceApi = {
   },
 
   /** Inicia prévia dedupe em background (verifica cada órfão ao vivo no CRM). */
-  startOrphanDedupePreview(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+  startOrphanDedupePreview(opts?: { scope?: 'orphans' | 'incomplete' | 'duplicates' | 'both'; max?: number }) {
     const params = new URLSearchParams({
       dry_run: '1',
       async: '1',
@@ -638,7 +646,7 @@ export const maintenanceApi = {
   },
 
   /** Inicia apply dedupe em background. */
-  startOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'both'; max?: number }) {
+  startOrphanDedupe(opts?: { scope?: 'orphans' | 'incomplete' | 'duplicates' | 'both'; max?: number }) {
     const params = new URLSearchParams({ dry_run: '0', async: '1', scope: opts?.scope ?? 'both' });
     if (opts?.max != null) params.set('max', String(opts.max));
     return jsonFetch<OrphanDedupeStartResponse>(

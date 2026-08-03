@@ -632,9 +632,11 @@ export function NovoCrmSyncPanel() {
           </div>
 
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-violet-900">4. Dedupe órfãos/incompletos</p>
+            <p className="text-xs font-semibold text-violet-900">
+              4. Dedupe órfãos/incompletos/duplicados
+            </p>
             <p className="text-[11px] text-violet-800/80 flex-1">
-              Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, deal duplicado para Perdido e preenchimento de CPF/RGM.
+              Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, preenchimento de CPF/RGM e, quando a mesma pessoa tem dois cartões, mantém um e manda o outro para Perdido.
             </p>
             <button
               type="button"
@@ -671,6 +673,24 @@ export function NovoCrmSyncPanel() {
                   negócios) · só preencher campos:{' '}
                   <strong>{dedupePreview.incomplete_enriched.toLocaleString('pt-BR')}</strong>
                 </p>
+                <p>
+                  Mesma pessoa com 2+ cartões:{' '}
+                  <strong>{(dedupePreview.dup_deal_groups ?? 0).toLocaleString('pt-BR')}</strong> ·
+                  cartões a mandar para Perdido:{' '}
+                  <strong>
+                    {(
+                      dedupePreview.dup_deals_would_move_perdido ??
+                      dedupePreview.dup_deals_moved_perdido ??
+                      0
+                    ).toLocaleString('pt-BR')}
+                  </strong>
+                  {dedupePreview.dup_cross_contact
+                    ? ` · ${dedupePreview.dup_cross_contact.toLocaleString('pt-BR')} em cadastros diferentes`
+                    : ''}
+                  {dedupePreview.dup_resolved_live
+                    ? ` · ${dedupePreview.dup_resolved_live.toLocaleString('pt-BR')} já resolvidos no CRM`
+                    : ''}
+                </p>
                 <p>Casados por e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · por telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
                 <p className="text-violet-700/80">
                   Barrados pela conferência: {(dedupePreview.incomplete_live_already_ok ?? 0).toLocaleString('pt-BR')} já
@@ -683,7 +703,11 @@ export function NovoCrmSyncPanel() {
                 {dedupeApplied ? (
                   <p className="pt-1 font-semibold text-violet-900">
                     Aplicado: {dedupePreview.created_deals.toLocaleString('pt-BR')} negócios criados ·{' '}
-                    {(dedupePreview.deals_moved_perdido ?? 0).toLocaleString('pt-BR')} movidos para Perdido ·{' '}
+                    {(
+                      (dedupePreview.deals_moved_perdido ?? 0) +
+                      (dedupePreview.dup_deals_moved_perdido ?? 0)
+                    ).toLocaleString('pt-BR')}{' '}
+                    movidos para Perdido ·{' '}
                     {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')} campos preenchidos
                     {dedupePreview.errors
                       ? ` · ${dedupePreview.errors.toLocaleString('pt-BR')} falhas`

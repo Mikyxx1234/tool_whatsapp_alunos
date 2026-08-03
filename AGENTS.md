@@ -5,6 +5,39 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-03 — Att ~11:14 não fechou remat: buraco Situação + evidência
+- **Modelo usado:** Composer (investigação + fix pontual).
+- **Fatos (repo local, BRT 03/08):**
+  1. Botão Att = `POST …/sync-flags-stage-novo-crm?mode=flags_stage&dry_run=0&async=1` (UI: prévia `max=2000`, apply sem max). Default mode `flags_stage`; dry_run true se não mandar `dry_run=0`.
+  2. **Sem log local de Att apply ~11:14** — últimos `data/flags-stage-apply-*.log` são 28–29/07. Hoje só: audit remat 11:34, `_fix-remat-fields-apply` (mode=fields, queue=37553, log interrompido cedo), `remat-situacao-align` apply parcial 2055/2525 (~11:42–11:54), dry pós-trava queue **2364**.
+  3. Remat snapshot audit: ~5396 RGM / ~5340 CPF. File de job em memória (`activationJobsRegistry` / flags jobs) não sobrevive restart — `flags_stage_last` no Postgres é o rastreador de PROD.
+- **Buraco de regra confirmado (código):** em `runFlagsStageSync`, piggyback de carousel **Situação** só rodava se `classification.stageName === 'Sem Rematricula'`. Com `mode=flags_stage` (`doFields=false`), deals com **etapa já ok** mas Sit vazia/errada (ex. `sit:∅→Em Curso|out_remat` ~680, `∅→Cancelado` ~767 no dry 2364) iam pra `skipped_unchanged` **sem write**. O align script (`novo-crm-remat-situacao-align.mjs`) **sempre** alinhava Sit — daí a diferença de fila.
+- **O que a Att JÁ fazia (não é hole):** mover Grad→Sem Remat (in remat), Sem Remat→Grad/Acol/Pós/Perdido (exit + matRow), cancel SIAA→Perdido; intocáveis Ganho/Cancelado/**Em Atendimento**; Retenção sem CAA open = keep; exit sanity 70%.
+- **Números dry pós-trava (queue 2364):** ~60% sit-only fill; ~264 exit SemRemat→Graduação+sit; ~75 Grad→SemRemat (in_remat); ~155 Grad→Acolhimento; Em Atendimento deixou de aparecer como `stage:?` (agora intocável).
+- **Fix:** piggyback Situação com `resolveSituacaoCrm(inRematricula=identityInIndex(remat))` **sempre** que `canMoveStages` (qualquer stage alvo), se cache divergir. Counters `situacao_sem_remat_*` passam a contar qualquer sit align (nome legado).
+- **Arquivo:** `novoCrmFlagsStageSyncService.js`.
+- **Ops:** re-rodar Att (`flags_stage`) ou align; fields noturno também cobre Sit via `doFields`.
+
+### 2026-08-03 — Em Atendimento intocável para etapa + por que remat não alinhou na Att
+- **Modelo usado:** Composer. Pedido do usuário.
+- **Por que a Att / Sync de etapas não fechou remat sozinha em PROD:**
+  1. `NOVO_CRM_FLAGS_SYNC_ENABLED=0` — cron de etapas/flags **off**; só fields noturno rodava.
+  2. `mode=fields` **antes de 03/08** só escrevia custom fields (curso/polo/Situação…) e **não movia etapa** — daí Graduação + Situação Sem Rematrícula (situação ok se no remat; etapa errada).
+  3. Botão Att (`flags_stage`) realinhava etapa, mas **precisa ser disparado**; não era o job da madrugada.
+- **Decisão 03/08 (já):** fields noturno passa a poder mover etapa + saída remat (ver entrada acima).
+- **Em Atendimento (`cmrxn1r190v2vo101kaqh4cup`):** **não move etapa** (intocável junto com Ganho/Cancelado). Atualiza campos/flags/Situação normalmente. Fila humana do consultor.
+- **Arquivos:** `novoCrmStageRules.js` (`getUntouchableStageIds` + ID no stage map), `novo-crm-prod-ids.json`, script `novo-crm-remat-situacao-align.mjs` (usa o mesmo guard).
+
+### 2026-08-03 — Fields sync alinha etapa remat + Situação Cancelado vence "Sem Rematrícula"
+- **Modelo usado:** Composer. Pedido do usuário (Graduação com Situação Sem Rematrícula no Kanban).
+- **Problema:** mode=fields (noite PROD; FLAGS off) só gravava carousel Situação. Quem ainda está no relatório remat mas com **etapa Graduação** ficava inconsistente (filtros Situação=Sem Rematrícula + coluna Graduação). Quem **saiu** do remat (rematriculou) ou **cancelou** no SIAA não recebia realinhamento de etapa/Situação na saída (só flags_stage). `resolveSituacaoCrm` forçava "Sem Rematrícula" mesmo com SIAA CANCELADO/TRANCADO.
+- **Decisão:**
+  1. `resolveSituacaoCrm`: **Cancelado/Trancado SIAA vence** rematrícula; senão remat → "Sem Rematrícula"; senão situacao SIAA (Em Curso…).
+  2. **mode=fields também move etapa** (`canMoveStages = doFlags || doFields`) — noturno corrige Graduação→Sem Rematrícula se ainda no remat; Sem Rematrícula→Graduação/Pós/Perdido se saiu/cancelou (intocáveis preservados).
+  3. Passo inverso de saída de Sem Rematrícula roda em **fields e flags** (flags Sim→Não só em flags_stage/both).
+- **Semântica operativa:** still in remat + SIAA Em Curso = **não rematriculou** → etapa Sem Rematrícula + Situação Sem Rematrícula (não Em Curso).
+- **Arquivos:** `novoCrmFieldMapping.js`, `novoCrmFlagsStageSyncService.js`.
+
 ### 2026-07-31 — Campo Atualizado?=Sim + Sem Remat sem CPF/RGM → Perdido
 - **Modelo usado:** Composer. Pedido do usuário.
 - **Atualizado?:** custom field PROD `cms9c1gfk0sl0jq011ywjyxfo` (`NOVO_CRM_FIELD_ATUALIZADO`). Toda Att (flags_stage) e sync noturna de campos (`mode=fields`) e provision de leads novos gravam **Sim** no deal tocado — filtro operacional no Kanban (esconde captura não sincronizada).

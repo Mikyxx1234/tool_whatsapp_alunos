@@ -49,14 +49,18 @@ export function normalizeSituacaoCrm(raw) {
 
 /**
  * Valor do carousel Situação no deal Novo CRM.
- * Se o aluno está no snapshot rematrícula (SIAA/Portal) → "Sem Rematrícula";
- * senão mantém a situação SIAA normalizada (ex.: "Em Curso").
+ * Prioridade:
+ *  1. CANCELADO/TRANCADO no SIAA (vence rematrícula — aluno perdeu a vaga)
+ *  2. No snapshot rematrícula (SIAA/Portal) e ainda "vivo" → "Sem Rematrícula"
+ *  3. Situação SIAA normalizada (ex.: "Em Curso")
  * @param {unknown} siaaValue
  * @param {{ inRematricula?: boolean }} [opts]
  */
 export function resolveSituacaoCrm(siaaValue, opts = {}) {
+  const fromSiaa = normalizeSituacaoCrm(siaaValue);
+  if (fromSiaa === 'Cancelado' || fromSiaa === 'Trancado') return fromSiaa;
   if (opts.inRematricula) return SITUACAO_CRM_SEM_REMATRICULA;
-  return normalizeSituacaoCrm(siaaValue) || String(siaaValue || '').trim();
+  return fromSiaa || String(siaaValue || '').trim();
 }
 
 export function normalizeCicloCrm(raw) {

@@ -79,6 +79,9 @@ export function getNovoCrmStageIds() {
     Cancelado: envId('NOVO_CRM_STAGE_CANCELADO', 'cmrtit17i002vua48j28a5mms'),
     Ganho: envId('NOVO_CRM_STAGE_GANHO', 'cmrtilckh001yua48xxic8vwx'),
     Perdido: envId('NOVO_CRM_STAGE_PERDIDO', 'cmrtilckh001zua48bubr5vya'),
+    // PROD: fila operacional humana — nunca auto-mover etapa (flags/fields ok).
+    'Em Atendimento': envId('NOVO_CRM_STAGE_EM_ATENDIMENTO', 'cmrxn1r190v2vo101kaqh4cup'),
+    'Lead de Entrada': envId('NOVO_CRM_STAGE_LEAD_ENTRADA', 'cmrwd95sx01mfpd01axkzjhm8'),
   };
 }
 
@@ -98,13 +101,17 @@ export function isCaaWithinRetencaoWindow(t0, now = new Date()) {
 }
 
 /**
- * Etapas que o job NÃO move (humano/IA). Flags ainda podem ser atualizadas.
+ * Etapas que o job NÃO move (humano/IA). Flags/campos SIAA ainda podem ser atualizados.
+ * - Ganho / Cancelado: terminais de negócio
+ * - Em Atendimento: fila operacional do consultor (só campos, sem tirar da etapa)
  * Retenção NÃO entra aqui — saída pós-72h / keep manual é decidido no sync
  * (já em Retenção sem CAA open = intocável).
  */
 export function getUntouchableStageIds() {
   const s = getNovoCrmStageIds();
-  return new Set([s.Ganho, s.Cancelado].filter(Boolean));
+  return new Set(
+    [s.Ganho, s.Cancelado, s['Em Atendimento']].filter(Boolean)
+  );
 }
 
 export function isUntouchableStageId(stageId) {

@@ -1,9 +1,14 @@
 /**
- * Dry-run: quantos deals (por RGM) / pessoas (por CPF) cairiam em cada etapa
- * Novo CRM segundo classifyMatriculado + rematrícula + CAA open (sem escrita no CRM).
+ * Simulação READ-ONLY: filas Novo CRM (current vs target) com a mesma lógica
+ * do Att de etapas (flags_stage sync).
+ *
+ * Unidade: deal no espelho `novo_crm_person_cache` (todos os deals do contact,
+ * igual `runFlagsStageSync`) que casam com matriculados por CPF/RGM.
  *
  * Uso: node scripts/novo-crm-stage-sim.mjs
  * Saída: data/stage-sim-<ts>.json + tabela no stdout
+ *
+ * NÃO escreve no CRM.
  */
 import 'dotenv/config';
 import fs from 'node:fs';
@@ -11,8 +16,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as baseUploadRepo from '../server/repositories/baseUploadRepository.js';
 import * as caaProtocolsRepo from '../server/repositories/caaProtocolsRepository.js';
+import * as cacheRepo from '../server/repositories/novoCrmPersonCacheRepository.js';
 import { extractMatriculadosMappedValues } from '../server/utils/novoCrmFieldMapping.js';
-import { classifyMatriculado } from '../server/utils/novoCrmStageRules.js';
+import {
+  classifyMatriculado,
+  getCaaRetencaoHours,
+  getNovoCrmStageIds,
+  isCaaWithinRetencaoWindow,
+  isUntouchableStageId,
+  stageNameFromId,
+} from '../server/utils/novoCrmStageRules.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -56,109 +69,83 @@ function inSet(set, cpf, rgm) {
   return false;
 }
 
-function emptyCounters() {
+function findCustom(deal, names) {
+  const wanted = names.map((n) => n.toLowerCase());
+  for (const f of deal?.customFields || []) {
+    const name = String(f?.name || '')
+      .trim()
+      .toLowerCase();
+    if (wanted.includes(name) && f?.value != null && String(f.value).trim() !== '') {
+      return String(f.value).trim();
+    }
+  }
+  return '';
+}
+
+function dealsFromCacheRow(row) {
+  const raw = row?.raw_data || {};
+  const byId = raw.dealsById && typeof raw.dealsById === 'object' ? raw.dealsById : {};
+  const list = Object.values(byId);
+  if (list.length) return list;
+  if (row.primary_deal_id) {
+    return [{ id: String(row.primary_deal_id), stageId: null, customFields: [] }];
+  }
+  return [];
+}
+
+function bump(map, key, n = 1) {
+  const k = key || '(sem stage)';
+  map[k] = (map[k] || 0) + n;
+}
+
+function resolveCurrentStageName(deal, stageIds) {
+  const stageId = String(deal?.stageId || deal?.stage?.id || '').trim();
+  if (stageId) {
+    const named = stageNameFromId(stageId);
+    if (named) return named;
+    // Lead de Entrada e outras etapas fora do mapa classify
+    for (const [envKey, id] of Object.entries(stageIds._extra || {})) {
+      if (id && id === stageId) return envKey;
+    }
+    return `id:${stageId.slice(0, 10)}…`;
+  }
+  const rawName = String(deal?.stageName || deal?.stage?.name || deal?.stage || '').trim();
+  if (rawName) {
+    // Normaliza aliases do CRM PROD
+    if (/p[oó]s/i.test(rawName) && /grad/i.test(rawName)) return 'Pós';
+    if (/sem\s*remat/i.test(rawName)) return 'Sem Rematricula';
+    if (/reten/i.test(rawName)) return 'Retenção';
+    if (/acolh/i.test(rawName)) return 'Acolhimento';
+    if (/gradua/i.test(rawName)) return 'Graduação';
+    if (/ganho/i.test(rawName)) return 'Ganho';
+    if (/perdido/i.test(rawName)) return 'Perdido';
+    if (/cancel/i.test(rawName)) return 'Cancelado';
+    if (/lead/i.test(rawName)) return 'Lead de Entrada';
+    return rawName;
+  }
+  return '(sem stage)';
+}
+
+function loadExtraStageIds() {
+  // Etapas fora do mapa classify (pipeline PROD) — nomes amigáveis no relatório.
   return {
-    by_stage: {},
-    breakout: {
-      perdido_trancado: 0,
-      perdido_cancelado: 0,
-      perdido_ambos: 0,
-      retencao_caa: 0,
-      sem_rematricula: 0,
-      acolhimento: 0,
-      graduacao: 0,
-      pos: 0,
-      graduacao_default_nao_grad_nem_pos: 0,
-    },
-    rows: 0,
-    skipped_no_key: 0,
+    'Lead de Entrada': 'cmrwd95sx01mfpd01axkzjhm8',
+    'Em Atendimento': 'cmrxn1r190v2vo101kaqh4cup',
   };
 }
 
-function bump(counters, cl) {
-  const stage = cl.stageName;
-  counters.by_stage[stage] = (counters.by_stage[stage] || 0) + 1;
-  counters.rows += 1;
-  const m = cl.meta || {};
-  if (stage === 'Perdido') {
-    if (m.isTrancado && m.isCancelado) counters.breakout.perdido_ambos += 1;
-    else if (m.isTrancado) counters.breakout.perdido_trancado += 1;
-    else if (m.isCancelado) counters.breakout.perdido_cancelado += 1;
-  } else if (stage === 'Retenção') {
-    counters.breakout.retencao_caa += 1;
-  } else if (stage === 'Sem Rematricula') {
-    counters.breakout.sem_rematricula += 1;
-  } else if (stage === 'Acolhimento') {
-    counters.breakout.acolhimento += 1;
-  } else if (stage === 'Graduação') {
-    counters.breakout.graduacao += 1;
-    if (!m.isGrad && !m.isPos) counters.breakout.graduacao_default_nao_grad_nem_pos += 1;
-  } else if (stage === 'Pós') {
-    counters.breakout.pos += 1;
-  }
-}
-
-function classifyRow(row, remat, caa, now) {
-  const m = extractMatriculadosMappedValues(row);
-  const cpf = digits(m.cpf);
-  const rgm = digits(m.rgm);
-  return classifyMatriculado(row, {
-    inRematricula: inSet(remat, cpf, rgm),
-    inCaa: inSet(caa, cpf, rgm),
-    inDoc: false,
-    inInad: false,
-    inBb: false,
-    inEvasao: false,
-    now,
-  });
-}
-
-async function optionalCacheStageCounts() {
-  // Opcional — não bloqueia a simulação se falhar / for lento.
-  if (String(process.env.STAGE_SIM_SKIP_CACHE || '').trim() === '1') return null;
-  try {
-    const { default: pg } = await import('pg');
-    const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
-    if (!url) return null;
-    const pool = new pg.Pool({
-      connectionString: url,
-      max: 1,
-      connectionTimeoutMillis: 15_000,
-      statement_timeout: 60_000,
-    });
-    try {
-      // stage fica em raw_data.dealsById[primary_deal_id].stageName (ou stageId)
-      const q = await pool.query(`
-        SELECT
-          COALESCE(
-            NULLIF(trim(deal.value->>'stageName'), ''),
-            NULLIF(trim(deal.value->>'stage'), ''),
-            '(sem stage)'
-          ) AS stage,
-          COUNT(*)::int AS n
-        FROM novo_crm_person_cache c
-        LEFT JOIN LATERAL (
-          SELECT d.value
-          FROM jsonb_each(COALESCE(c.raw_data->'dealsById', '{}'::jsonb)) AS d(key, value)
-          WHERE c.primary_deal_id IS NOT NULL
-            AND d.key = c.primary_deal_id
-          LIMIT 1
-        ) deal ON true
-        WHERE c.is_deleted = false
-          AND c.primary_deal_id IS NOT NULL
-        GROUP BY 1
-        ORDER BY n DESC
-      `);
-      const byStage = {};
-      for (const r of q.rows) byStage[r.stage] = r.n;
-      return { by_stage: byStage, total: q.rows.reduce((a, r) => a + r.n, 0) };
-    } finally {
-      await pool.end();
-    }
-  } catch (err) {
-    return { error: String(err?.message || err) };
-  }
-}
+const STAGE_ORDER = [
+  'Lead de Entrada',
+  'Acolhimento',
+  'Graduação',
+  'Pós',
+  'Sem Rematricula',
+  'Retenção',
+  'Cancelado',
+  'Ganho',
+  'Perdido',
+  '(sem stage)',
+];
 
 const now = new Date();
 const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
@@ -167,74 +154,259 @@ if (!matSnap?.id) {
   process.exit(1);
 }
 
-const { set: remat, snap: rematSnap } = await loadIdSetFromBase('rematricula');
-let caa = new Set();
-try {
-  caa = await caaProtocolsRepo.loadOpenCaaIdSet();
-} catch (err) {
-  console.warn(`CAA open set skip: ${err?.message || err}`);
-}
+console.log('Carregando bases satélite…');
+const [
+  { set: remat, snap: rematSnap },
+  { set: doc, snap: docSnap },
+  { set: inad, snap: inadSnap },
+  { set: bb, snap: bbSnap },
+  { set: evasao, snap: evasaoSnap },
+  caaT0Map,
+] = await Promise.all([
+  loadIdSetFromBase('rematricula'),
+  loadIdSetFromBase('docs-pendentes'),
+  loadIdSetFromBase('inadimplentes-vencidos'),
+  loadIdSetFromBase('acessos-blackboard'),
+  loadIdSetFromBase('provavel-evasao'),
+  caaProtocolsRepo.loadOpenCaaT0Map(),
+]);
 
-/** @type {Map<string, Record<string, unknown>>} */
-const byRgm = new Map();
+const caaRetencaoHours = getCaaRetencaoHours();
+const stageIds = getNovoCrmStageIds();
+stageIds._extra = loadExtraStageIds();
+const retencaoStageId = String(stageIds.Retenção || '').trim();
+
+console.log('Indexando matriculados…');
 /** @type {Map<string, Record<string, unknown>>} */
 const byCpf = new Map();
+/** @type {Map<string, Record<string, unknown>>} */
+const byRgm = new Map();
 let rawRows = 0;
-let noRgmNoCpf = 0;
-
 await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
   rawRows += 1;
   const m = extractMatriculadosMappedValues(row);
   const cpf = digits(m.cpf);
   const rgm = digits(m.rgm);
-  if (rgm) keepBestRow(byRgm, rgm, row);
   if (cpf.length >= 11) keepBestRow(byCpf, cpf, row);
-  if (!rgm && cpf.length < 11) noRgmNoCpf += 1;
+  if (rgm) keepBestRow(byRgm, rgm, row);
 });
 
-const byRgmCounts = emptyCounters();
-for (const row of byRgm.values()) {
-  bump(byRgmCounts, classifyRow(row, remat, caa, now));
+console.log('Carregando espelho Sync (cache)…');
+const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({
+  scope: 'all_mapped',
+  limit: 100000,
+});
+
+/** @type {Record<string, number>} */
+const currentAll = {};
+/** @type {Record<string, number>} */
+const currentMatched = {};
+/** @type {Record<string, number>} */
+const targetMatched = {};
+/** @type {Record<string, number>} */
+const effectiveAfterAtt = {};
+/** @type {Record<string, number>} */
+const moveFromTo = {};
+
+let dealsTotal = 0;
+let contactsNoDeal = 0;
+let matched = 0;
+let noMatch = 0;
+let wouldMove = 0;
+let stayUntouchable = 0;
+let stayUnknown = 0;
+let stayAligned = 0;
+let caaOpenMatched = 0;
+let caaFreshMatched = 0;
+const breakout = {
+  perdido_trancado: 0,
+  perdido_cancelado: 0,
+  retencao_caa_72h: 0,
+  sem_rematricula: 0,
+  acolhimento: 0,
+  graduacao: 0,
+  pos: 0,
+  graduacao_default: 0,
+};
+
+for (const row of cacheRows) {
+  const deals = dealsFromCacheRow(row);
+  if (!deals.length) {
+    contactsNoDeal += 1;
+    continue;
+  }
+  const cpfCache = digits(row.cpf_norm);
+
+  for (const deal of deals) {
+    dealsTotal += 1;
+    const currentName = resolveCurrentStageName(deal, stageIds);
+    bump(currentAll, currentName);
+
+    const rgmDeal = digits(findCustom(deal, ['rgm']) || row.rgm_norm);
+    const cpfDeal = digits(findCustom(deal, ['cpf']) || cpfCache);
+    const matRow =
+      (rgmDeal && byRgm.get(rgmDeal)) || (cpfDeal.length >= 11 && byCpf.get(cpfDeal)) || null;
+    if (!matRow) {
+      noMatch += 1;
+      bump(effectiveAfterAtt, currentName); // Att não mexe sem match
+      continue;
+    }
+    matched += 1;
+    bump(currentMatched, currentName);
+
+    const mapped = extractMatriculadosMappedValues(matRow);
+    const cpf = digits(mapped.cpf) || cpfDeal;
+    const rgm = digits(mapped.rgm) || rgmDeal;
+    const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
+    const inCaaOpen = Boolean(caaT0);
+    const inCaaFresh = isCaaWithinRetencaoWindow(caaT0, now);
+    if (inCaaOpen) caaOpenMatched += 1;
+    if (inCaaFresh) caaFreshMatched += 1;
+
+    const cl = classifyMatriculado(matRow, {
+      inRematricula: inSet(remat, cpf, rgm),
+      inCaaFresh,
+      inDoc: inSet(doc, cpf, rgm),
+      inInad: inSet(inad, cpf, rgm),
+      inBb: inSet(bb, cpf, rgm),
+      inEvasao: inSet(evasao, cpf, rgm),
+      now,
+    });
+    bump(targetMatched, cl.stageName);
+
+    const m = cl.meta || {};
+    if (cl.stageName === 'Perdido') {
+      if (m.isTrancado) breakout.perdido_trancado += 1;
+      else if (m.isCancelado) breakout.perdido_cancelado += 1;
+    } else if (cl.stageName === 'Retenção') breakout.retencao_caa_72h += 1;
+    else if (cl.stageName === 'Sem Rematricula') breakout.sem_rematricula += 1;
+    else if (cl.stageName === 'Acolhimento') breakout.acolhimento += 1;
+    else if (cl.stageName === 'Graduação') {
+      breakout.graduacao += 1;
+      if (!m.isGrad && !m.isPos) breakout.graduacao_default += 1;
+    } else if (cl.stageName === 'Pós') breakout.pos += 1;
+
+    // Espelha decideMove do flags sync
+    const currentStageId = String(deal.stageId || '').trim() || null;
+    let effectiveName = currentName;
+    if (!currentStageId) {
+      stayUnknown += 1;
+      // fail-closed: não move
+    } else if (isUntouchableStageId(currentStageId)) {
+      stayUntouchable += 1;
+    } else if (retencaoStageId && currentStageId === retencaoStageId && !inCaaOpen) {
+      stayUntouchable += 1; // Retenção manual
+    } else if (cl.stageId && cl.stageId === currentStageId) {
+      stayAligned += 1;
+      effectiveName = cl.stageName;
+    } else if (cl.stageId) {
+      wouldMove += 1;
+      effectiveName = cl.stageName;
+      const key = `${currentName} → ${cl.stageName}`;
+      bump(moveFromTo, key);
+    }
+    bump(effectiveAfterAtt, effectiveName);
+  }
 }
 
-const byCpfCounts = emptyCounters();
-for (const row of byCpf.values()) {
-  bump(byCpfCounts, classifyRow(row, remat, caa, now));
+/** Union of stage names for comparison table */
+const allStageNames = new Set([
+  ...STAGE_ORDER,
+  ...Object.keys(currentAll),
+  ...Object.keys(currentMatched),
+  ...Object.keys(targetMatched),
+  ...Object.keys(effectiveAfterAtt),
+]);
+
+function sortedStages(keys) {
+  return [...keys].sort((a, b) => {
+    const ia = STAGE_ORDER.indexOf(a);
+    const ib = STAGE_ORDER.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.localeCompare(b);
+  });
 }
 
-const cacheStages = await optionalCacheStageCounts();
+const comparison = sortedStages(allStageNames)
+  .filter(
+    (s) =>
+      (currentMatched[s] || 0) +
+        (targetMatched[s] || 0) +
+        (effectiveAfterAtt[s] || 0) +
+        (currentAll[s] || 0) >
+      0
+  )
+  .map((stage) => {
+    const current = currentMatched[stage] || 0;
+    const target = targetMatched[stage] || 0;
+    const effective = effectiveAfterAtt[stage] || 0;
+    const current_all_deals = currentAll[stage] || 0;
+    return {
+      stage,
+      current_matched: current,
+      target_rules: target,
+      delta_target_vs_current: target - current,
+      effective_after_att: effective,
+      delta_effective_vs_current: effective - current,
+      current_all_deals,
+    };
+  });
 
 const result = {
   simulated_at: now.toISOString(),
   simulated_at_brt: now.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
-  rule: 'classifyMatriculado (CANCEL/TRANC→Perdido; CAA open→Retenção; remat→Sem Rematricula; acolhimento; Pós/Graduação)',
+  unit: 'deal (todos os deals do contact no espelho, igual Att de etapas)',
+  rule:
+    'classifyMatriculado: CANCEL/TRANC→Perdido; CAA open≤72h→Retenção; remat→Sem Rematricula; acolhimento; Pós/Graduação. Att: não move Ganho/Cancelado; Retenção sem CAA open=manual (fica).',
+  caa_retencao_hours: caaRetencaoHours,
   snapshots: {
     matriculados: {
       id: matSnap.id,
       file_name: matSnap.file_name || matSnap.original_filename || null,
       created_at: matSnap.created_at || null,
       row_count: matSnap.row_count ?? rawRows,
+      distinct_cpf: byCpf.size,
+      distinct_rgm: byRgm.size,
     },
     rematricula: rematSnap
-      ? {
-          id: rematSnap.id,
-          file_name: rematSnap.file_name || rematSnap.original_filename || null,
-          created_at: rematSnap.created_at || null,
-          row_count: rematSnap.row_count ?? null,
-          id_keys: remat.size,
-        }
+      ? { id: rematSnap.id, created_at: rematSnap.created_at, id_keys: remat.size }
       : null,
-    caa_open: { id_keys: caa.size },
+    docs_pendentes: docSnap ? { id: docSnap.id, id_keys: doc.size } : null,
+    inadimplentes_vencidos: inadSnap ? { id: inadSnap.id, id_keys: inad.size } : null,
+    acessos_blackboard: bbSnap ? { id: bbSnap.id, id_keys: bb.size } : null,
+    provavel_evasao: evasaoSnap ? { id: evasaoSnap.id, id_keys: evasao.size } : null,
+    caa_open: {
+      id_keys: caaT0Map.size,
+      retencao_hours: caaRetencaoHours,
+    },
   },
-  input: {
-    raw_rows: rawRows,
-    distinct_rgm: byRgm.size,
-    distinct_cpf: byCpf.size,
-    rows_sem_rgm_nem_cpf: noRgmNoCpf,
+  coverage: {
+    cache_contacts: cacheRows.length,
+    contacts_no_deal: contactsNoDeal,
+    deals_total: dealsTotal,
+    matched_matriculados: matched,
+    no_match: noMatch,
+    caa_open_among_matched: caaOpenMatched,
+    caa_fresh_72h_among_matched: caaFreshMatched,
   },
-  by_rgm: byRgmCounts,
-  by_cpf: byCpfCounts,
-  cache_primary_deal_stages: cacheStages,
+  att_preview: {
+    would_move: wouldMove,
+    stay_aligned: stayAligned,
+    stay_untouchable: stayUntouchable,
+    stay_unknown_stage: stayUnknown,
+    top_moves: Object.entries(moveFromTo)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 25)
+      .map(([from_to, n]) => ({ from_to, n })),
+  },
+  breakout_target: breakout,
+  current_all_deals: currentAll,
+  current_matched: currentMatched,
+  target_rules: targetMatched,
+  effective_after_att: effectiveAfterAtt,
+  comparison,
 };
 
 const ts = Date.now();
@@ -242,43 +414,36 @@ const outPath = path.join(ROOT, 'data', `stage-sim-${ts}.json`);
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf8');
 
-function printTable(label, counts) {
-  console.log(`\n=== ${label} (n=${counts.rows}) ===`);
-  const stages = Object.entries(counts.by_stage).sort((a, b) => b[1] - a[1]);
-  for (const [name, n] of stages) {
-    const pct = counts.rows ? ((n / counts.rows) * 100).toFixed(1) : '0.0';
-    console.log(`  ${name.padEnd(18)} ${String(n).padStart(7)}  (${pct}%)`);
-  }
-  const b = counts.breakout;
-  console.log('  --- breakout ---');
-  console.log(`  TRANCADO→Perdido     ${b.perdido_trancado}`);
-  console.log(`  CANCEL→Perdido       ${b.perdido_cancelado}`);
-  console.log(`  TRANC+CANCEL→Perdido ${b.perdido_ambos}`);
-  console.log(`  CAA→Retenção         ${b.retencao_caa}`);
-  console.log(`  remat→Sem Rematricula ${b.sem_rematricula}`);
-  console.log(`  Acolhimento          ${b.acolhimento}`);
-  console.log(`  Graduação            ${b.graduacao} (default não-grad/não-pós: ${b.graduacao_default_nao_grad_nem_pos})`);
-  console.log(`  Pós                  ${b.pos}`);
-}
+console.log('\n=== Simulação filas Novo CRM (READ-ONLY) ===');
+console.log(`Quando: ${result.simulated_at_brt} BRT`);
+console.log(`Unidade: ${result.unit}`);
+console.log(
+  `Cache contacts=${cacheRows.length} · deals=${dealsTotal} · matched=${matched} · no_match=${noMatch}`
+);
+console.log(
+  `CAA open keys=${caaT0Map.size} · matched com CAA open=${caaOpenMatched} · fresh≤${caaRetencaoHours}h=${caaFreshMatched}`
+);
+console.log(
+  `Att preview: move=${wouldMove} · alinhado=${stayAligned} · intocável=${stayUntouchable} · stage desconhecido=${stayUnknown}`
+);
 
-console.log('Stage sim Novo CRM (dry, sem writes)');
-console.log(`Simulado em: ${result.simulated_at_brt} BRT`);
-console.log(
-  `Matriculados snap: ${matSnap.id} | created_at=${matSnap.created_at || '?'} | raw_rows=${rawRows}`
-);
-console.log(
-  `Rematrícula snap: ${rematSnap?.id || '—'} | keys=${remat.size}`
-);
-console.log(`CAA open (caa_protocols): keys=${caa.size}`);
-printTable('Por RGM (1 deal / RGM)', byRgmCounts);
-printTable('Por CPF (1 pessoa / CPF — melhor linha)', byCpfCounts);
-if (cacheStages?.by_stage) {
-  console.log('\n=== Cache local (primary deal stage, referência) ===');
-  for (const [name, n] of Object.entries(cacheStages.by_stage)) {
-    console.log(`  ${name.padEnd(22)} ${String(n).padStart(7)}`);
-  }
-  console.log(`  total deals com stage: ${cacheStages.total}`);
-} else if (cacheStages?.error) {
-  console.log(`\n(cache stages skip: ${cacheStages.error})`);
+console.log('\nEtapa'.padEnd(20) + 'Atual'.padStart(8) + 'Alvo'.padStart(8) + 'Δ'.padStart(8) + 'Efetivo*'.padStart(10));
+console.log('-'.repeat(54));
+for (const r of comparison) {
+  if (!r.current_matched && !r.target_rules && !r.effective_after_att) continue;
+  const d = r.delta_target_vs_current;
+  const dStr = (d > 0 ? `+${d}` : String(d)).padStart(8);
+  console.log(
+    r.stage.padEnd(20) +
+      String(r.current_matched).padStart(8) +
+      String(r.target_rules).padStart(8) +
+      dStr +
+      String(r.effective_after_att).padStart(10)
+  );
+}
+console.log('\n*Efetivo = após Att respeitando Ganho/Cancelado + Retenção manual (sem CAA open).');
+console.log('\nTop moves (se rodasse Att):');
+for (const m of result.att_preview.top_moves.slice(0, 12)) {
+  console.log(`  ${m.from_to.padEnd(40)} ${m.n}`);
 }
 console.log(`\nJSON: ${outPath}`);

@@ -659,7 +659,10 @@ router.get('/enrich-novo-crm-status', requireApiKey, async (req, res) => {
  * scope=incomplete: dedupe contacts COM deal mas sem CPF/RGM —
  *   sibling mais completo → move deals do ruim para Perdido;
  *   sem sibling → empty-only fill CPF/RGM.
- * scope=both: ambos em sequência.
+ * scope=duplicates: mesma pessoa (mesmo RGM) com 2+ cartões em etapa mexível —
+ *   mantém 1 por score (dono → campos → e-mail → telefone → conversa → mais
+ *   antigo) e move os outros para Perdido.
+ * scope=both: os três em sequência.
  *
  * Match por e-mail OU telefone. Nunca cria segundo contact.
  * dry_run=1 (default): prévia síncrona.
@@ -676,9 +679,11 @@ router.post('/provision-orphan-alunos-novo-crm', requireApiKey, async (req, res)
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
     const asyncMode =
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
-    // scope: orphans | incomplete | both (default orphans para compat; dedupe UI usa both)
+    // scope: orphans | incomplete | duplicates | both (default orphans para compat; dedupe UI usa both)
     const scopeRaw = String(req.query.scope || req.body?.scope || 'orphans').trim().toLowerCase();
-    const scope = ['orphans', 'incomplete', 'both'].includes(scopeRaw) ? scopeRaw : 'orphans';
+    const scope = ['orphans', 'incomplete', 'duplicates', 'both'].includes(scopeRaw)
+      ? scopeRaw
+      : 'orphans';
 
     if (isDry) {
       // A prévia consulta o CRM ao vivo por contact (o espelho gera falsos
