@@ -30,6 +30,14 @@
  * ficavam skip no Att — o align script pegava. Agora sempre alinha Situação
  * via resolveSituacaoCrm quando canMoveStages (flags ou fields), se o cache
  * divergir — sem reescrever os demais campos SIAA do mode=fields.
+ *
+ * exit_remat_orphan (03/08 noite): ao mover Sem Remat→Perdido sem matRow,
+ * limpa carousel "Sem Rematrícula" (não inventa Cancelado). Dedupe→Perdido
+ * alinha sit SIAA com inRematricula=false (novoCrmOrphanAlunoProvisionService).
+ *
+ * Atualizado?=Sim (04/08): só se o PUT inclui campo SIAA core com valor
+ * (hasSiaaFieldWrite). Stage-only / flags-only / clear vazio / orphan sem
+ * mat NÃO marcam — filtro Kanban espera deals preenchidos.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -74,7 +82,46 @@ function simNao(v) {
   return v ? 'Sim' : 'Não';
 }
 
-/** Marca deal como tocado pela nossa sync (campo Atualizado?=Sim). */
+/**
+ * Core SIAA keys that count as "preencheu dados" for Atualizado?=Sim.
+ * Flags (doc/inad/bb/evasao) e o próprio Atualizado NÃO entram.
+ * @see hasSiaaFieldWrite
+ */
+const SIAA_ATUALIZADO_FIELD_KEYS = [
+  'cpf',
+  'rgm',
+  'curso',
+  'polo',
+  'situacao',
+  'nivel',
+  'email',
+  'email_ad',
+  'nasc',
+];
+
+/**
+ * true se `values` grava ao menos um campo SIAA com valor não-vazio.
+ * Clear situacao (value '') / só flags / só Atualizado → false.
+ * Situação vinda de resolveSituacaoCrm (Em Curso/Cancelado/…) → true.
+ */
+function hasSiaaFieldWrite(values, fieldIds) {
+  if (!Array.isArray(values) || !values.length || !fieldIds) return false;
+  const siaaIds = new Set();
+  for (const key of SIAA_ATUALIZADO_FIELD_KEYS) {
+    const id = String(fieldIds[key] || '').trim();
+    if (id) siaaIds.add(id);
+  }
+  if (!siaaIds.size) return false;
+  return values.some((v) => {
+    const fid = String(v?.fieldId || '').trim();
+    if (!siaaIds.has(fid)) return false;
+    const val = v?.value;
+    if (val == null) return false;
+    return String(val).trim() !== '';
+  });
+}
+
+/** Marca deal como sincronizado com dados SIAA (campo Atualizado?=Sim). */
 function ensureAtualizadoSim(values, fieldIds) {
   const id = String(fieldIds?.atualizado || '').trim();
   if (!id) return values || [];
@@ -931,9 +978,22 @@ export async function runFlagsStageSync(opts = {}) {
         if (existing?.needsMove) continue; // já tratado pelo loop principal.
 
         // Órfão: sem match matriculados → Perdido (limpa captura/WhatsApp da fila).
+        // Sem SIAA não inventamos Cancelado; mas limpa carousel "Sem Rematrícula"
+        // pra não polluir filtro Perdido+Situação no Kanban (UI ~34 do 03/08).
         if (c.orphan || !c.matRow) {
           if (!perdidoStageId) continue;
           const classification = { stageName: 'Perdido', stageId: perdidoStageId };
+          const curSitOrphan = fieldIds.situacao
+            ? readDealField(c.deal, fieldIds.situacao, [
+                'situação',
+                'situacao',
+                'situação matrícula',
+              ])
+            : '';
+          const clearStaleSemRemat =
+            Boolean(fieldIds.situacao) &&
+            normalizeSituacaoCrm(curSitOrphan) ===
+              normalizeSituacaoCrm(SITUACAO_CRM_SEM_REMATRICULA);
           if (dryRun) {
             stagesExitRematOrphan += 1;
             if (samples.length < 20) {
@@ -946,6 +1006,7 @@ export async function runFlagsStageSync(opts = {}) {
                 rgm: c.rgm,
                 from: 'Sem Rematricula',
                 to: 'Perdido',
+                situacao_would_clear_sem_remat: clearStaleSemRemat,
               });
             }
             continue;
@@ -977,6 +1038,14 @@ export async function runFlagsStageSync(opts = {}) {
             item.isExitRemat = true;
             item.isExitRematOrphan = true;
             if (!item.fromStageId) item.fromStageId = c.currentStageId;
+          }
+          // Limpa "Sem Rematrícula" residual no Perdido (não inventa Cancelado).
+          if (
+            clearStaleSemRemat &&
+            !item.values.some((v) => v.fieldId === fieldIds.situacao)
+          ) {
+            item.values.push({ fieldId: fieldIds.situacao, value: '' });
+            item.needsSemRematSituacao = true;
           }
           continue;
         }
@@ -1103,8 +1172,9 @@ export async function runFlagsStageSync(opts = {}) {
         if (idx >= workQueue.length) return;
         const item = workQueue[idx];
         try {
-          // Todo deal que a Att/fields toca recebe Atualizado?=Sim (filtro operacional).
-          if (fieldIds.atualizado && (item.needsMove || (item.values && item.values.length))) {
+          // Atualizado?=Sim só se gravou campo SIAA real (CPF/RGM/polo/situação/…).
+          // Stage-only, flags-only, clear vazio / orphan→Perdido sem mat → não marca.
+          if (fieldIds.atualizado && hasSiaaFieldWrite(item.values, fieldIds)) {
             item.values = ensureAtualizadoSim(item.values || [], fieldIds);
           }
           if (item.values?.length) {

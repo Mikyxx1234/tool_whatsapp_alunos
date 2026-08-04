@@ -5,6 +5,52 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-04 — Atualizado?=Sim só com escrita de campos SIAA
+- **Modelo usado:** Composer. Decisão do usuário (Raphael).
+- **Problema:** marcar `Atualizado?=Sim` em todo deal que a Att/fields tocava (stage-only, flags-only, orphan→Perdido) **quebra a verificação em 2 passos** no Kanban (filtro Atualizado=Sim espera deals preenchidos).
+- **Regra:** `ensureAtualizadoSim` só roda se `hasSiaaFieldWrite(values, fieldIds)` — ao menos um campo core SIAA com valor **não-vazio** no PUT: cpf, rgm, curso, polo, situacao (de `resolveSituacaoCrm` / map SIAA), nivel, email, email_ad, nasc.
+- **NÃO marca Sim:** move-only (etapa), 4 flags sozinhas, clear situacao `''`, exit_remat_orphan→Perdido sem mat data, qualquer PUT sem core SIAA.
+- **Provision** de lead novo continua gravando Sim junto com CPF/RGM/polo/… (já são writes SIAA). Backfill em massa de Sim falsos = ops separada (fora do escopo).
+- **Arquivos:** `novoCrmFlagsStageSyncService.js` (`hasSiaaFieldWrite`), `.env.example`, `novoCrmStageRules.js` (comentário).
+
+### 2026-08-03 — Perdido + Situação "Sem Rematrícula" (~34 UI) — LIVE re-verify + fix
+- **Modelo usado:** Composer. Live GET PROD (`crm.eduit.com.br`), não só cache.
+- **Por que o repair anterior "27 sit + 10 stage" não limpou a UI:**
+  1. Script `novo-crm-repair-perdido-sem-remat.mjs` escaneava **person cache**, não o filtro live do Kanban.
+  2. Várias pessoas tinham **2+ cards** (ex. JUDI #92736 sit já Cancelado vs **#72612** ainda Sem Rematrícula; JULIA #92743 vs **#72726**; LETICIA #cms0td… vs **#74804**). O apply tocou um id; a UI filtrava o outro.
+  3. Logs "apply" misturam dry-runs posteriores; o apply real (timestamp 1785775295497) só cobriu deal ids do cache.
+- **Fonte live correta:** `GET /api/deals?stageId=Perdido&search=Sem Rematrícula` → **total=34** (= UI). stageId=`cmrwd5vuo014hpd01imhgkp0y`, sit field=`cmrmexuw818tjnm01igvkevn1`.
+- **Diagnóstico 34 live GET:**
+  | SIAA / remat | n | fix |
+  |---|---|---|
+  | Cancelado + remat file | 10 | sit→**Cancelado**, fica Perdido |
+  | Em Curso + still remat | 23 | stage→**Sem Rematricula** (reentry) |
+  | Em Curso out remat | 1 (VIVIANE #104438) | sit→Em Curso + stage→**Graduação** |
+- **Apply LIVE** (`scripts/_live-fix-perdido-ui34.mjs --apply`): sit **11** · stage **24** · errors **0** · cada um HTTP 200 + re-GET ok · **api list after = 0**. Amostras UI: #59702 William → Sem Rematricula; #72612 Judi / #72726 Julia / #74804 Leticia → Perdido+Cancelado.
+- **Root code (prevenir resíduo):**
+  1. `exit_remat_orphan` → Perdido: se sit=="Sem Rematrícula", **limpa** carousel (não inventa Cancelado sem SIAA).
+  2. Dedupe/incompleto → move Perdido: grava Situação via `resolveSituacaoCrm(..., inRematricula:false)` (Cancelado/Em Curso, nunca força Sem Rematrícula no lixo de duplicata).
+- **Não tocou:** Em Atendimento.
+
+### 2026-08-03 — Perdido + Situação "Sem Rematrícula" (~34 UI) após Att (histórico; supersedido pela entrada LIVE acima)
+- **Modelo usado:** Composer. Investigação + repair apply PROD (parcial / cache-only).
+- **Sintoma:** Kanban/filter **34** deals em etapa **Perdido** com carousel Situação ainda **Sem Rematrícula** (tags remat*, data 03/08).
+- **Quebra (cache PROD, pós-Att ~16:11 UTC):**
+  | path | n | expected | repair |
+  |---|---|---|---|
+  | SIAA Cancelado (muitos ainda no remat file) | 14 | sit→**Cancelado**, stage Perdido ok | sit-only |
+  | SIAA Trancado | 10 | sit→**Trancado**, stage Perdido ok | sit-only |
+  | EM CURSO + still remat | 7 | stage→**Sem Rematricula** (sit ok) | stage reentry |
+  | EM CURSO out remat | 3 | stage→**Graduação** + sit→Em Curso | stage+sit |
+- **Root cause (regra, não só dado):**
+  1. **Cancel/Tranc → Perdido sem rewrite de Situação** sob o buraco pré-piggyback global: `mode=flags_stage` só piggybackava Situação quando `classification.stageName === 'Sem Rematricula'`. Mover p/ Perdido (cancel) deixava sit "Sem Rematrícula" se já viesse da fila remat. (Fix piggyback any-target no mesmo dia — se Att rodou **antes** do deploy / ou deals já em Perdido sem reentry de sit.)
+  2. **exit_remat_orphan** (Sem Remat + fora remat + **sem matRow** → Perdido): **só move etapa**, `valores` vazios — Sit "Sem Rematrícula" **permanece** (sem SIAA não inventamos Cancelado). Contador `stages_exit_remat_orphan` 135 no Att.
+  3. Deals cancelados **já em Perdido** com sit stale só se corrigem no loop principal se piggyback global estiver ativo e houver mat match.
+- **Não é:** Em Atendimento (intocável; nenhum dos 34).
+- **Repair aplicado (PROD, script `novo-crm-repair-perdido-sem-remat.mjs --apply`):** queue 34 · sit written **27** · stages moved **10** · errors **0** — **incompleto** (só deal ids do person cache; ver entrada LIVE).
+- **Próxima Att:** piggyback any-target cobre sit Cancelado/Trancado em Perdido; reentry EM CURSO+remat move de volta p/ Sem Rematricula.
+- **Scripts:** `_live-fix-perdido-ui34.mjs` (fonte Kanban), `novo-crm-repair-perdido-sem-remat.mjs` (cache).
+
 ### 2026-08-03 — Att ~11:14 não fechou remat: buraco Situação + evidência
 - **Modelo usado:** Composer (investigação + fix pontual).
 - **Fatos (repo local, BRT 03/08):**
@@ -40,7 +86,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ### 2026-07-31 — Campo Atualizado?=Sim + Sem Remat sem CPF/RGM → Perdido
 - **Modelo usado:** Composer. Pedido do usuário.
-- **Atualizado?:** custom field PROD `cms9c1gfk0sl0jq011ywjyxfo` (`NOVO_CRM_FIELD_ATUALIZADO`). Toda Att (flags_stage) e sync noturna de campos (`mode=fields`) e provision de leads novos gravam **Sim** no deal tocado — filtro operacional no Kanban (esconde captura não sincronizada).
+- **Atualizado?:** custom field PROD `cms9c1gfk0sl0jq011ywjyxfo` (`NOVO_CRM_FIELD_ATUALIZADO`). **Supersedido 2026-08-04:** não mais em todo deal tocado — só com write de campo SIAA core (`hasSiaaFieldWrite`). Provision de leads novos continua grava Sim com preenchimento.
 - **Sem Rematrícula + sem CPF + sem RGM → Perdido** (além da regra órfão fora do remat). Pega cards tipo Roseducadora (CSV Atendimento vazio). Quem tem CPF/RGM (ex. Carla) permanece e segue reclassificação se saiu do relatório remat.
 - **Arquivos:** `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `data/novo-crm-prod-ids.json`, `.env.example`.
 - **Ops:** no Easypanel pode setar `NOVO_CRM_FIELD_ATUALIZADO=cms9c1gfk0sl0jq011ywjyxfo` (ou deixar o JSON PROD). Manter `NOVO_CRM_FIELD_INADIMPLENTE=cmrwtc7xp00fnpf015srkz771` (nunca `-`).
