@@ -47,6 +47,7 @@ import {
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
+  addTagToDeal,
   createDeal,
   findDealForContact,
   getDeal,
@@ -294,6 +295,22 @@ const DELAY_MS = Math.max(
   0,
   Number(process.env.NOVO_CRM_ORPHAN_PROVISION_DELAY_MS ?? 20) || 0
 );
+
+/**
+ * Tag CRM de limpeza: `limpeza_duplicata_DD.MM.YYYY` (data local Brasil).
+ * @param {Date} [d]
+ * @returns {string}
+ */
+export function limpezaDuplicataTagName(d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t)?.value || '';
+  return `limpeza_duplicata_${get('day')}.${get('month')}.${get('year')}`;
+}
 
 function orphanConcurrency() {
   return Math.min(Math.max(Number(process.env.NOVO_CRM_ORPHAN_PROVISION_CONCURRENCY) || 3, 1), 8);
@@ -635,6 +652,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const liveCheck =
     opts.liveCheck != null ? Boolean(opts.liveCheck) : liveCheckEnv !== '0' && liveCheckEnv !== 'false';
   const concurrency = dryRun ? 1 : orphanConcurrency();
+  /** Tag de auditoria no deal movido a Perdido por limpeza (create-or-attach via tagName). BRT. */
+  const limpezaDupTagName = limpezaDuplicataTagName();
 
   /**
    * Card forçado pra Perdido (duplicata) não é fila de rematrícula: grava Situação
@@ -658,6 +677,25 @@ export async function runOrphanAlunoProvision(opts = {}) {
     const vals = [{ fieldId: sitFid, value: sit }];
     if (fieldIds?.atualizado) vals.push({ fieldId: fieldIds.atualizado, value: 'Sim' });
     await updateDealCustomFields(dealId, vals, { maxRetries: 4 });
+  }
+
+  /**
+   * Best-effort: etapa Perdido já aplicada; falha de tag só loga.
+   * @param {string} dealId
+   */
+  async function tagLimpezaDuplicataBestEffort(dealId) {
+    const id = String(dealId || '').trim();
+    if (!id) return;
+    try {
+      await addTagToDeal(id, { tagName: limpezaDupTagName });
+    } catch (err) {
+      console.warn(
+        '[novo-crm-orphan-provision] tag limpeza_duplicata failed',
+        id,
+        limpezaDupTagName,
+        err?.message || err
+      );
+    }
   }
 
   let scanned = 0;
@@ -1280,6 +1318,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
                   normalizeCpf(dealCustomValue(deal, ['cpf'])) ||
                   normalizeCpf(row.cpf_norm),
               });
+              await tagLimpezaDuplicataBestEffort(deal.id);
               if (DELAY_MS > 0) await sleep(DELAY_MS);
             } catch (err) {
               errors += 1;
@@ -1550,6 +1589,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
               rgm: normalizeRgm(l.rgm) || rgm,
               cpf: normalizeCpf(l.cpf),
             });
+            await tagLimpezaDuplicataBestEffort(l.dealId);
             dupDealsMoved += 1;
             if (DELAY_MS > 0) await sleep(DELAY_MS);
           } catch (err) {

@@ -6,14 +6,12 @@ import {
   Database,
   FileWarning,
   RefreshCw,
-  UserPlus,
   UserRound,
   X,
 } from 'lucide-react';
 import {
   maintenanceApi,
   type NovoCrmCacheStatusResponse,
-  type NovoCrmProvisionPreviewResponse,
   type NovoCrmRegressionEvent,
   type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
@@ -53,13 +51,6 @@ export function NovoCrmSyncPanel() {
   const [flagsMsg, setFlagsMsg] = useState<string | null>(null);
   const [flagsBusy, setFlagsBusy] = useState(false);
 
-  const [provisionJobId, setProvisionJobId] = useState<string | null>(null);
-  const [provisionMsg, setProvisionMsg] = useState<string | null>(null);
-  const [provisionBusy, setProvisionBusy] = useState(false);
-  const [provisionPreview, setProvisionPreview] = useState<NovoCrmProvisionPreviewResponse | null>(
-    null
-  );
-
   const [dedupeBusy, setDedupeBusy] = useState(false);
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
   const [dedupePreview, setDedupePreview] = useState<OrphanDedupePreviewResponse | null>(null);
@@ -96,7 +87,7 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    if (status?.running || flagsJobId || provisionJobId || dedupeJobId) {
+    if (status?.running || flagsJobId || dedupeJobId) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
         void loadStatus();
@@ -120,49 +111,6 @@ export function NovoCrmSyncPanel() {
                   );
                 } else if (r.job.status === 'failed') {
                   setFlagsMsg(r.job.error || 'Att de etapas falhou');
-                }
-                void loadStatus();
-              }
-            })
-            .catch(() => {});
-        }
-        if (provisionJobId) {
-          void maintenanceApi
-            .getNovoCrmProvisionStatus(provisionJobId)
-            .then(async (r) => {
-              if (!r.job) return;
-              setProvisionMsg(r.job.status_message || r.job.phase || null);
-              if (r.job.status !== 'running') {
-                stopPoll();
-                setProvisionJobId(null);
-                if (r.job.status === 'completed') {
-                  const res = r.job.result;
-                  if (r.job.dry_run && res) {
-                    setProvisionBusy(false);
-                    if (!res.created_contacts) {
-                      setProvisionMsg(
-                        `Verificação concluída: ninguém para criar` +
-                          (res.updated_existing
-                            ? ` · ${res.updated_existing} já existiam no CRM e foram sincronizados`
-                            : '')
-                      );
-                    } else {
-                      setProvisionPreview(res);
-                      setProvisionMsg('Verificação ao vivo concluída — confirme abaixo.');
-                    }
-                  } else {
-                    setProvisionBusy(false);
-                    setProvisionMsg(
-                      `Leads novos: ${res?.created_contacts ?? 0} contatos · ${res?.created_deals ?? 0} deals` +
-                        (res?.updated_existing
-                          ? ` · ${res.updated_existing} já existiam (só sincronizados)`
-                          : '') +
-                        (res?.errors ? ` · ${res.errors} erros` : '')
-                    );
-                  }
-                } else if (r.job.status === 'failed') {
-                  setProvisionBusy(false);
-                  setProvisionMsg(r.job.error || 'Criação de leads falhou');
                 }
                 void loadStatus();
               }
@@ -197,7 +145,7 @@ export function NovoCrmSyncPanel() {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, flagsJobId, provisionJobId, dedupeJobId, dedupeMode, loadStatus, stopPoll]);
+  }, [status?.running, flagsJobId, dedupeJobId, dedupeMode, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastDurationMs =
@@ -285,53 +233,6 @@ export function NovoCrmSyncPanel() {
       setFlagsMsg(e instanceof Error ? e.message : 'Falha no Att de etapas');
       setFlagsBusy(false);
     }
-  };
-
-  const runNewLeadsProvision = async () => {
-    if (provisionBusy || provisionJobId) return;
-    setProvisionBusy(true);
-    setProvisionPreview(null);
-    setProvisionMsg('Verificando candidatos ao vivo no CRM…');
-    try {
-      const started = await maintenanceApi.startNovoCrmProvisionPreview({
-        mode: 'new',
-        max: 200,
-      });
-      setProvisionJobId(started.jobId);
-      setProvisionMsg('Verificação ao vivo em andamento…');
-    } catch (e) {
-      setProvisionMsg(e instanceof Error ? e.message : 'Falha na criação de leads');
-      setProvisionBusy(false);
-    }
-  };
-
-  const confirmNewLeadsApply = async () => {
-    const preview = provisionPreview;
-    if (!preview || provisionJobId) return;
-    setProvisionPreview(null);
-    setProvisionBusy(true);
-    setProvisionMsg('Criando somente os leads ausentes…');
-    try {
-      const started = await maintenanceApi.startNovoCrmProvision({
-        mode: 'new',
-        max: preview.max_creates,
-      });
-      setProvisionJobId(started.jobId);
-    } catch (e) {
-      setProvisionBusy(false);
-      setProvisionMsg(e instanceof Error ? e.message : 'Falha ao iniciar criação de leads');
-    }
-  };
-
-  const dismissNewLeadsPreview = () => {
-    const preview = provisionPreview;
-    setProvisionPreview(null);
-    setProvisionMsg(
-      preview
-        ? `Criação descartada · ${preview.created_contacts} ausentes · ` +
-            `${preview.updated_existing ?? 0} já existiam no CRM (sincronizados)`
-        : null
-    );
   };
 
   const runDedupePreview = async () => {
@@ -455,7 +356,7 @@ export function NovoCrmSyncPanel() {
           <div>
             <h2 className="text-base font-semibold text-gray-900">Sync Novo CRM</h2>
             <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-              Espelho ≠ att campos ≠ etapas ≠ leads novos. Não misture.
+              Espelho ≠ att campos ≠ etapas. Dedupe cobre órfãos/duplicados (sem criar leads em massa).
             </p>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl text-xs text-gray-600">
               <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
@@ -471,7 +372,7 @@ export function NovoCrmSyncPanel() {
                 </ul>
               </div>
               <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2">
-                <p className="font-semibold text-indigo-900">De dia (manual — 3 botões)</p>
+                <p className="font-semibold text-indigo-900">De dia (manual)</p>
                 <ul className="mt-1 space-y-0.5 list-disc list-inside">
                   <li>
                     <strong>Full Sync</strong> — atualiza o espelho agora
@@ -480,7 +381,7 @@ export function NovoCrmSyncPanel() {
                     <strong>Att de etapas</strong> — flags + move etapa
                   </li>
                   <li>
-                    <strong>Leads novos</strong> — cria ~10–150 do dia
+                    <strong>Dedupe</strong> — órfãos / incompletos / duplicados
                   </li>
                 </ul>
               </div>
@@ -562,78 +463,9 @@ export function NovoCrmSyncPanel() {
             </button>
           </div>
 
-          <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-sky-900">3. Criação de leads novos</p>
-            <p className="text-[11px] text-sky-800/80 flex-1">
-              Verifica os candidatos ao vivo no CRM, sincroniza quem já existe e cria somente os
-              ausentes. Cap 200.
-            </p>
-            <button
-              type="button"
-              onClick={() => void runNewLeadsProvision()}
-              disabled={provisionBusy || Boolean(provisionJobId)}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {provisionBusy || provisionJobId ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <UserPlus className="w-3.5 h-3.5" />
-              )}
-              {provisionJobId ? 'Verificando / criando…' : 'Criação de leads novos'}
-            </button>
-            {provisionPreview && (
-              <div className="mt-1 rounded-lg border border-sky-300 bg-white p-3 text-[11px] text-sky-900 space-y-1">
-                <p className="font-semibold text-xs">Verificação ao vivo concluída</p>
-                <p>
-                  A criar:{' '}
-                  <strong>{provisionPreview.created_contacts.toLocaleString('pt-BR')}</strong>{' '}
-                  pessoas · {provisionPreview.created_deals.toLocaleString('pt-BR')} deals
-                  {provisionPreview.created_contacts >= (provisionPreview.max_creates || 200)
-                    ? ` (teto ${provisionPreview.max_creates || 200}/run)`
-                    : ''}
-                </p>
-                <p>
-                  Já existiam no CRM:{' '}
-                  <strong>{(provisionPreview.updated_existing ?? 0).toLocaleString('pt-BR')}</strong>{' '}
-                  (sincronizados no espelho; cards não alterados)
-                </p>
-                <p>
-                  Já estavam no espelho:{' '}
-                  {provisionPreview.skipped_cache.toLocaleString('pt-BR')} por CPF ·{' '}
-                  {(provisionPreview.skipped_cache_rgm ?? 0).toLocaleString('pt-BR')} por RGM
-                </p>
-                {provisionPreview.errors ? (
-                  <p className="text-rose-700">
-                    Falhas na verificação: {provisionPreview.errors.toLocaleString('pt-BR')}
-                  </p>
-                ) : null}
-                <p className="text-sky-700/80">
-                  O apply repete a busca ao vivo imediatamente antes de cada criação.
-                </p>
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => void confirmNewLeadsApply()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg"
-                  >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    Criar {provisionPreview.created_contacts.toLocaleString('pt-BR')} leads
-                  </button>
-                  <button
-                    type="button"
-                    onClick={dismissNewLeadsPreview}
-                    className="px-3 py-1.5 text-xs font-medium text-sky-800 border border-sky-300 hover:bg-sky-50 rounded-lg"
-                  >
-                    Descartar
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-violet-900">
-              4. Dedupe órfãos/incompletos/duplicados
+              3. Dedupe órfãos/incompletos/duplicados
             </p>
             <p className="text-[11px] text-violet-800/80 flex-1">
               Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, preenchimento de CPF/RGM e, quando a mesma pessoa tem dois cartões, mantém um e manda o outro para Perdido.
@@ -748,12 +580,6 @@ export function NovoCrmSyncPanel() {
           <p className="mt-3 text-sm text-emerald-800 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {flagsMsg}
-          </p>
-        )}
-        {provisionMsg && (
-          <p className="mt-3 text-sm text-sky-800 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {provisionMsg}
           </p>
         )}
 

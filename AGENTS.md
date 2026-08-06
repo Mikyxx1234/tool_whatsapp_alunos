@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-06 — Sync: sem "Criação de leads novos"; tag limpeza em Perdido (dedupe)
+- **Modelo usado:** Composer.
+- **UI:** card **«Criação de leads novos»** removido do `NovoCrmSyncPanel` (Disparador → Sync). Fluxo diário = Full Sync + Att + Dedupe. Service `novoCrmMatriculadosProvisionService` **não apagado** (backfill `mode=all` ainda possível).
+- **API:** `POST /api/maintenance/provision-matriculados-novo-crm` com `mode=new` (default) → **410** `PROVISION_NEW_DISABLED` (fecha buraco de mass-create). `mode=all` continua com `NOVO_CRM_PROVISION_ENABLED=1`.
+- **Tag CRM em limpeza de duplicata:** em `novoCrmOrphanAlunoProvisionService`, todo deal movido a **Perdido** (incompleto→sibling ou grupo RGM duplicado) recebe tag `limpeza_duplicata_DD.MM.YYYY` (America/Sao_Paulo), via `addTagToDeal({ tagName })` (create-or-attach). Falha de tag só loga — **não desfaz** move de etapa. Não cobre Att/SIAA→Perdido nem DELETE multi-curso.
+- **Não merge main** sem pedido; commits na `raphael`.
+
 ### 2026-08-06 — Multi-curso: fields/Att RGM-only + órfão anti-spam + DELETE clones
 - **Modelo usado:** Composer. Pedido do usuário (incidente Naionara CPF 33559094836, 9 negócios).
 - **Root cause:**

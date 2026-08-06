@@ -365,9 +365,8 @@ router.post('/enrich-novo-crm', requireApiKey, async (req, res) => {
  * POST /api/maintenance/provision-matriculados-novo-crm
  * ?dry_run=1|0&mode=new|all&max=200&async=1
  *
- * mode=new (default): só CPFs do snapshot atual ausentes do cache local
- *   (e delta vs snapshot anterior, se existir). Cap diário ~200.
- * mode=all: backlog completo (backfill; não é o fluxo diário).
+ * mode=new: DESATIVADO (06/08/2026) — UI removida; responde 410.
+ * mode=all: backlog completo (backfill controlado; exige PROVISION_ENABLED).
  *
  * Escrita manual: gate de host (ALLOW_PROD). Cron noturno continua exigindo
  * NOVO_CRM_PROVISION_ENABLED=1 (deve ficar OFF em PROD — ver AGENTS.md 28/07).
@@ -388,6 +387,15 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
     const reallyDry = !forceWrite;
     const modeRaw = String(req.query.mode || req.body?.mode || 'new').trim().toLowerCase();
     const mode = modeRaw === 'all' || modeRaw === 'full' || modeRaw === 'backfill' ? 'all' : 'new';
+    if (mode === 'new') {
+      return res.status(410).json({
+        ok: false,
+        code: 'PROVISION_NEW_DISABLED',
+        error:
+          'Criação de leads novos (mode=new) foi desativada. UI do Sync não expõe mais esse botão. ' +
+          'Para deals órfãos use dedupe (provision-orphan-alunos). Backfill massivo exige mode=all + NOVO_CRM_PROVISION_ENABLED=1.',
+      });
+    }
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
     const asyncMode =
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
@@ -422,15 +430,13 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
       return res.json(preview);
     }
 
-    // mode=all (backfill) ainda exige PROVISION_ENABLED como kill-switch extra.
-    // mode=new (botão diário) só precisa do gate de host — cron fica OFF.
+    // mode=all (backfill) exige PROVISION_ENABLED como kill-switch extra.
     if (
       mode === 'all' &&
       String(process.env.NOVO_CRM_PROVISION_ENABLED || '').trim() !== '1'
     ) {
       return res.status(403).json({
-        error:
-          'mode=all exige NOVO_CRM_PROVISION_ENABLED=1. Para leads novos do dia use mode=new.',
+        error: 'mode=all exige NOVO_CRM_PROVISION_ENABLED=1 (backfill controlado).',
       });
     }
 
