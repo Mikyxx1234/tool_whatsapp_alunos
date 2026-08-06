@@ -403,13 +403,127 @@ function dealsFromCacheRow(row) {
 
 function dealCustomValue(deal, names) {
   const wanted = names.map((n) => n.toLowerCase());
-  for (const f of deal?.customFields || []) {
-    const name = String(f?.name || '').trim().toLowerCase();
+  const sources = [];
+  if (Array.isArray(deal?.customFields)) sources.push(...deal.customFields);
+  if (Array.isArray(deal?.dealPanelFields)) sources.push(...deal.dealPanelFields);
+  for (const f of sources) {
+    const name = String(f?.name || f?.label || '')
+      .trim()
+      .toLowerCase();
     if (wanted.includes(name) && f?.value != null && String(f.value).trim() !== '') {
       return String(f.value).trim();
     }
   }
   return '';
+}
+
+/**
+ * Agrupa cartões candidatos a dedupe por RGM.
+ *
+ * Seed: contact com o RGM em qualquer deal (ou rgm_norm). Depois:
+ *  1) expande por CPF (outros contacts com mesmo CPF e RGM vazio / igual);
+ *  2) puxa TODOS os deals do contact (mesmo sem RGM no espelho / etapa stale
+ *     no cache) — a conferência live filtra Perdido/untouchable e RGM
+ *     conflitante.
+ *
+ * Cobre Nicole (45528446): 2 contacts, 3 deals — um survivor com RGM no
+ * cache + irmão sem customFields no espelho (antes some do grupo e ficava
+ * 2 Graduação abertos após mover só 1).
+ *
+ * @param {object[]} cacheRows
+ * @returns {Map<string, Array<{ dealId: string, contactId: string }>>}
+ */
+function buildDedupeDealGroupsByRgm(cacheRows) {
+  /** @type {Map<string, Set<string>>} */
+  const contactsByRgm = new Map();
+  /** @type {Map<string, string>} */
+  const cpfByContact = new Map();
+  /** @type {Map<string, object>} */
+  const rowByContact = new Map();
+
+  for (const row of cacheRows) {
+    const cid = String(row.contact_id || '').trim();
+    if (!cid) continue;
+    rowByContact.set(cid, row);
+
+    const cpfRow = normalizeCpf(row.cpf_norm);
+    if (cpfRow) cpfByContact.set(cid, cpfRow);
+
+    const rgmRow = normalizeRgm(row.rgm_norm);
+    if (rgmRow) {
+      let s = contactsByRgm.get(rgmRow);
+      if (!s) {
+        s = new Set();
+        contactsByRgm.set(rgmRow, s);
+      }
+      s.add(cid);
+    }
+
+    for (const deal of dealsFromCacheRow(row)) {
+      const rgm = normalizeRgm(dealCustomValue(deal, ['rgm']));
+      const cpfDeal = normalizeCpf(dealCustomValue(deal, ['cpf', 'documento', 'taxid']));
+      if (cpfDeal) cpfByContact.set(cid, cpfDeal);
+      if (!rgm) continue;
+      let s = contactsByRgm.get(rgm);
+      if (!s) {
+        s = new Set();
+        contactsByRgm.set(rgm, s);
+      }
+      s.add(cid);
+    }
+  }
+
+  /** @type {Map<string, Set<string>>} */
+  const contactsByCpf = new Map();
+  for (const [cid, cpf] of cpfByContact) {
+    let s = contactsByCpf.get(cpf);
+    if (!s) {
+      s = new Set();
+      contactsByCpf.set(cpf, s);
+    }
+    s.add(cid);
+  }
+
+  // 2º passo no nível contact: mesmo CPF com RGM vazio ou idêntico.
+  for (const [rgm, cset] of contactsByRgm) {
+    const extras = [];
+    for (const cid of cset) {
+      const cpf = cpfByContact.get(cid);
+      if (!cpf) continue;
+      for (const other of contactsByCpf.get(cpf) || []) {
+        if (other === cid || cset.has(other)) continue;
+        const otherRow = rowByContact.get(other);
+        if (!otherRow) continue;
+        const otherRgms = rgmsOnCacheRow(otherRow);
+        if (otherRgms.size === 0 || otherRgms.has(rgm)) extras.push(other);
+      }
+    }
+    for (const e of extras) cset.add(e);
+  }
+
+  /** @type {Map<string, Array<{ dealId: string, contactId: string }>>} */
+  const dealsByRgm = new Map();
+  for (const [rgm, cset] of contactsByRgm) {
+    /** @type {Array<{ dealId: string, contactId: string }>} */
+    const arr = [];
+    for (const cid of cset) {
+      const row = rowByContact.get(cid);
+      if (!row) continue;
+      for (const deal of dealsFromCacheRow(row)) {
+        const dealId = String(deal?.id || '').trim();
+        if (!dealId) continue;
+        const dealRgm = normalizeRgm(dealCustomValue(deal, ['rgm']));
+        // Outro curso / outro RGM no mesmo contact — não puxa.
+        if (dealRgm && dealRgm !== rgm) continue;
+        // Inclui Perdido/untouchable no cache (stage stale): live filtra.
+        if (!arr.some((d) => d.dealId === dealId)) {
+          arr.push({ dealId, contactId: cid });
+        }
+      }
+    }
+    if (arr.length > 1) dealsByRgm.set(rgm, arr);
+  }
+  return dealsByRgm;
 }
 
 /** RGMs presentes em qualquer deal do contact (+ denorm rgm_norm). */
@@ -1462,34 +1576,18 @@ export async function runOrphanAlunoProvision(opts = {}) {
     );
     patchJob({ phase: 'duplicates', status_message: 'Procurando cartões duplicados…' });
 
-    /** @type {Map<string, Array<{ dealId: string, contactId: string }>>} */
-    const dealsByRgm = new Map();
-    for (const row of cacheRows) {
-      for (const deal of dealsFromCacheRow(row)) {
-        const dealId = String(deal?.id || '').trim();
-        if (!dealId) continue;
-        const rgm = normalizeRgm(dealCustomValue(deal, ['rgm']));
-        if (!rgm) continue;
-        const stageId = dealStageIdFromCache(deal);
-        if (!stageId || stageId === perdidoStageId || isUntouchableStageId(stageId)) continue;
-        let arr = dealsByRgm.get(rgm);
-        if (!arr) {
-          arr = [];
-          dealsByRgm.set(rgm, arr);
-        }
-        if (!arr.some((d) => d.dealId === dealId)) {
-          arr.push({ dealId, contactId: String(row.contact_id) });
-        }
-      }
-    }
+    const dealsByRgm = buildDedupeDealGroupsByRgm(cacheRows);
 
-    const groups = [...dealsByRgm.entries()].filter(([, ds]) => ds.length > 1);
+    const groups = [...dealsByRgm.entries()];
     dupGroups = groups.length;
     patchJob({
       total: groups.length,
       processed: 0,
       status_message: `Conferindo ${groups.length} pessoas com 2+ cartões…`,
     });
+
+    /** Deals já “consumidos” como survivor/loser — evita reprocessar no mesmo run. */
+    const consumedDealIds = new Set();
 
     let groupIdx = 0;
     for (const [rgm, cands] of groups) {
@@ -1499,17 +1597,26 @@ export async function runOrphanAlunoProvision(opts = {}) {
         break;
       }
 
+      const pendingCands = cands.filter((c) => !consumedDealIds.has(c.dealId));
+      if (pendingCands.length < 2) {
+        patchJob({ processed: groupIdx });
+        continue;
+      }
+
       // Conferência ao vivo: espelho não decide sozinho quem morre.
       const live = [];
       let unknown = false;
-      for (const c of cands) {
+      for (const c of pendingCands) {
         const d = await liveDealForDedupe(c.dealId);
         if (!d.ok) {
           unknown = true;
           break;
         }
         if (DELAY_MS > 0) await sleep(DELAY_MS);
-        if (normalizeRgm(d.rgm) !== rgm) continue;
+        const liveRgm = normalizeRgm(d.rgm);
+        // RGM vazio no live ainda entra (irmão sem fields no cache — herdou o grupo).
+        // RGM diferente = outro curso, fora.
+        if (liveRgm && liveRgm !== rgm) continue;
         if (!d.stageId || d.stageId === perdidoStageId || isUntouchableStageId(d.stageId)) continue;
         live.push(d);
       }
@@ -1526,14 +1633,16 @@ export async function runOrphanAlunoProvision(opts = {}) {
 
       // Mesmo RGM+CPF não basta: e-mail/telefone de assessoria ou CPF
       // compartilhado gera "CHARLES" × "SARA" no mesmo grupo. Só dedupe se
-      // nomes casam (ou é o mesmo contact_id).
+      // nomes casam, mesmo contact_id ou CPF live confiável idêntico.
       const anchor = pickDedupeSurvivor(live);
-      const samePerson = live.filter(
-        (d) =>
-          d.dealId === anchor.dealId ||
-          d.contactId === anchor.contactId ||
-          namesPlausiblyMatch(d.contactName || d.title, anchor.contactName || anchor.title)
-      );
+      const anchorCpf = isLiveCpfTrustworthy(anchor.cpf) ? normalizeCpf(anchor.cpf) : '';
+      const samePerson = live.filter((d) => {
+        if (d.dealId === anchor.dealId) return true;
+        if (d.contactId && d.contactId === anchor.contactId) return true;
+        const dCpf = isLiveCpfTrustworthy(d.cpf) ? normalizeCpf(d.cpf) : '';
+        if (anchorCpf && dCpf && anchorCpf === dCpf) return true;
+        return namesPlausiblyMatch(d.contactName || d.title, anchor.contactName || anchor.title);
+      });
       if (samePerson.length < live.length) {
         dupNameMismatch += 1;
         if (skipSamples.length < 25) {
@@ -1578,6 +1687,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
           })),
         });
       }
+
+      for (const d of samePerson) consumedDealIds.add(d.dealId);
 
       if (dryRun) {
         dupDealsMoved += losers.length;
