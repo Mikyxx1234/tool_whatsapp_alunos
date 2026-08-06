@@ -14,6 +14,10 @@
  *
  * Nunca cria segundo contact. Nunca apaga contact.
  *
+ * Anti-spam multi-curso (06/08): se sibling já tem dealCount >= N RGMs SIAA
+ * do mesmo CPF (ou RGM vazio no live mas deals existem), NÃO recria.
+ * Empty RGM writeback não desbloqueia create no próximo run.
+ *
  * Env: NOVO_CRM_ORPHAN_* (delay/concurrency/max/offset/live_check)
  * scope: orphans | incomplete | both (default both no dedupe endpoint)
  */
@@ -593,6 +597,18 @@ export async function runOrphanAlunoProvision(opts = {}) {
     throw err;
   }
   const { byEmail, byPhone } = await buildAlunoMatchIndex(matSnap.id);
+  // Lookup SIAA por CPF/RGM — alinhar Situação ao mandar card pra Perdido (dedupe).
+  /** @type {Map<string, Record<string, unknown>>} */
+  const byRgmMat = new Map();
+  /** @type {Map<string, Record<string, unknown>>} */
+  const byCpfMat = new Map();
+  await baseUploadRepo.forEachRowDataForSnapshot('matriculados', matSnap.id, (row) => {
+    const m = extractMatriculadosMappedValues(row);
+    const cpf = normalizeCpf(m.cpf);
+    const rgm = normalizeRgm(m.rgm);
+    if (rgm && !byRgmMat.has(rgm)) byRgmMat.set(rgm, row);
+    if (cpf && !byCpfMat.has(cpf)) byCpfMat.set(cpf, row);
+  });
 
   patchJob({ phase: 'load_bases', status_message: 'Carregando bases satélite…' });
   const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
@@ -619,6 +635,30 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const liveCheck =
     opts.liveCheck != null ? Boolean(opts.liveCheck) : liveCheckEnv !== '0' && liveCheckEnv !== 'false';
   const concurrency = dryRun ? 1 : orphanConcurrency();
+
+  /**
+   * Card forçado pra Perdido (duplicata) não é fila de rematrícula: grava Situação
+   * SIAA sem forçar "Sem Rematrícula" (inRematricula=false) — cancel→Cancelado,
+   * EM CURSO→Em Curso. Evita lixo no filtro Kanban Perdido+Sem Rematrícula.
+   * @param {string} dealId
+   * @param {{ rgm?: string, cpf?: string }} id
+   */
+  async function alignSitAfterPerdidoMove(dealId, id) {
+    const sitFid = String(fieldIds?.situacao || '').trim();
+    if (!sitFid || !dealId) return;
+    const mat =
+      (id.rgm && byRgmMat.get(id.rgm)) || (id.cpf && byCpfMat.get(id.cpf)) || null;
+    if (!mat) return;
+    const mapped = extractMatriculadosMappedValues(mat);
+    const sit = resolveSituacaoCrm(mapped.situacao || mat['Situação Matrícula'], {
+      inRematricula: false,
+    });
+    if (!sit) return;
+    /** @type {Array<{fieldId:string,value:string}>} */
+    const vals = [{ fieldId: sitFid, value: sit }];
+    if (fieldIds?.atualizado) vals.push({ fieldId: fieldIds.atualizado, value: 'Sim' });
+    await updateDealCustomFields(dealId, vals, { maxRetries: 4 });
+  }
 
   let scanned = 0;
   let orphanAluno = 0;
@@ -653,6 +693,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let errors = 0;
   let skippedAlreadyHasDeal = 0;
   let skippedDuplicateRgm = 0;
+  let skippedCpfCapacity = 0;
   let warmedCache = 0;
   let warmCacheErrors = 0;
   let stoppedAtMax = false;
@@ -779,6 +820,18 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
       }
     }
+    // Claim RGM no live memo mesmo se API de fields falhou — next run
+    // não trata "deal sem RGM no panel" como "falta RGM SIAA".
+    if (rgm || cpf) {
+      let live = liveIdentityCache.get(String(contactId));
+      if (!live) {
+        live = { rgms: new Set(), cpfs: new Set(), dealCount: 0, ok: true };
+        liveIdentityCache.set(String(contactId), live);
+      }
+      if (rgm) live.rgms.add(rgm);
+      if (cpf) live.cpfs.add(cpf);
+      live.dealCount = Math.max(Number(live.dealCount) || 0, 0) + 1;
+    }
     if (DELAY_MS > 0) await sleep(DELAY_MS);
     return deal;
   }
@@ -852,7 +905,25 @@ export async function runOrphanAlunoProvision(opts = {}) {
       const siblingRgms = siblingIdent.rgms;
       const siblingCpfs = siblingIdent.cpfs;
 
+      const siaaRgms = new Set(items.map((it) => it.rgm).filter(Boolean));
+      const cpfShared = items.some((it) => it.cpf && siblingCpfs.has(it.cpf));
+      // Capacidade: CPF já tem N deals ≥ N RGMs SIAA → não recria
+      // (cobre empty RGM writeback: live sem RGM mas dealCount já cobre).
+      const capacityCovered =
+        cpfShared &&
+        siaaRgms.size > 0 &&
+        siblingIdent.dealCount >= 0 &&
+        siblingIdent.dealCount >= siaaRgms.size;
+      // Live sem RGM em nenhum deal, mas já existem deals do CPF
+      // (= field write falhou / stale) → não inventa card novo.
+      const emptyRgmWritebackSpam =
+        cpfShared &&
+        siblingIdent.dealCount > 0 &&
+        siblingRgms.size === 0 &&
+        siaaRgms.size > 0;
+
       const missingItems = items.filter((it) => {
+        if (capacityCovered || emptyRgmWritebackSpam) return false;
         if (it.rgm && siblingRgms.has(it.rgm)) return false;
         // Sem RGM: se sibling já tem qualquer deal / mesmo CPF, não inventa outro.
         if (!it.rgm) {
@@ -865,17 +936,25 @@ export async function runOrphanAlunoProvision(opts = {}) {
       });
 
       if (!missingItems.length) {
+        if (capacityCovered || emptyRgmWritebackSpam) skippedCpfCapacity += 1;
         dupContactSkip += 1;
         dupSkipNoDeal += 1;
         if (samples.length < 25) {
           samples.push({
-            type: 'dup_skip_no_deal',
+            type:
+              emptyRgmWritebackSpam
+                ? 'dup_skip_empty_rgm_writeback'
+                : capacityCovered
+                  ? 'dup_skip_cpf_capacity'
+                  : 'dup_skip_no_deal',
             orphan_contact_id: row.contact_id,
             sibling_contact_id: siblingId,
             match_via: matchVia,
             match_key: matchedKey,
             rgms: [...rgmsSet],
             sibling_rgms: [...siblingRgms],
+            sibling_deal_count: siblingIdent.dealCount,
+            siaa_rgm_count: siaaRgms.size,
           });
         }
         patchJob({ processed: Math.max(i + 1, offset), sent: createdDeals, failed: errors });
@@ -1195,6 +1274,12 @@ export async function runOrphanAlunoProvision(opts = {}) {
           if (!dryRun) {
             try {
               await updateDeal(deal.id, { stageId: perdidoStageId });
+              await alignSitAfterPerdidoMove(deal.id, {
+                rgm: normalizeRgm(dealCustomValue(deal, ['rgm'])),
+                cpf:
+                  normalizeCpf(dealCustomValue(deal, ['cpf'])) ||
+                  normalizeCpf(row.cpf_norm),
+              });
               if (DELAY_MS > 0) await sleep(DELAY_MS);
             } catch (err) {
               errors += 1;
@@ -1461,6 +1546,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
         for (const l of losers) {
           try {
             await updateDeal(l.dealId, { stageId: perdidoStageId });
+            await alignSitAfterPerdidoMove(l.dealId, {
+              rgm: normalizeRgm(l.rgm) || rgm,
+              cpf: normalizeCpf(l.cpf),
+            });
             dupDealsMoved += 1;
             if (DELAY_MS > 0) await sleep(DELAY_MS);
           } catch (err) {
@@ -1528,6 +1617,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
     warmed_cache: warmedCache,
     warm_cache_errors: warmCacheErrors,
     skipped_duplicate_rgm: skippedDuplicateRgm,
+    skipped_cpf_capacity: skippedCpfCapacity,
     max_creates: maxCreates,
     offset,
     concurrency,

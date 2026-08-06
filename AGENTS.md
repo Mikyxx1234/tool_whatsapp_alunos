@@ -5,6 +5,18 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-06 — Multi-curso: fields/Att RGM-only + órfão anti-spam + DELETE clones
+- **Modelo usado:** Composer. Pedido do usuário (incidente Naionara CPF 33559094836, 9 negócios).
+- **Root cause:**
+  1. `mode=fields` / Att casava deal → SIAA por **CPF singleton** (`byCpf` 1 linha) e **sempre sobrescrevia** RGM/curso/nível/polo — multi-curso (Grad+Pós) virava todos Grad (RGM 47014237).
+  2. Órfão sibling recriava deal quando live **não “via” RGM** (writeback vazio) mesmo com deals já cobrindo o N de RGMs SIAA do CPF.
+- **Fix código:**
+  1. `novoCrmFlagsStageSyncService.js`: se CPF tem **2+ RGMs** no SIAA, match canônico = **RGM no deal**; sem RGM no deal → **skip** (não stomp via CPF/email/fone). Contador `skipped_multi_rgm_no_deal_rgm`.
+  2. `novoCrmOrphanAlunoProvisionService.js`: se sibling `dealCount >= N RGMs SIAA` **mesmo CPF**, ou live com deals mas `rgms.size===0` (empty writeback), **não recria**. Claim de RGM no memo pós-create mesmo se fields falhar.
+- **Cleanup ops (DELETE, não Perdido):** `scripts/novo-crm-multi-dup-cleanup.mjs` dry → `--apply`. API `deleteDeal` (`DELETE /api/deals/:id`) existe e funciona. Keep 1 deal/RGM SIAA; se Pós sumiu do stamp, **rebuild fields+stage** no spare antes de apagar clones. Scan cache: `scripts/_scan-multi-dup-cache.mjs`.
+- **Naionara (PROD apply 06/08):** 7 DELETEs (404 re-GET) · rebuild #106003 → RGM **48074594** Pós · keep #59479 Grad **47014237**. Francilaine clone removido. **0 Perdido**.
+- **Não merge main** sem pedido; commits na `raphael`.
+
 ### 2026-08-04 — Atualizado?=Sim só com escrita de campos SIAA
 - **Modelo usado:** Composer. Decisão do usuário (Raphael).
 - **Problema:** marcar `Atualizado?=Sim` em todo deal que a Att/fields tocava (stage-only, flags-only, orphan→Perdido) **quebra a verificação em 2 passos** no Kanban (filtro Atualizado=Sim espera deals preenchidos).

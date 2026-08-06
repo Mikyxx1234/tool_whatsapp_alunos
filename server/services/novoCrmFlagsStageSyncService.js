@@ -38,6 +38,11 @@
  * Atualizado?=Sim (04/08): só se o PUT inclui campo SIAA core com valor
  * (hasSiaaFieldWrite). Stage-only / flags-only / clear vazio / orphan sem
  * mat NÃO marcam — filtro Kanban espera deals preenchidos.
+ *
+ * Multi-curso (06/08): CPF com 2+ RGMs no SIAA NÃO casa só por CPF/email/fone
+ * para sobrescrever RGM/curso/nível/polo/situação/etapa. Match canônico = RGM
+ * no deal. Fallback CPF só se 1 RGM SIAA (singleton). Evita Pós→Grad stomp
+ * (incidente Naionara: 9 clones com RGM Grad).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -271,6 +276,62 @@ function keepBestRow(map, key, row) {
   if (!prev || situacaoRank(row) < situacaoRank(prev)) map.set(key, row);
 }
 
+/**
+ * Resolve linha SIAA do deal. RGM no deal é canônico.
+ * Multi-curso (2+ RGMs pro mesmo CPF): proíbe match só por CPF/email/fone —
+ * evita singleton stomp de RGM/curso no mode=fields.
+ * @returns {{ matRow: object|null, via: string|null, multiStrict: boolean }}
+ */
+function resolveMatRowForDeal({
+  rgmDeal,
+  cpfDeal,
+  emailCache,
+  phoneCache,
+  byRgm,
+  byCpf,
+  byEmail,
+  byPhone,
+  multiRgmCpfs,
+}) {
+  if (rgmDeal && byRgm.has(rgmDeal)) {
+    return { matRow: byRgm.get(rgmDeal), via: 'rgm', multiStrict: false };
+  }
+
+  /** @type {{ row: object, via: string, cpf: string }[]} */
+  const candidates = [];
+  if (cpfDeal && byCpf.has(cpfDeal)) {
+    candidates.push({ row: byCpf.get(cpfDeal), via: 'cpf', cpf: cpfDeal });
+  }
+  if (emailCache && byEmail.has(emailCache)) {
+    const row = byEmail.get(emailCache);
+    const m = extractMatriculadosMappedValues(row);
+    candidates.push({
+      row,
+      via: 'email',
+      cpf: normalizeCpf(m.cpf) || cpfDeal || '',
+    });
+  }
+  if (phoneCache && byPhone.has(phoneCache)) {
+    const row = byPhone.get(phoneCache);
+    const m = extractMatriculadosMappedValues(row);
+    candidates.push({
+      row,
+      via: 'phone',
+      cpf: normalizeCpf(m.cpf) || cpfDeal || '',
+    });
+  }
+
+  for (const cand of candidates) {
+    const cpf = cand.cpf || '';
+    if (cpf && multiRgmCpfs.has(cpf)) {
+      // multi-curso: sem RGM no deal (ou RGM fora do SIAA) → não stomp
+      return { matRow: null, via: null, multiStrict: true };
+    }
+    return { matRow: cand.row, via: cand.via, multiStrict: false };
+  }
+  return { matRow: null, via: null, multiStrict: false };
+}
+
 function maxErrorsBeforeAbort() {
   // Cap alto: ghost deals no cache (404) não contam — ver isDealMissingError.
   return Math.min(Math.max(Number(process.env.NOVO_CRM_FLAGS_SYNC_MAX_ERRORS) || 50, 5), 2000);
@@ -383,6 +444,8 @@ export async function runFlagsStageSync(opts = {}) {
   const byEmail = new Map();
   /** @type {Map<string, Record<string, unknown>>} — só telefones únicos no relatório */
   const byPhone = new Map();
+  /** @type {Map<string, Set<string>>} CPF → RGMs distintos no SIAA (multi-curso) */
+  const rgmsByCpf = new Map();
   const emailRowCount = new Map();
   const phoneRowCount = new Map();
   // Matriculados PRIMEIRO — base "sim" pra completar identidade das satélites
@@ -393,6 +456,14 @@ export async function runFlagsStageSync(opts = {}) {
     const rgm = normalizeRgm(m.rgm);
     if (cpf) keepBestRow(byCpf, cpf, row);
     if (rgm) keepBestRow(byRgm, rgm, row);
+    if (cpf && rgm) {
+      let set = rgmsByCpf.get(cpf);
+      if (!set) {
+        set = new Set();
+        rgmsByCpf.set(cpf, set);
+      }
+      set.add(rgm);
+    }
     const rowEmails = new Set([normalizeEmail(m._email), normalizeEmail(m.e_mail_ad)].filter(Boolean));
     for (const email of rowEmails) {
       emailRowCount.set(email, (emailRowCount.get(email) || 0) + 1);
@@ -406,6 +477,11 @@ export async function runFlagsStageSync(opts = {}) {
   });
   for (const [email, n] of emailRowCount) if (n > 1) byEmail.delete(email);
   for (const [phone, n] of phoneRowCount) if (n > 1) byPhone.delete(phone);
+  /** CPFs com 2+ RGMs no SIAA — fields/stage nunca via singleton CPF */
+  const multiRgmCpfs = new Set();
+  for (const [cpf, set] of rgmsByCpf) {
+    if (set.size > 1) multiRgmCpfs.add(cpf);
+  }
 
   const matLookups = { byRgm, byCpf };
   const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
@@ -437,6 +513,7 @@ export async function runFlagsStageSync(opts = {}) {
   let stagesSkippedUnknown = 0;
   let fieldsUpdated = 0;
   let skippedNoMatch = 0;
+  let skippedMultiStrict = 0;
   let skippedNoDeal = 0;
   let skippedMissing = 0;
   let skippedUnchanged = 0;
@@ -512,14 +589,22 @@ export async function runFlagsStageSync(opts = {}) {
 
       const rgmDeal = normalizeRgm(findCustom(deal, ['rgm']) || row.rgm_norm);
       const cpfDeal = normalizeCpf(findCustom(deal, ['cpf']) || cpfCache);
-      const matRow =
-        (rgmDeal && byRgm.get(rgmDeal)) ||
-        (cpfDeal && byCpf.get(cpfDeal)) ||
-        (emailCache && byEmail.get(emailCache)) ||
-        (phoneCache && byPhone.get(phoneCache)) ||
-        null;
+      // RGM canônico. Multi-curso: sem RGM no deal → não stomp RGM/curso via CPF.
+      const resolved = resolveMatRowForDeal({
+        rgmDeal,
+        cpfDeal,
+        emailCache,
+        phoneCache,
+        byRgm,
+        byCpf,
+        byEmail,
+        byPhone,
+        multiRgmCpfs,
+      });
+      const matRow = resolved.matRow;
       if (!matRow) {
-        skippedNoMatch += 1;
+        if (resolved.multiStrict) skippedMultiStrict += 1;
+        else skippedNoMatch += 1;
         continue;
       }
       matched += 1;
@@ -836,13 +921,19 @@ export async function runFlagsStageSync(opts = {}) {
 
         const rgmDeal = normalizeRgm(findCustom(deal, ['rgm']) || row.rgm_norm);
         const cpfDeal = normalizeCpf(findCustom(deal, ['cpf']) || cpfCache);
-        // Mesma cadeia do loop principal: deal → matriculados → identidade completa.
-        const matForIdentity =
-          (rgmDeal && byRgm.get(rgmDeal)) ||
-          (cpfDeal && byCpf.get(cpfDeal)) ||
-          (emailCache && byEmail.get(emailCache)) ||
-          (phoneCache && byPhone.get(phoneCache)) ||
-          null;
+        // Mesma resolução do loop principal (multi-curso = RGM-only).
+        const resolvedExit = resolveMatRowForDeal({
+          rgmDeal,
+          cpfDeal,
+          emailCache,
+          phoneCache,
+          byRgm,
+          byCpf,
+          byEmail,
+          byPhone,
+          multiRgmCpfs,
+        });
+        const matForIdentity = resolvedExit.matRow;
         let identity = { cpf: cpfDeal, rgm: rgmDeal, email: emailCache, phone: phoneCache };
         if (matForIdentity) {
           const mappedId = extractMatriculadosMappedValues(matForIdentity);
@@ -1273,6 +1364,7 @@ export async function runFlagsStageSync(opts = {}) {
     stages_skipped_unknown: stagesSkippedUnknown,
     exit_skipped_sanity: exitSkippedSanity,
     skipped_no_match: skippedNoMatch,
+    skipped_multi_rgm_no_deal_rgm: skippedMultiStrict,
     skipped_no_deal: skippedNoDeal,
     skipped_missing: skippedMissing,
     skipped_unchanged: skippedUnchanged,
