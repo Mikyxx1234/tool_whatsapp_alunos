@@ -112,8 +112,27 @@ export interface NovoCrmFlagsLastSync {
   stages_skipped_untouchable?: number;
   errors?: number;
   aborted?: boolean;
+  cancelled?: boolean;
   abort_reason?: string | null;
   matriculados_snapshot_id?: string | null;
+}
+
+export interface NovoCrmFlagsRunningJob {
+  jobId: string;
+  mode?: string;
+  status: string;
+  dry_run?: boolean;
+  total: number;
+  processed: number;
+  sent: number;
+  matched?: number;
+  flags_updated?: number;
+  stages_moved?: number;
+  eta_ms?: number | null;
+  phase: string | null;
+  status_message: string | null;
+  started_at: string;
+  cancel_requested?: boolean;
 }
 
 export interface NovoCrmCacheStatusResponse {
@@ -127,6 +146,7 @@ export interface NovoCrmCacheStatusResponse {
   running_sync: NovoCrmCacheRunningSync | null;
   last_sync: NovoCrmCacheLastSync | null;
   last_flags_sync?: NovoCrmFlagsLastSync | null;
+  running_flags?: NovoCrmFlagsRunningJob | null;
   state: { cursor_updated_at: string | null } | null;
   open_data_loss_events: number;
 }
@@ -244,10 +264,15 @@ export interface NovoCrmFlagsStageJobStatusResponse {
     total: number;
     processed: number;
     sent: number;
+    matched?: number;
+    flags_updated?: number;
+    stages_moved?: number;
+    eta_ms?: number | null;
     phase: string | null;
     status_message: string | null;
     started_at: string;
     finished_at: string | null;
+    cancel_requested?: boolean;
     error: string | null;
     result: NovoCrmFlagsStagePreviewResponse | null;
   } | null;
@@ -570,6 +595,23 @@ export const maintenanceApi = {
     const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
     return jsonFetch<NovoCrmFlagsStageJobStatusResponse>(
       `/api/maintenance/sync-flags-stage-novo-crm-status${qs}`
+    );
+  },
+
+  /** Pede cancel do Att de etapas em andamento. */
+  stopNovoCrmFlagsStage(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<{ ok: boolean; status: string; jobId?: string }>(
+      `/api/maintenance/sync-flags-stage-novo-crm-stop${qs}`,
+      { method: 'POST', body: '{}' }
+    );
+  },
+
+  /** Pede cancel do Full Sync do espelho. */
+  stopNovoCrmCacheSync() {
+    return jsonFetch<{ ok: boolean; status: string }>(
+      `/api/maintenance/sync-novo-crm-cache-stop`,
+      { method: 'POST', body: '{}' }
     );
   },
 

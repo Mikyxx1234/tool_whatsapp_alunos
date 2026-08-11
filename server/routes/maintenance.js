@@ -13,6 +13,7 @@ import * as datacrazyLeadCacheRepo from '../repositories/datacrazyLeadCacheRepos
 import {
   runNovoCrmCacheSync,
   startNovoCrmCacheSyncBackground,
+  requestCancelNovoCrmCacheSync,
 } from '../services/novoCrmPersonCacheSyncService.js';
 import * as novoCrmPersonCacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
@@ -44,6 +45,7 @@ import {
   isFlagsStageSyncRunning,
   getFlagsStageSyncJob,
   getRunningFlagsStageSyncJob,
+  requestCancelFlagsStageSync,
 } from '../services/novoCrmFlagsStageSyncService.js';
 import * as activationResponseRepo from '../repositories/activationResponseRepository.js';
 import { query } from '../db/client.js';
@@ -208,6 +210,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
   try {
     await novoCrmPersonCacheRepo.closeStaleRunningSyncs();
     const stats = await novoCrmPersonCacheRepo.getCacheStats();
+    const flagsJob = getRunningFlagsStageSyncJob();
     res.json({
       ok: true,
       cache_total: stats.total,
@@ -219,6 +222,25 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       running_sync: stats.running,
       last_sync: stats.last_sync,
       last_flags_sync: stats.last_flags_sync || null,
+      running_flags: flagsJob
+        ? {
+            jobId: flagsJob.jobId,
+            mode: flagsJob.mode,
+            status: flagsJob.status,
+            dry_run: flagsJob.dry_run,
+            total: flagsJob.total,
+            processed: flagsJob.processed,
+            sent: flagsJob.sent,
+            matched: flagsJob.matched ?? 0,
+            flags_updated: flagsJob.flags_updated ?? 0,
+            stages_moved: flagsJob.stages_moved ?? 0,
+            eta_ms: flagsJob.eta_ms ?? null,
+            phase: flagsJob.phase,
+            status_message: flagsJob.status_message,
+            started_at: flagsJob.started_at,
+            cancel_requested: Boolean(flagsJob.cancel_requested),
+          }
+        : null,
       state: stats.state,
       open_data_loss_events: stats.open_data_loss_events,
     });
@@ -545,10 +567,11 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
 
     if (reallyDry) {
+      // Sem max explícito usa 50000 (varrida real, não amostra ~2k que “travava” em ~1900 match).
       const preview = await runFlagsStageSync({
         dryRun: true,
         mode,
-        maxDeals: maxDeals || 500,
+        maxDeals: maxDeals || 50000,
       });
       return res.json(preview);
     }
@@ -588,6 +611,37 @@ router.post('/sync-flags-stage-novo-crm', requireApiKey, async (req, res) => {
 });
 
 /**
+ * POST /api/maintenance/sync-flags-stage-novo-crm-stop?jobId=
+ * Cancel cooperativo do Att de etapas em andamento.
+ */
+router.post('/sync-flags-stage-novo-crm-stop', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId || req.body?.jobId || null;
+    const r = requestCancelFlagsStageSync(jobId ? String(jobId) : undefined);
+    if (!r.ok) return res.status(409).json(r);
+    res.json({ ok: true, status: 'cancelling', jobId: r.jobId });
+  } catch (err) {
+    console.error('[sync-flags-stage-novo-crm-stop]', err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/sync-novo-crm-cache-stop
+ * Cancel cooperativo do Full Sync do espelho.
+ */
+router.post('/sync-novo-crm-cache-stop', requireApiKey, async (_req, res) => {
+  try {
+    const r = requestCancelNovoCrmCacheSync();
+    if (!r.ok) return res.status(409).json(r);
+    res.json({ ok: true, status: 'cancelling' });
+  } catch (err) {
+    console.error('[sync-novo-crm-cache-stop]', err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
  * GET /api/maintenance/sync-flags-stage-novo-crm-status?jobId=
  */
 router.get('/sync-flags-stage-novo-crm-status', requireApiKey, async (req, res) => {
@@ -608,10 +662,15 @@ router.get('/sync-flags-stage-novo-crm-status', requireApiKey, async (req, res) 
         total: job.total,
         processed: job.processed,
         sent: job.sent,
+        matched: job.matched ?? 0,
+        flags_updated: job.flags_updated ?? 0,
+        stages_moved: job.stages_moved ?? 0,
+        eta_ms: job.eta_ms ?? null,
         phase: job.phase,
         status_message: job.status_message,
         started_at: job.started_at,
         finished_at: job.finished_at,
+        cancel_requested: Boolean(job.cancel_requested),
         result: job.result,
         error: job.error,
       },

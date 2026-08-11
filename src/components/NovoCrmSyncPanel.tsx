@@ -6,12 +6,14 @@ import {
   Database,
   FileWarning,
   RefreshCw,
+  Square,
   UserRound,
   X,
 } from 'lucide-react';
 import {
   maintenanceApi,
   type NovoCrmCacheStatusResponse,
+  type NovoCrmFlagsStageJobStatusResponse,
   type NovoCrmRegressionEvent,
   type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
@@ -28,8 +30,34 @@ function fmtDt(iso: string | null | undefined) {
 }
 
 function fmtDurationMs(ms: number) {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
   if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
-  return `${Math.floor(ms / 60_000)} min`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  if (m < 60) return s > 0 ? `${m} min ${s} s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  return `${h} h ${m % 60} min`;
+}
+
+function phaseLabel(phase: string | null | undefined) {
+  switch (phase) {
+    case 'starting':
+      return 'Iniciando';
+    case 'loading_bases':
+      return 'Carregando bases SIAA';
+    case 'loading_cache':
+      return 'Carregando espelho';
+    case 'processing':
+      return 'Calculando alterações';
+    case 'processing_exit':
+      return 'Entrada/saída remat';
+    case 'writing':
+      return 'Gravando no CRM';
+    case 'done':
+      return 'Concluído';
+    default:
+      return phase || '…';
+  }
 }
 
 type AlertsPreview = {
@@ -37,6 +65,8 @@ type AlertsPreview = {
   error: string | null;
   alerts: NovoCrmRegressionEvent[] | null;
 };
+
+type FlagsJobLive = NonNullable<NovoCrmFlagsStageJobStatusResponse['job']>;
 
 export function NovoCrmSyncPanel() {
   const [status, setStatus] = useState<NovoCrmCacheStatusResponse | null>(null);
@@ -46,10 +76,13 @@ export function NovoCrmSyncPanel() {
 
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [syncStopping, setSyncStopping] = useState(false);
 
   const [flagsJobId, setFlagsJobId] = useState<string | null>(null);
+  const [flagsJob, setFlagsJob] = useState<FlagsJobLive | null>(null);
   const [flagsMsg, setFlagsMsg] = useState<string | null>(null);
   const [flagsBusy, setFlagsBusy] = useState(false);
+  const [flagsStopping, setFlagsStopping] = useState(false);
 
   const [dedupeBusy, setDedupeBusy] = useState(false);
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
@@ -72,6 +105,32 @@ export function NovoCrmSyncPanel() {
       const s = await maintenanceApi.getNovoCrmCacheStatus();
       setStatus(s);
       setError(null);
+      // Reanexa Att em andamento (refresh / outra aba).
+      if (s.running_flags?.jobId) {
+        setFlagsJobId((prev) => prev || s.running_flags!.jobId);
+        setFlagsBusy(true);
+        const r = s.running_flags;
+        setFlagsJob({
+          jobId: r.jobId,
+          mode: r.mode || 'flags_stage',
+          status: r.status,
+          dry_run: Boolean(r.dry_run),
+          total: r.total ?? 0,
+          processed: r.processed ?? 0,
+          sent: r.sent ?? 0,
+          matched: r.matched ?? 0,
+          flags_updated: r.flags_updated ?? 0,
+          stages_moved: r.stages_moved ?? 0,
+          eta_ms: r.eta_ms ?? null,
+          phase: r.phase,
+          status_message: r.status_message,
+          started_at: r.started_at,
+          finished_at: null,
+          cancel_requested: r.cancel_requested,
+          error: null,
+          result: null,
+        });
+      }
       return s;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Falha ao carregar status');
@@ -87,7 +146,8 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    if (status?.running || flagsJobId || dedupeJobId) {
+    const needPoll = Boolean(status?.running || flagsJobId || dedupeJobId);
+    if (needPoll) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
         void loadStatus();
@@ -96,18 +156,32 @@ export function NovoCrmSyncPanel() {
             .getNovoCrmFlagsStageStatus(flagsJobId)
             .then((r) => {
               if (!r.job) return;
-              setFlagsMsg(r.job.status_message || r.job.phase || null);
+              setFlagsJob(r.job);
+              setFlagsMsg(r.job.status_message || phaseLabel(r.job.phase));
               if (r.job.status !== 'running') {
                 setFlagsJobId(null);
                 setFlagsBusy(false);
+                setFlagsStopping(false);
+                const res = r.job.result;
                 if (r.job.status === 'completed') {
-                  const res = r.job.result;
                   setFlagsMsg(
-                    `Att de etapas: ${res?.flags_updated ?? 0} flags · ${res?.stages_moved ?? 0} movidos` +
+                    `Att concluída: ${res?.flags_updated ?? r.job.flags_updated ?? 0} flags · ${
+                      res?.stages_moved ?? r.job.stages_moved ?? 0
+                    } etapas` +
                       (res?.stages_skipped_untouchable
                         ? ` · ${res.stages_skipped_untouchable} intocáveis`
                         : '') +
+                      (res?.scanned != null
+                        ? ` · ${res.scanned.toLocaleString('pt-BR')} deals`
+                        : '') +
                       (res?.errors ? ` · ${res.errors} erros` : '')
+                  );
+                } else if (r.job.status === 'cancelled') {
+                  setFlagsMsg(
+                    `Att cancelada` +
+                      (res
+                        ? ` (até então: ${res.flags_updated ?? 0} flags · ${res.stages_moved ?? 0} etapas · ${res.scanned ?? 0} deals)`
+                        : '')
                   );
                 } else if (r.job.status === 'failed') {
                   setFlagsMsg(r.job.error || 'Att de etapas falhou');
@@ -140,7 +214,7 @@ export function NovoCrmSyncPanel() {
             })
             .catch(() => {});
         }
-      }, 3000) as unknown as number;
+      }, 2000) as unknown as number;
     } else {
       stopPoll();
     }
@@ -148,6 +222,7 @@ export function NovoCrmSyncPanel() {
   }, [status?.running, flagsJobId, dedupeJobId, dedupeMode, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
+  const lastFlags = status?.last_flags_sync || null;
   const lastDurationMs =
     last?.finished_at && last?.started_at
       ? new Date(last.finished_at).getTime() - new Date(last.started_at).getTime()
@@ -202,36 +277,69 @@ export function NovoCrmSyncPanel() {
     }
   };
 
+  const stopFullSync = async () => {
+    if (syncStopping) return;
+    if (!window.confirm('Interromper o Full Sync? O espelho fica parcial (sem markDeleted).')) return;
+    setSyncStopping(true);
+    try {
+      await maintenanceApi.stopNovoCrmCacheSync();
+      setSyncMsg('Cancelando Full Sync… (para no próximo lote)');
+    } catch (e) {
+      setSyncMsg(e instanceof Error ? e.message : 'Falha ao pedir cancelamento');
+    } finally {
+      setSyncStopping(false);
+    }
+  };
+
   const runFlagsStageSync = async () => {
     if (flagsBusy || flagsJobId) return;
+    const lf = status?.last_flags_sync;
+    const lastLine = lf?.finished_at
+      ? `Última Att real: ${fmtDt(lf.finished_at)} · ` +
+        `${Number(lf.scanned || 0).toLocaleString('pt-BR')} deals · ` +
+        `${Number(lf.matched || 0).toLocaleString('pt-BR')} match · ` +
+        `${Number(lf.flags_updated || 0).toLocaleString('pt-BR')} flags · ` +
+        `${Number(lf.stages_moved || 0).toLocaleString('pt-BR')} etapas` +
+        (lf.cancelled ? ' · cancelada' : lf.aborted || lf.ok === false ? ' · incompleta' : '')
+      : 'Ainda não há Att aplicada registrada neste ambiente.';
+
+    const ok = window.confirm(
+      `Att de etapas — aplicar no CRM\n\n` +
+        `${lastLine}\n\n` +
+        `Roda em TODOS os deals do espelho (sem amostra seca de 2.000).\n` +
+        `Flags (Doc, Financeiro, BB, Evasão…) + etapa. CAA→Retenção só ≤72h; depois SIAA/Perdido.\n` +
+        `Não toca Ganho/Cancelado nem Retenção manual (sem CAA open).\n` +
+        `Acompanhe a barra de progresso e use "Parar" se precisar.\n\n` +
+        `Dica: rode Full Sync antes se criou gente recentemente.\n\n` +
+        `Confirmar aplicação?`
+    );
+    if (!ok) {
+      setFlagsMsg('Cancelado.');
+      return;
+    }
     setFlagsBusy(true);
-    setFlagsMsg('Calculando prévia de etapas/flags…');
+    setFlagsJob(null);
+    setFlagsMsg('Iniciando Att de etapas…');
     try {
-      const preview = await maintenanceApi.previewNovoCrmFlagsStage({
-        mode: 'flags_stage',
-        max: 2000,
-      });
-      const ok = window.confirm(
-        `Att de etapas (prévia em até 2.000 deals)\n\n` +
-          `Match: ${preview.matched.toLocaleString('pt-BR')}\n` +
-          `Flags a atualizar: ${preview.flags_updated.toLocaleString('pt-BR')}\n` +
-          `Etapas a mover: ${preview.stages_moved.toLocaleString('pt-BR')}\n` +
-          `Intocáveis (Ganho/Cancelado + Retenção sem CAA open): ${preview.stages_skipped_untouchable.toLocaleString('pt-BR')}\n\n` +
-          `CAA → Retenção só nas primeiras 72h (data chegada). Depois segue status SIAA.\n` +
-          `Confirmar aplicação?\n` +
-          `(Dica: rode Full Sync antes se criou gente recentemente.)`
-      );
-      if (!ok) {
-        setFlagsMsg('Cancelado.');
-        setFlagsBusy(false);
-        return;
-      }
       const started = await maintenanceApi.startNovoCrmFlagsStage({ mode: 'flags_stage' });
       setFlagsJobId(started.jobId);
       setFlagsMsg('Att de etapas em andamento…');
     } catch (e) {
       setFlagsMsg(e instanceof Error ? e.message : 'Falha no Att de etapas');
       setFlagsBusy(false);
+    }
+  };
+
+  const stopFlagsStage = async () => {
+    if (flagsStopping) return;
+    if (!window.confirm('Interromper a Att de etapas? O que já gravou permanece.')) return;
+    setFlagsStopping(true);
+    try {
+      await maintenanceApi.stopNovoCrmFlagsStage(flagsJobId || undefined);
+      setFlagsMsg('Cancelando Att… (para no próximo lote)');
+    } catch (e) {
+      setFlagsMsg(e instanceof Error ? e.message : 'Falha ao pedir cancelamento');
+      setFlagsStopping(false);
     }
   };
 
@@ -278,6 +386,21 @@ export function NovoCrmSyncPanel() {
   const seen = running?.contacts_seen ?? 0;
   const pct =
     total && total > 0 ? Math.min(100, Math.round((seen / total) * 100)) : null;
+
+  const flagsRunning = Boolean(flagsJobId) || Boolean(status?.running_flags);
+  const fj = flagsJob;
+  const flagsPct =
+    fj && fj.total > 0
+      ? Math.min(100, Math.round((fj.processed / fj.total) * 100))
+      : fj && fj.phase === 'writing'
+        ? 0
+        : null;
+  const flagsEta =
+    fj?.eta_ms != null && fj.eta_ms > 0 ? fmtDurationMs(fj.eta_ms) : null;
+  const flagsElapsed =
+    fj?.started_at != null
+      ? fmtDurationMs(Date.now() - new Date(fj.started_at).getTime())
+      : null;
 
   const tiles: Array<{
     id: string;
@@ -407,19 +530,32 @@ export function NovoCrmSyncPanel() {
             <p className="text-[11px] text-indigo-800/80 flex-1">
               Reespelha o CRM no cache local. Use quando o painel estiver desatualizado.
             </p>
-            <button
-              type="button"
-              onClick={() => void runFullSync()}
-              disabled={Boolean(status?.running) || syncBusy}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {status?.running || syncBusy ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Database className="w-3.5 h-3.5" />
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void runFullSync()}
+                disabled={Boolean(status?.running) || syncBusy}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {status?.running || syncBusy ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Database className="w-3.5 h-3.5" />
+                )}
+                {status?.running ? 'Sincronizando…' : 'Full Sync'}
+              </button>
+              {status?.running && (
+                <button
+                  type="button"
+                  onClick={() => void stopFullSync()}
+                  disabled={syncStopping}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-white border border-rose-300 hover:bg-rose-50 rounded-lg disabled:opacity-50"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  {syncStopping ? 'Parando…' : 'Parar'}
+                </button>
               )}
-              {status?.running ? 'Sincronizando…' : 'Full Sync'}
-            </button>
+            </div>
           </div>
 
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex flex-col gap-2">
@@ -429,39 +565,59 @@ export function NovoCrmSyncPanel() {
               só ≤72h; depois SIAA/Perdido. Não toca Ganho/Cancelado nem Retenção manual (sem CAA open).
               Preenche flag vazia só quando a base pede Sim.
             </p>
-            {status?.last_flags_sync?.finished_at ? (
-              <p className="text-[10px] text-emerald-900/70">
-                Última Att:{' '}
-                {new Date(status.last_flags_sync.finished_at).toLocaleString('pt-BR', {
-                  day: '2-digit',
-                  month: '2-digit',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-                {' · '}
-                {Number(status.last_flags_sync.flags_updated || 0).toLocaleString('pt-BR')} flags
-                {' · '}
-                {Number(status.last_flags_sync.stages_moved || 0).toLocaleString('pt-BR')} etapas
-                {status.last_flags_sync.aborted || status.last_flags_sync.ok === false
-                  ? ' · incompleta'
-                  : ''}
-              </p>
+            {lastFlags?.finished_at ? (
+              <div className="text-[10px] text-emerald-900/80 space-y-0.5 rounded-md border border-emerald-200/80 bg-white/60 px-2 py-1.5">
+                <p className="font-semibold text-emerald-900">
+                  Última Att (resultado real)
+                  {lastFlags.cancelled
+                    ? ' · cancelada'
+                    : lastFlags.aborted || lastFlags.ok === false
+                      ? ' · incompleta'
+                      : ''}
+                </p>
+                <p>{fmtDt(lastFlags.finished_at)}</p>
+                <p className="tabular-nums">
+                  {Number(lastFlags.scanned || 0).toLocaleString('pt-BR')} deals ·{' '}
+                  {Number(lastFlags.matched || 0).toLocaleString('pt-BR')} match ·{' '}
+                  {Number(lastFlags.flags_updated || 0).toLocaleString('pt-BR')} flags ·{' '}
+                  {Number(lastFlags.stages_moved || 0).toLocaleString('pt-BR')} etapas
+                  {lastFlags.stages_skipped_untouchable
+                    ? ` · ${Number(lastFlags.stages_skipped_untouchable).toLocaleString('pt-BR')} intocáveis`
+                    : ''}
+                  {lastFlags.errors
+                    ? ` · ${Number(lastFlags.errors).toLocaleString('pt-BR')} erros`
+                    : ''}
+                </p>
+              </div>
             ) : (
               <p className="text-[10px] text-emerald-900/50">Sem Att registrada neste ambiente.</p>
             )}
-            <button
-              type="button"
-              onClick={() => void runFlagsStageSync()}
-              disabled={flagsBusy || Boolean(flagsJobId)}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {flagsBusy || flagsJobId ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <CheckCircle2 className="w-3.5 h-3.5" />
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void runFlagsStageSync()}
+                disabled={flagsBusy || flagsRunning}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {flagsBusy || flagsRunning ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                )}
+                {flagsRunning ? 'Att rodando…' : 'Att de etapas'}
+              </button>
+              {flagsRunning && (
+                <button
+                  type="button"
+                  onClick={() => void stopFlagsStage()}
+                  disabled={flagsStopping || Boolean(fj?.cancel_requested)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-white border border-rose-300 hover:bg-rose-50 rounded-lg disabled:opacity-50"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  {flagsStopping || fj?.cancel_requested ? 'Parando…' : 'Parar'}
+                </button>
               )}
-              {flagsJobId ? 'Att de etapas…' : 'Att de etapas'}
-            </button>
+            </div>
           </div>
 
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
@@ -571,13 +727,13 @@ export function NovoCrmSyncPanel() {
         </div>
 
         {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
-        {syncMsg && (
+        {syncMsg && !status?.running && (
           <p className="mt-3 text-sm text-indigo-700 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {syncMsg}
           </p>
         )}
-        {flagsMsg && (
+        {flagsMsg && !flagsRunning && (
           <p className="mt-3 text-sm text-emerald-800 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {flagsMsg}
@@ -585,11 +741,22 @@ export function NovoCrmSyncPanel() {
         )}
 
         {status?.running && (
-          <div className="mt-4 max-w-lg">
-            <p className="text-xs font-medium text-amber-700 mb-1">
-              Full Sync ({running?.mode || 'full'}) em andamento…
-            </p>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+          <div className="mt-4 max-w-xl rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <p className="text-xs font-medium text-indigo-900">
+                Full Sync ({running?.mode || 'full'}) em andamento
+              </p>
+              <button
+                type="button"
+                onClick={() => void stopFullSync()}
+                disabled={syncStopping}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-rose-700 border border-rose-300 rounded-md hover:bg-rose-50 disabled:opacity-50"
+              >
+                <Square className="w-2.5 h-2.5 fill-current" />
+                Parar
+              </button>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-indigo-100">
               <div
                 className={`h-full rounded-full bg-indigo-600 transition-[width] duration-500 ${
                   pct == null ? 'animate-pulse w-1/3' : ''
@@ -597,11 +764,61 @@ export function NovoCrmSyncPanel() {
                 style={pct == null ? undefined : { width: `${pct}%` }}
               />
             </div>
-            <p className="mt-1 text-[11px] text-gray-500 tabular-nums">
+            <p className="mt-1.5 text-[11px] text-gray-600 tabular-nums">
               {pct != null
-                ? `${pct}% · ${seen.toLocaleString('pt-BR')} de ${(total ?? 0).toLocaleString('pt-BR')}`
+                ? `${pct}% · ${seen.toLocaleString('pt-BR')} de ${(total ?? 0).toLocaleString('pt-BR')} contatos`
                 : `${seen.toLocaleString('pt-BR')} processados…`}
+              {running?.cache_upserted != null
+                ? ` · ${Number(running.cache_upserted).toLocaleString('pt-BR')} upserts`
+                : ''}
             </p>
+          </div>
+        )}
+
+        {flagsRunning && (
+          <div className="mt-4 max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <p className="text-xs font-semibold text-emerald-900">
+                Att de etapas · {phaseLabel(fj?.phase)}
+                {fj?.cancel_requested ? ' · cancelando…' : ''}
+              </p>
+              <button
+                type="button"
+                onClick={() => void stopFlagsStage()}
+                disabled={flagsStopping || Boolean(fj?.cancel_requested)}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-rose-700 border border-rose-300 rounded-md hover:bg-rose-50 disabled:opacity-50"
+              >
+                <Square className="w-2.5 h-2.5 fill-current" />
+                Parar
+              </button>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-emerald-100">
+              <div
+                className={`h-full rounded-full bg-emerald-600 transition-[width] duration-500 ${
+                  flagsPct == null ? 'animate-pulse w-1/3' : ''
+                }`}
+                style={flagsPct == null ? undefined : { width: `${flagsPct}%` }}
+              />
+            </div>
+            <div className="mt-1.5 space-y-0.5 text-[11px] text-emerald-950/80 tabular-nums">
+              <p>
+                {flagsPct != null
+                  ? `${flagsPct}% · ${Number(fj?.processed || 0).toLocaleString('pt-BR')} / ${Number(fj?.total || 0).toLocaleString('pt-BR')}`
+                  : `${Number(fj?.processed || 0).toLocaleString('pt-BR')} processados…`}
+                {fj?.matched != null
+                  ? ` · match ${Number(fj.matched).toLocaleString('pt-BR')}`
+                  : ''}
+              </p>
+              <p>
+                Flags gravadas: {Number(fj?.flags_updated || 0).toLocaleString('pt-BR')} · Etapas:{' '}
+                {Number(fj?.stages_moved || 0).toLocaleString('pt-BR')}
+                {flagsElapsed ? ` · decorrido ${flagsElapsed}` : ''}
+                {flagsEta ? ` · ETA ~${flagsEta}` : ''}
+              </p>
+              {fj?.status_message && (
+                <p className="text-emerald-800/70 truncate">{fj.status_message}</p>
+              )}
+            </div>
           </div>
         )}
 

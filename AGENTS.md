@@ -5,6 +5,18 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-11 — Sync panel: stop Att/Full + progresso real + fim do “1903” de prévia
+- **Modelo usado:** Composer.
+- **Problema:** Att parecia travada (só texto); sem botão parar; confirmar Att rodava dry_run com `max=2000` que todo dia batia ~1900 matches (amostra do espelho, não resultado real).
+- **Decisão:**
+  1. **Cancel cooperativo** Att: `cancel_requested` no job + `POST /api/maintenance/sync-flags-stage-novo-crm-stop` (`requestCancelFlagsStageSync`). Loops scan/write checam e gravam status `cancelled` + `last_flags_sync` (parcial ok).
+  2. **Cancel Full Sync:** `POST /api/maintenance/sync-novo-crm-cache-stop` — flag em memória; quebra o while; **não** roda `markDeleted` nem atualiza cursor (espelho parcial seguro).
+  3. **Progresso Att:** job expõe `phase`, `processed/total`, `matched`, `flags_updated`, `stages_moved`, `eta_ms`; status API inclui `running_flags` para reanexar após refresh.
+  4. **UI:** barra % + fase + Parar; `last_flags_sync` detalhado (scanned/match/flags/etapas) como verdade do último apply — sem dry pré-confirmação amostrado.
+  5. Dry sync API sem `max` default agora **50000** (antes 500) se alguém chamar dry de script.
+- **Arquivos:** `novoCrmFlagsStageSyncService.js`, `novoCrmPersonCacheSyncService.js`, `maintenance.js`, `maintenanceApi.ts`, `NovoCrmSyncPanel.tsx`.
+- **Não** cancel em Dedupe nesta entrega.
+
 ### 2026-08-11 — Att flag **Financeiro** (base `financeiro`) → CRM **Dia 10** (`dia`)
 - **Modelo usado:** Composer/Auto.
 - **Produto:** Grad mensalidade vence dia **25** → base **Inadimplentes vencidos** grava **Situação Financeira** (`situacaofinanceira` / `NOVO_CRM_FIELD_INADIMPLENTE`). Até o dia **10** ainda há desconto; quem está na base **Financeiro** (snapshot slug `financeiro`) = mensalidade em aberto **ainda no prazo** → grava SELECT **Dia 10** no deal.

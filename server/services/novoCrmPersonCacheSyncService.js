@@ -47,6 +47,26 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Cancel cooperativo do Full/Incremental espelho (operador no painel). */
+let cacheSyncCancelRequested = false;
+
+export function requestCancelNovoCrmCacheSync() {
+  if (!activeSyncPromise) {
+    return { ok: false, error: 'Nenhum Full Sync em andamento' };
+  }
+  cacheSyncCancelRequested = true;
+  console.log('[novo-crm-cache-sync] cancel requested by operator');
+  return { ok: true };
+}
+
+export function isNovoCrmCacheSyncCancelRequested() {
+  return cacheSyncCancelRequested;
+}
+
+function clearCacheSyncCancel() {
+  cacheSyncCancelRequested = false;
+}
+
 function minusOverlap(value) {
   if (!value) return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   return new Date(new Date(value).getTime() - OVERLAP_MS).toISOString();
@@ -84,6 +104,7 @@ function resolveContactCap(contactsTotal, { maxContacts = null, samplePct = null
 
 async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct = null } = {}) {
   apiSource.assertApiSourceReady();
+  clearCacheSyncCancel();
 
   const release = await cacheRepo.acquireSyncLock();
   if (!release) {
@@ -143,6 +164,7 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
     const fetchFields = apiSource.shouldFetchDealFields();
 
     while (page <= totalPages) {
+      if (cacheSyncCancelRequested) break;
       if (truncated && contactsSeen >= contactCap) break;
 
       const res = await apiSource.listContactsApiPage({ page, perPage: contactPerPage });
@@ -251,16 +273,18 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       if (batchDelayMs() > 0) await sleep(batchDelayMs());
     }
 
+    const cancelled = cacheSyncCancelRequested;
     if (!dryRun) {
       // Amostra NÃO pode markDeleted — apagaria os ~90% fora do sample.
-      if (!truncated) {
+      // Cancel no meio também não markDeleted (evita apagar quem ainda não varreu).
+      if (!truncated && !cancelled) {
         deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
       } else {
         console.log(
-          `[novo-crm-cache-sync] amostra: markDeleted pulado (seen=${contactsSeen}/${contactsTotal})`
+          `[novo-crm-cache-sync] markDeleted pulado (truncated=${truncated} cancelled=${cancelled} seen=${contactsSeen}/${contactsTotal})`
         );
       }
-      if (maxSourceUpdatedAt) {
+      if (maxSourceUpdatedAt && !cancelled) {
         await cacheRepo.updateSyncState({
           cursorUpdatedAt: maxSourceUpdatedAt,
           cursorId: null,
@@ -270,7 +294,7 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
 
     const durationMs = Date.now() - startMs;
     await cacheRepo.recordSyncFinish(logId, {
-      status: 'ok',
+      status: cancelled ? 'cancelled' : 'ok',
       cursorFinishedAt: maxSourceUpdatedAt,
       batches,
       contactsSeen,
@@ -278,12 +302,13 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       skipped,
       deleted,
       dataLossEvents,
+      errorMessage: cancelled ? 'cancelado pelo operador' : null,
     });
     console.log(
-      `[novo-crm-cache-sync] full API ok batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} deals_recuperados=${dealsRecovered}/${emptyDealsVerified} ${durationMs}ms`
+      `[novo-crm-cache-sync] full API ${cancelled ? 'cancelled' : 'ok'} batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} deals_recuperados=${dealsRecovered}/${emptyDealsVerified} ${durationMs}ms`
     );
     return {
-      ok: true,
+      ok: !cancelled,
       mode: 'full',
       source: 'api',
       logId,
@@ -301,6 +326,7 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       empty_deals_verified: emptyDealsVerified,
       empty_deals_verify_errors: emptyDealsVerifyErrors,
       deals_recovered: dealsRecovered,
+      cancelled,
     };
   } catch (err) {
     if (logId) {
@@ -337,6 +363,7 @@ async function runFullSyncInternal({ dryRun = false, maxContacts = null, sampleP
     throw err;
   }
 
+  clearCacheSyncCancel();
   const release = await cacheRepo.acquireSyncLock();
   if (!release) {
     const err = new Error('Sync Novo CRM já em andamento');
@@ -366,6 +393,7 @@ async function runFullSyncInternal({ dryRun = false, maxContacts = null, sampleP
     logId = await cacheRepo.recordSyncStart({ mode: 'full', contactsTotal });
 
     while (true) {
+      if (cacheSyncCancelRequested) break;
       const ids = await sourceRepo.listFullContactIdsPage({ afterId, limit: batchSize() });
       if (!ids.length) break;
       batches += 1;
@@ -398,16 +426,23 @@ async function runFullSyncInternal({ dryRun = false, maxContacts = null, sampleP
       if (batchDelayMs() > 0) await sleep(batchDelayMs());
     }
 
+    const cancelled = cacheSyncCancelRequested;
     if (!dryRun) {
-      deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
-      if (maxSourceUpdatedAt) {
-        await cacheRepo.updateSyncState({ cursorUpdatedAt: maxSourceUpdatedAt, cursorId: afterId });
+      if (!cancelled) {
+        deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
+        if (maxSourceUpdatedAt) {
+          await cacheRepo.updateSyncState({ cursorUpdatedAt: maxSourceUpdatedAt, cursorId: afterId });
+        }
+      } else {
+        console.log(
+          `[novo-crm-cache-sync] cancel: markDeleted/cursor pulados (seen=${contactsSeen})`
+        );
       }
     }
 
     const durationMs = Date.now() - startMs;
     await cacheRepo.recordSyncFinish(logId, {
-      status: 'ok',
+      status: cancelled ? 'cancelled' : 'ok',
       cursorFinishedAt: maxSourceUpdatedAt,
       batches,
       contactsSeen,
@@ -415,12 +450,13 @@ async function runFullSyncInternal({ dryRun = false, maxContacts = null, sampleP
       skipped,
       deleted,
       dataLossEvents,
+      errorMessage: cancelled ? 'cancelado pelo operador' : null,
     });
     console.log(
-      `[novo-crm-cache-sync] full ok batches=${batches} seen=${contactsSeen} upserted=${upserted} skipped=${skipped} deleted=${deleted} events=${dataLossEvents} ${durationMs}ms dry=${dryRun}`
+      `[novo-crm-cache-sync] full ${cancelled ? 'cancelled' : 'ok'} batches=${batches} seen=${contactsSeen} upserted=${upserted} skipped=${skipped} deleted=${deleted} events=${dataLossEvents} ${durationMs}ms dry=${dryRun}`
     );
     return {
-      ok: true,
+      ok: !cancelled,
       mode: 'full',
       source: 'db',
       logId,
@@ -432,6 +468,7 @@ async function runFullSyncInternal({ dryRun = false, maxContacts = null, sampleP
       dataLossEvents,
       durationMs,
       dry_run: dryRun,
+      cancelled,
     };
   } catch (err) {
     if (logId) {
@@ -595,6 +632,7 @@ export async function runNovoCrmCacheSync({
 
 export function startNovoCrmCacheSyncBackground(opts = {}) {
   if (activeSyncPromise) return false;
+  clearCacheSyncCancel();
   activeSyncPromise = runNovoCrmCacheSync(opts)
     .catch((err) => {
       console.error('[novo-crm-cache-sync] background FAIL:', err?.message || String(err));
@@ -602,6 +640,7 @@ export function startNovoCrmCacheSyncBackground(opts = {}) {
     })
     .finally(() => {
       activeSyncPromise = null;
+      clearCacheSyncCancel();
     });
   return true;
 }

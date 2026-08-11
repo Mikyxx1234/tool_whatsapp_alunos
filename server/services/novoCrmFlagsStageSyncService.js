@@ -407,6 +407,7 @@ export async function runFlagsStageSync(opts = {}) {
   const errorBudget = maxErrorsBeforeAbort();
   let aborted = false;
   let abortReason = null;
+  let cancelled = false;
 
   if (!isNovoCrmApiConfigured()) {
     const err = new Error('NOVO_CRM_ENABLED/TOKEN/BASE_URL não configurados');
@@ -425,6 +426,19 @@ export async function runFlagsStageSync(opts = {}) {
     if (!jobId) return;
     const j = jobs.get(jobId);
     if (j) Object.assign(j, p);
+  };
+
+  /** Operador pediu stop via POST …/stop (cancel_requested no job). */
+  const checkCancel = () => {
+    if (!jobId) return false;
+    const j = jobs.get(jobId);
+    if (j?.cancel_requested) {
+      cancelled = true;
+      aborted = true;
+      abortReason = 'cancelado pelo operador';
+      return true;
+    }
+    return false;
   };
 
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
@@ -563,7 +577,7 @@ export async function runFlagsStageSync(opts = {}) {
   });
 
   outer: for (const row of cacheRows) {
-    if (aborted) break;
+    if (aborted || checkCancel()) break;
     const deals = dealsFromCacheRow(row);
     if (!deals.length) {
       skippedNoDeal += 1;
@@ -575,13 +589,19 @@ export async function runFlagsStageSync(opts = {}) {
     const phoneCache = normalizePhone(row.phone_norm);
 
     for (const deal of deals) {
-      if (aborted || scanned >= maxDeals) break outer;
+      if (aborted || checkCancel() || scanned >= maxDeals) break outer;
       scanned += 1;
-      if (scanned % 100 === 0) {
+      if (scanned % 50 === 0 || scanned === 1) {
         patchJob({
           processed: scanned,
+          total: Math.min(maxDeals, cacheRows.length) || scanned,
           sent: flagsUpdated + stagesMoved + fieldsUpdated,
-          status_message: `Processados ${scanned}…`,
+          matched,
+          flags_updated: flagsUpdated,
+          stages_moved: stagesMoved,
+          status_message: dryRun
+            ? `Prévia: ${scanned.toLocaleString('pt-BR')} deals (match ${matched})…`
+            : `Calculando: ${scanned.toLocaleString('pt-BR')} deals · match ${matched} · fila ${workQueue.length}…`,
         });
       }
 
@@ -881,7 +901,7 @@ export async function runFlagsStageSync(opts = {}) {
   // Varre TODOS os deals do cache com flag=Sim / etapa Sem Remat. Quem já foi
   // enfileirado no loop principal (matched) é mesclado por dealId (idempotente).
   // mode=fields também roda saída de Sem Rematrícula (reclassifica + Situação).
-  if ((doFlags || doFields) && !aborted) {
+  if ((doFlags || doFields) && !aborted && !checkCancel()) {
     patchJob({ phase: 'processing_exit', status_message: 'Verificando saídas (entrada/saída)…' });
 
     const sanityRatio = flagsExitSanityRatio();
@@ -1253,15 +1273,19 @@ export async function runFlagsStageSync(opts = {}) {
     }
   }
 
-  if (!dryRun && workQueue.length && !aborted) {
+  if (!dryRun && workQueue.length && !aborted && !checkCancel()) {
     patchJob({
       phase: 'writing',
       status_message: `Gravando ${workQueue.length} alterações (${concurrency} workers)…`,
       total: workQueue.length,
       processed: 0,
+      matched,
+      flags_updated: flagsUpdated,
+      stages_moved: stagesMoved,
     });
     let cursor = 0;
     let written = 0;
+    const writeStartedAt = Date.now();
     const decideMoveWork = (stageId, caaOpen, classification) => {
       if (!canMoveStages || !classification?.stageId) {
         return { move: false, untouchable: false, unknown: false };
@@ -1281,6 +1305,7 @@ export async function runFlagsStageSync(opts = {}) {
 
     const worker = async () => {
       while (!aborted) {
+        if (checkCancel()) return;
         const idx = cursor++;
         if (idx >= workQueue.length) return;
         const item = workQueue[idx];
@@ -1352,11 +1377,20 @@ export async function runFlagsStageSync(opts = {}) {
           }
         }
         written += 1;
-        if (written % 50 === 0 || written === workQueue.length) {
+        if (written % 10 === 0 || written === workQueue.length) {
+          const elapsed = Math.max(1, Date.now() - writeStartedAt);
+          const rate = written / elapsed; // items/ms
+          const remaining = workQueue.length - written;
+          const etaMs = rate > 0 ? Math.round(remaining / rate) : null;
           patchJob({
             processed: written,
+            total: workQueue.length,
             sent: flagsUpdated + stagesMoved + fieldsUpdated,
-            status_message: `Gravados ${written}/${workQueue.length}…`,
+            matched,
+            flags_updated: flagsUpdated,
+            stages_moved: stagesMoved,
+            eta_ms: etaMs,
+            status_message: `Gravados ${written}/${workQueue.length}… · flags ${flagsUpdated} · etapas ${stagesMoved}`,
           });
         }
       }
@@ -1398,28 +1432,39 @@ export async function runFlagsStageSync(opts = {}) {
     stages_by_target: stagesByTarget,
     errors,
     aborted,
+    cancelled,
     abort_reason: abortReason,
     error_budget: errorBudget,
+    max_deals: maxDeals,
+    sample_capped: scanned >= maxDeals && cacheRows.length > maxDeals,
     samples,
     error_samples: errorSamples,
     matriculados_snapshot_id: matSnap.id,
   };
 
+  const finalStatus = cancelled ? 'cancelled' : aborted ? 'failed' : 'completed';
   patchJob({
     phase: 'done',
-    status: aborted ? 'failed' : 'completed',
+    status: finalStatus,
     finished_at: new Date().toISOString(),
     result,
     processed: scanned,
     sent: flagsUpdated + stagesMoved + fieldsUpdated,
-    status_message: aborted
-      ? abortReason
-      : dryRun
-        ? 'Prévia pronta'
-        : 'Sync concluído',
+    matched,
+    flags_updated: flagsUpdated,
+    stages_moved: stagesMoved,
+    eta_ms: null,
+    status_message: cancelled
+      ? 'Cancelado pelo operador'
+      : aborted
+        ? abortReason
+        : dryRun
+          ? 'Prévia pronta'
+          : 'Sync concluído',
   });
 
   // Persiste última Att (apply real) — jobs em memória somem no restart.
+  // Também grava cancel parcial (útil pra painel: não fica preso na Att antiga).
   if (!dryRun) {
     try {
       await cacheRepo.saveFlagsStageLastRun({
@@ -1440,6 +1485,7 @@ export async function runFlagsStageSync(opts = {}) {
         skipped_unchanged: skippedUnchanged,
         errors,
         aborted,
+        cancelled,
         abort_reason: abortReason || null,
         matriculados_snapshot_id: matSnap.id,
       });
@@ -1470,6 +1516,25 @@ export function getRunningFlagsStageSyncJob() {
   if (!runningJobId) return null;
   const j = jobs.get(runningJobId);
   return j?.status === 'running' ? j : null;
+}
+
+/**
+ * Pede parada cooperativa do job Att de etapas (lidos nos loops de scan/write).
+ * @param {string} [jobId]
+ * @returns {{ ok: boolean, jobId?: string, error?: string }}
+ */
+export function requestCancelFlagsStageSync(jobId) {
+  const id = jobId ? String(jobId) : runningJobId;
+  if (!id) return { ok: false, error: 'Nenhum job de Att em andamento' };
+  const j = jobs.get(id);
+  if (!j) return { ok: false, error: 'Job não encontrado' };
+  if (j.status !== 'running') {
+    return { ok: false, jobId: id, error: `Job não está rodando (status=${j.status})` };
+  }
+  j.cancel_requested = true;
+  j.status_message = 'Cancelando… (para no próximo lote)';
+  console.log(`[novo-crm-flags-sync] cancel requested job=${id}`);
+  return { ok: true, jobId: id };
 }
 
 /**
@@ -1506,6 +1571,11 @@ export function startFlagsStageSyncBackground(opts = {}) {
     total: 0,
     processed: 0,
     sent: 0,
+    matched: 0,
+    flags_updated: 0,
+    stages_moved: 0,
+    eta_ms: null,
+    cancel_requested: false,
     phase: 'starting',
     status_message: 'Iniciando…',
     started_at: new Date().toISOString(),
@@ -1523,10 +1593,15 @@ export function startFlagsStageSyncBackground(opts = {}) {
     jobId,
   })
     .then((result) => {
-      entry.status = result?.aborted ? 'failed' : 'completed';
+      entry.status = result?.cancelled
+        ? 'cancelled'
+        : result?.aborted
+          ? 'failed'
+          : 'completed';
       entry.result = result;
       entry.finished_at = new Date().toISOString();
-      if (result?.aborted) entry.error = result.abort_reason;
+      if (result?.cancelled) entry.error = 'Cancelado pelo operador';
+      else if (result?.aborted) entry.error = result.abort_reason;
       return result;
     })
     .catch((err) => {
