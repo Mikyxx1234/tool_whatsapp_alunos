@@ -670,6 +670,9 @@ function buildDealValues(fieldIds, mapped, row, classification) {
       : null,
     { fieldId: fieldIds.doc_pendentes, value: simNao(classification.flags.doc_pendentes) },
     { fieldId: fieldIds.inadimplente, value: simNao(classification.flags.inadimplente) },
+    fieldIds.financeiro
+      ? { fieldId: fieldIds.financeiro, value: simNao(classification.flags.financeiro) }
+      : null,
     { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
     { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
     fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
@@ -742,11 +745,12 @@ export async function runOrphanAlunoProvision(opts = {}) {
   });
 
   patchJob({ phase: 'load_bases', status_message: 'Carregando bases satélite…' });
-  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
     caaProtocolsRepo.loadOpenCaaT0Map(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
+    loadIdSetFromBase('financeiro'),
     loadIdSetFromBase('acessos-blackboard'),
     loadIdSetFromBase('provavel-evasao'),
   ]);
@@ -1131,6 +1135,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
           ),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
+          inFinanceiro: inSet(fin, it.cpf, it.rgm),
           inBb: inSet(bb, it.cpf, it.rgm),
           inEvasao: inSet(evasao, it.cpf, it.rgm),
         });
@@ -1215,6 +1220,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
           ),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
+          inFinanceiro: inSet(fin, it.cpf, it.rgm),
           inBb: inSet(bb, it.cpf, it.rgm),
           inEvasao: inSet(evasao, it.cpf, it.rgm),
         });

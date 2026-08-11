@@ -144,7 +144,11 @@ export function getNovoCrmDealFieldIds() {
     nasc: envId('NOVO_CRM_FIELD_NASC', 'cmq579tb1003bvemcck96lhwx'),
     acessoblack: envId('NOVO_CRM_FIELD_ACESSO_BLACK', 'cmrtjzsqx008hua48qsgaeppd'),
     doc_pendentes: envId('NOVO_CRM_FIELD_DOC_PENDENTES', 'cmrtjumbj007nua48rqjbzzj8'),
+    // PROD: situacaofinanceira ("Financeira") = inadimplentes-vencidos (não a base Financeiro).
     inadimplente: envId('NOVO_CRM_FIELD_INADIMPLENTE', 'cmrtjygzx008bua48uiugpx9u'),
+    // Financeiro = mensalidade em aberto ainda no prazo (base slug `financeiro`).
+    // PROD: sem field até criar no CRM (name=financeiro); id em JSON/env.
+    financeiro: envId('NOVO_CRM_FIELD_FINANCEIRO', ''),
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
     // PROD: "Atualizado?" — Sim só com escrita de campos SIAA (não stage/flags-only).
     atualizado: envId('NOVO_CRM_FIELD_ATUALIZADO', ''),
@@ -237,6 +241,7 @@ export function resolveAcolhimentoWindow(matRow, now = new Date()) {
  *   inCaaFresh?: boolean,
  *   inDoc?: boolean,
  *   inInad?: boolean,
+ *   inFinanceiro?: boolean,
  *   inBb?: boolean,
  *   inEvasao?: boolean,
  *   now?: Date,
@@ -292,6 +297,7 @@ export function classifyMatriculado(matRow, ctx) {
     flags: {
       doc_pendentes: Boolean(ctx.inDoc),
       inadimplente: Boolean(ctx.inInad),
+      financeiro: Boolean(ctx.inFinanceiro),
       acessoblack: Boolean(ctx.inBb),
       evasao: Boolean(ctx.inEvasao),
     },

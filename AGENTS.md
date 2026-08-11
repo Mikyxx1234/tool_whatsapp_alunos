@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-11 — Att flag **Financeiro** (base `financeiro`) separado de Situação Financeira
+- **Modelo usado:** Composer/Auto.
+- **Produto:** Grad mensalidade vence dia **25** → base **Inadimplentes vencidos** grava **Situação Financeira** (`situacaofinanceira` / `NOVO_CRM_FIELD_INADIMPLENTE`). Até o dia **10** ainda há desconto; quem está na base **Financeiro** = mensalidade em aberto **ainda no prazo** (não é vencido efetivo) → flag CRM **Financeiro** (`NOVO_CRM_FIELD_FINANCEIRO`, name preferido `financeiro`).
+- **Decisão:** mirror do pipeline doc_pendentes/inad:
+  1. `loadIdentityIndexFromBase('financeiro')` + `classification.flags.financeiro`.
+  2. Write Sim/Não com empty→Não skip (mesma política).
+  3. Passo saída: Sim→Não fora do índice + sanity ratio.
+  4. Aliases de leitura do flag Financeiro: `financeiro`, `financ`. **NÃO** misturar com `situacaofinanceira` (aliases inad: `inadimplente`, `situacaofinanceira`, `situacao financeira`, `financeira`).
+- **PROD 2026-08-11:** listagem `/api/custom-fields?entity=deal` **não tem** field `financeiro` (só `situacaofinanceira` = Financeira). POST create → 401. Escrita no-op até criar o campo no CRM (UI admin) e gravar id em `data/novo-crm-prod-ids.json` (`NOVO_CRM_FIELD_FINANCEIRO`) ou env. Sem id, `if (!fieldId) continue` — não quebra Situação Financeira.
+- **Arquivos:** `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `novo-crm-discover-prod-ids.mjs`, `.env.example`, `NovoCrmSyncPanel.tsx`.
+
 ### 2026-08-06 — Sync: sem "Criação de leads novos"; tag limpeza em Perdido (dedupe)
 - **Modelo usado:** Composer.
 - **UI:** card **«Criação de leads novos»** removido do `NovoCrmSyncPanel` (Disparador → Sync). Fluxo diário = Full Sync + Att + Dedupe. Service `novoCrmMatriculadosProvisionService` **não apagado** (backfill `mode=all` ainda possível).

@@ -119,7 +119,11 @@ const EXACT_FIELD = {
   doc_pendentes: 'NOVO_CRM_FIELD_DOC_PENDENTES',
   docpendente: 'NOVO_CRM_FIELD_DOC_PENDENTES',
   docs_pendentes: 'NOVO_CRM_FIELD_DOC_PENDENTES',
+  // Inadimplentes vencidos → situacaofinanceira (label Financeira) no PROD.
+  situacaofinanceira: 'NOVO_CRM_FIELD_INADIMPLENTE',
   inadimplente: 'NOVO_CRM_FIELD_INADIMPLENTE',
+  // Mensalidade em aberto no prazo (base financeiro) — campo separado.
+  financeiro: 'NOVO_CRM_FIELD_FINANCEIRO',
   evasao: 'NOVO_CRM_FIELD_EVASAO',
 };
 
@@ -139,6 +143,16 @@ for (const f of fields) {
   let envKey = null;
   if (!fieldEnvMap.has('NOVO_CRM_FIELD_INADIMPLENTE') && (n.includes('inad') || l.includes('inad'))) {
     envKey = 'NOVO_CRM_FIELD_INADIMPLENTE';
+  } else if (
+    !fieldEnvMap.has('NOVO_CRM_FIELD_INADIMPLENTE') &&
+    (n === 'situacaofinanceira' || (n.includes('finance') && n.includes('situacao')))
+  ) {
+    envKey = 'NOVO_CRM_FIELD_INADIMPLENTE';
+  } else if (
+    !fieldEnvMap.has('NOVO_CRM_FIELD_FINANCEIRO') &&
+    (n === 'financeiro' || n === 'financ')
+  ) {
+    envKey = 'NOVO_CRM_FIELD_FINANCEIRO';
   } else if (!fieldEnvMap.has('NOVO_CRM_FIELD_EMAIL') && n === 'email') {
     envKey = 'NOVO_CRM_FIELD_EMAIL';
   } else if (
@@ -169,6 +183,7 @@ const requiredFields = ['NOVO_CRM_FIELD_CPF', 'NOVO_CRM_FIELD_RGM'];
 const flagFields = [
   'NOVO_CRM_FIELD_DOC_PENDENTES',
   'NOVO_CRM_FIELD_INADIMPLENTE',
+  'NOVO_CRM_FIELD_FINANCEIRO',
   'NOVO_CRM_FIELD_ACESSO_BLACK',
   'NOVO_CRM_FIELD_EVASAO',
 ];
@@ -214,21 +229,30 @@ if (missingStages.length || missingFields.length) {
 }
 
 // Write machine-readable sidecar for other scripts
+// Preserve known PROD IDs not rediscovered (Atualizado?, Em Atendimento, etc.)
+const fs = await import('node:fs');
+let existingOut = {};
+try {
+  existingOut = JSON.parse(
+    fs.readFileSync(new URL('../data/novo-crm-prod-ids.json', import.meta.url), 'utf8')
+  );
+} catch {
+  /* first run */
+}
 const out = {
   base,
   pipeline: { id: pipeline.id, name: pipeline.name },
-  stages: Object.fromEntries(stageEnvMap),
-  fields: Object.fromEntries(fieldEnvMap),
+  stages: { ...(existingOut.stages || {}), ...Object.fromEntries(stageEnvMap) },
+  fields: { ...(existingOut.fields || {}), ...Object.fromEntries(fieldEnvMap) },
   stagesByName: (() => {
     /** @type {Record<string, string>} */
-    const m = {};
+    const m = { ...(existingOut.stagesByName || {}) };
     for (const s of stages) {
       if (s?.name && s?.id && !m[s.name]) m[s.name] = s.id;
     }
     return m;
   })(),
 };
-const fs = await import('node:fs');
 const outPath = new URL('../data/novo-crm-prod-ids.json', import.meta.url);
 fs.mkdirSync(new URL('../data', import.meta.url), { recursive: true });
 fs.writeFileSync(outPath, JSON.stringify(out, null, 2));

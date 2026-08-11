@@ -425,8 +425,9 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-emerald-900">2. Att de etapas</p>
             <p className="text-[11px] text-emerald-800/80 flex-1">
-              Flags + etapa. CAA→Retenção só ≤72h; depois SIAA/Perdido. Não toca Ganho/Cancelado nem
-              Retenção manual (sem CAA open). Preenche flag vazia só quando o SIAA pede Sim.
+              Flags (Doc, Financeiro, Situação Financeira/inad vencidos, BB, Evasão) + etapa. CAA→Retenção
+              só ≤72h; depois SIAA/Perdido. Não toca Ganho/Cancelado nem Retenção manual (sem CAA open).
+              Preenche flag vazia só quando a base pede Sim.
             </p>
             {status?.last_flags_sync?.finished_at ? (
               <p className="text-[10px] text-emerald-900/70">

@@ -484,11 +484,12 @@ export async function runFlagsStageSync(opts = {}) {
   }
 
   const matLookups = { byRgm, byCpf };
-  const [remat, caaT0Map, doc, inad, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdentityIndexFromBase('rematricula', matLookups),
     caaProtocolsRepo.loadOpenCaaT0Map(),
     loadIdentityIndexFromBase('docs-pendentes', matLookups),
     loadIdentityIndexFromBase('inadimplentes-vencidos', matLookups),
+    loadIdentityIndexFromBase('financeiro', matLookups),
     loadIdentityIndexFromBase('acessos-blackboard', matLookups),
     loadIdentityIndexFromBase('provavel-evasao', matLookups),
   ]);
@@ -629,6 +630,7 @@ export async function runFlagsStageSync(opts = {}) {
         inCaaFresh,
         inDoc: identityInIndex(doc, identity),
         inInad: identityInIndex(inad, identity),
+        inFinanceiro: identityInIndex(fin, identity),
         inBb: identityInIndex(bb, identity),
         inEvasao: identityInIndex(evasao, identity),
       });
@@ -650,8 +652,14 @@ export async function runFlagsStageSync(opts = {}) {
           [
             fieldIds.inadimplente,
             simNao(classification.flags.inadimplente),
-            // PROD usa o custom field `situacaofinanceira` (não existe `inadimplente`).
-            ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
+            // PROD: custom field `situacaofinanceira` (label Financeira) = vencidos.
+            // NÃO incluir alias `financeiro` — esse é o flag da base Financeiro (prazo/desconto).
+            ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeira'],
+          ],
+          [
+            fieldIds.financeiro,
+            simNao(classification.flags.financeiro),
+            ['financeiro', 'financ'],
           ],
           [
             fieldIds.acessoblack,
@@ -887,8 +895,14 @@ export async function runFlagsStageSync(opts = {}) {
           {
             key: 'inadimplente',
             fieldId: fieldIds.inadimplente,
-            names: ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeiro'],
+            names: ['inadimplente', 'situacaofinanceira', 'situacao financeira', 'financeira'],
             index: inad,
+          },
+          {
+            key: 'financeiro',
+            fieldId: fieldIds.financeiro,
+            names: ['financeiro', 'financ'],
+            index: fin,
           },
           {
             key: 'acessoblack',
@@ -901,7 +915,13 @@ export async function runFlagsStageSync(opts = {}) {
       : [];
 
     /** @type {Record<string, number>} */
-    const flagSimCount = { doc_pendentes: 0, inadimplente: 0, acessoblack: 0, evasao: 0 };
+    const flagSimCount = {
+      doc_pendentes: 0,
+      inadimplente: 0,
+      financeiro: 0,
+      acessoblack: 0,
+      evasao: 0,
+    };
     /** @type {Array<{dealId:string, fieldId:string, key:string, cpf:string, rgm:string}>} */
     const flagExitCandidates = [];
     let semRematSimCount = 0;
@@ -1160,6 +1180,7 @@ export async function runFlagsStageSync(opts = {}) {
           inCaaFresh,
           inDoc: identityInIndex(doc, exitIdentity),
           inInad: identityInIndex(inad, exitIdentity),
+          inFinanceiro: identityInIndex(fin, exitIdentity),
           inBb: identityInIndex(bb, exitIdentity),
           inEvasao: identityInIndex(evasao, exitIdentity),
         });
