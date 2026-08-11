@@ -1995,6 +1995,41 @@ export async function runOrphanAlunoProvision(opts = {}) {
         : 'Provisionamento concluído',
   });
 
+  // Persist last preview/apply so the panel keeps a summary after progress clears.
+  try {
+    await cacheRepo.saveOrphanDedupeLastRun({
+      finished_at: new Date().toISOString(),
+      ok: !cancelled,
+      cancelled,
+      dry_run: dryRun,
+      status: cancelled ? 'cancelled' : 'completed',
+      scope,
+      orphans_total: orphans.length,
+      orphans_scanned: scanned,
+      would_create:
+        (dealsWouldCreateOnOrphan || 0) + (dealsWouldCreateOnSibling || 0),
+      deals_would_create_on_orphan: dealsWouldCreateOnOrphan,
+      deals_would_create_on_sibling: dealsWouldCreateOnSibling,
+      skipped_already_has_deal_live: skippedAlreadyHasDeal,
+      incomplete_total: incompletes.length,
+      incomplete_enriched: incompleteEnriched,
+      incomplete_scanned: incompleteScanned,
+      dup_to_perdido: dupToPerdido,
+      deals_would_move_perdido: dryRun ? dealsMovedPerdido : undefined,
+      deals_moved_perdido: dryRun ? undefined : dealsMovedPerdido,
+      dup_deal_groups: dupGroups,
+      dup_deals_would_move_perdido: dryRun ? dupDealsMoved : undefined,
+      dup_deals_moved_perdido: dryRun ? undefined : dupDealsMoved,
+      created_deals: dryRun ? 0 : createdDeals,
+      orphan_no_match: orphanNoMatch,
+      errors: dryRun ? 0 : errors,
+      deal_not_found: dealNotFound,
+      warmed_cache: warmedCache,
+    });
+  } catch (err) {
+    console.warn('[novo-crm-orphan-provision] save last run failed:', err?.message || err);
+  }
+
   console.log('[novo-crm-orphan-provision] done', JSON.stringify({ ...result, samples: undefined, error_samples: undefined }));
   return result;
 }

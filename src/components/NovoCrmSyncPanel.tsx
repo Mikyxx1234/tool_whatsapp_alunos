@@ -105,6 +105,10 @@ export function NovoCrmSyncPanel() {
   const [dedupeMode, setDedupeMode] = useState<'preview' | 'apply'>('preview');
   const [dedupeApplied, setDedupeApplied] = useState(false);
   const [dedupeStopping, setDedupeStopping] = useState(false);
+  /** incompletos (CPF/RGM) primeiro — default seguro / mais rápido que both. */
+  const [dedupeScope, setDedupeScope] = useState<'incomplete' | 'duplicates' | 'orphans' | 'both'>(
+    'incomplete'
+  );
 
   const pollRef = useRef<number | null>(null);
 
@@ -145,6 +149,12 @@ export function NovoCrmSyncPanel() {
           error: null,
           result: null,
         });
+      } else {
+        // Não rodando: limpa "rodando" stale e deixa last_flags_sync no card.
+        setFlagsJobId(null);
+        setFlagsBusy(false);
+        setFlagsStopping(false);
+        setFlagsJob(null);
       }
       // Reanexa dedupe/órfãos em andamento.
       if (s.running_orphan_dedupe?.jobId) {
@@ -181,6 +191,23 @@ export function NovoCrmSyncPanel() {
           result: null,
         });
         setDedupeMsg(o.status_message || phaseLabel(o.phase));
+      } else {
+        setDedupeJobId(null);
+        setDedupeBusy(false);
+        setDedupeStopping(false);
+        setDedupeJob(null);
+        // Hidrata última prévia/apply persistida (progress some ao terminar).
+        const last = s.last_orphan_dedupe;
+        if (last?.finished_at) {
+          setDedupeApplied(!last.dry_run && !last.cancelled);
+          setDedupeMsg(
+            last.cancelled
+              ? `Última ${last.dry_run ? 'prévia' : 'apply'} · cancelada · ${fmtDt(last.finished_at)}`
+              : last.dry_run
+                ? `Última prévia · ${fmtDt(last.finished_at)}`
+                : `Última apply · ${fmtDt(last.finished_at)}`
+          );
+        }
       }
       return s;
     } catch (e) {
@@ -228,11 +255,19 @@ export function NovoCrmSyncPanel() {
                       (res?.errors ? ` · ${res.errors} erros` : '')
                   );
                 } else if (r.job.status === 'cancelled') {
+                  const scanned = res?.scanned ?? r.job.processed ?? 0;
+                  const flags = res?.flags_updated ?? r.job.flags_updated ?? 0;
+                  const stages = res?.stages_moved ?? r.job.stages_moved ?? 0;
+                  const queue = res?.write_queue ?? 0;
                   setFlagsMsg(
                     `Att cancelada` +
-                      (res
-                        ? ` (até então: ${res.flags_updated ?? 0} flags · ${res.stages_moved ?? 0} etapas · ${res.scanned ?? 0} deals)`
-                        : '')
+                      (scanned || flags || stages || queue
+                        ? ` (até então: ${Number(flags).toLocaleString('pt-BR')} flags · ${Number(stages).toLocaleString('pt-BR')} etapas · ${Number(scanned).toLocaleString('pt-BR')} deals` +
+                          (queue ? ` · fila ${Number(queue).toLocaleString('pt-BR')}` : '') +
+                          ')'
+                        : res?.phase
+                          ? ` · fase ${phaseLabel(res.phase)} (antes da varredura)`
+                          : ' · sem progresso parcial')
                   );
                 } else if (r.job.status === 'failed') {
                   setFlagsMsg(r.job.error || 'Att de etapas falhou');
@@ -287,6 +322,7 @@ export function NovoCrmSyncPanel() {
 
   const last = status?.last_sync || null;
   const lastFlags = status?.last_flags_sync || null;
+  const lastDedupe = status?.last_orphan_dedupe || null;
   const lastDurationMs =
     last?.finished_at && last?.started_at
       ? new Date(last.finished_at).getTime() - new Date(last.started_at).getTime()
@@ -412,11 +448,11 @@ export function NovoCrmSyncPanel() {
     setDedupeBusy(true);
     setDedupeMode('preview');
     setDedupeApplied(false);
-    setDedupeMsg('Iniciando prévia…');
+    setDedupeMsg(`Iniciando prévia (scope=${dedupeScope})…`);
     setDedupePreview(null);
     setDedupeJob(null);
     try {
-      const started = await maintenanceApi.startOrphanDedupePreview({ scope: 'both' });
+      const started = await maintenanceApi.startOrphanDedupePreview({ scope: dedupeScope });
       setDedupeJobId(started.jobId);
     } catch (e) {
       const err = e as Error & { jobId?: string; status?: number };
@@ -451,11 +487,11 @@ export function NovoCrmSyncPanel() {
     setDedupeBusy(true);
     setDedupeMode('apply');
     setDedupeApplied(false);
-    setDedupeMsg('Aplicando no CRM…');
+    setDedupeMsg(`Aplicando no CRM (scope=${dedupeScope})…`);
     setDedupePreview(null);
     setDedupeJob(null);
     try {
-      const started = await maintenanceApi.startOrphanDedupe({ scope: 'both' });
+      const started = await maintenanceApi.startOrphanDedupe({ scope: dedupeScope });
       setDedupeJobId(started.jobId);
     } catch (e) {
       const err = e as Error & { jobId?: string };
@@ -686,8 +722,8 @@ export function NovoCrmSyncPanel() {
               Preenche flag vazia só quando a base pede Sim.
             </p>
             {lastFlags?.finished_at ? (
-              <div className="text-[10px] text-emerald-900/80 space-y-0.5 rounded-md border border-emerald-200/80 bg-white/60 px-2 py-1.5">
-                <p className="font-semibold text-emerald-900">
+              <div className="text-[12px] space-y-0.5 rounded-md border border-emerald-400/60 dark:border-emerald-400/50 bg-emerald-100/90 dark:bg-emerald-950/70 px-2.5 py-2 text-emerald-950 dark:text-[#e6edf6]">
+                <p className="font-semibold text-emerald-950 dark:text-emerald-200">
                   Última Att (resultado real)
                   {lastFlags.cancelled
                     ? ' · cancelada'
@@ -695,8 +731,8 @@ export function NovoCrmSyncPanel() {
                       ? ' · incompleta'
                       : ''}
                 </p>
-                <p>{fmtDt(lastFlags.finished_at)}</p>
-                <p className="tabular-nums">
+                <p className="tabular-nums font-medium">{fmtDt(lastFlags.finished_at)}</p>
+                <p className="tabular-nums font-semibold">
                   {Number(lastFlags.scanned || 0).toLocaleString('pt-BR')} deals ·{' '}
                   {Number(lastFlags.matched || 0).toLocaleString('pt-BR')} match ·{' '}
                   {Number(lastFlags.flags_updated || 0).toLocaleString('pt-BR')} flags ·{' '}
@@ -708,9 +744,38 @@ export function NovoCrmSyncPanel() {
                     ? ` · ${Number(lastFlags.errors).toLocaleString('pt-BR')} erros`
                     : ''}
                 </p>
+                {(Number(lastFlags.write_queue || 0) > 0 ||
+                  Number(lastFlags.flags_queued || 0) > 0 ||
+                  Number(lastFlags.stages_queued || 0) > 0) && (
+                  <p className="tabular-nums text-[11px] font-medium opacity-95">
+                    Fila no stop: {Number(lastFlags.write_queue || 0).toLocaleString('pt-BR')}
+                    {lastFlags.flags_queued != null
+                      ? ` · ${Number(lastFlags.flags_queued).toLocaleString('pt-BR')} flags na fila`
+                      : ''}
+                    {lastFlags.stages_queued != null
+                      ? ` · ${Number(lastFlags.stages_queued).toLocaleString('pt-BR')} etapas na fila`
+                      : ''}
+                  </p>
+                )}
+                {(lastFlags.phase || lastFlags.abort_reason) && (
+                  <p className="text-[11px] font-medium opacity-95">
+                    {lastFlags.phase ? `Fase: ${phaseLabel(lastFlags.phase)}` : ''}
+                    {lastFlags.phase && lastFlags.abort_reason ? ' · ' : ''}
+                    {lastFlags.abort_reason || ''}
+                  </p>
+                )}
+                {lastFlags.cancelled &&
+                  !Number(lastFlags.scanned || 0) &&
+                  !Number(lastFlags.flags_updated || 0) && (
+                    <p className="text-[11px] font-medium opacity-90">
+                      Cancelou antes da varredura (zeros reais).
+                    </p>
+                  )}
               </div>
             ) : (
-              <p className="text-[10px] text-emerald-900/50">Sem Att registrada neste ambiente.</p>
+              <p className="text-[11px] text-emerald-900/70 dark:text-emerald-200/60">
+                Sem Att registrada neste ambiente.
+              </p>
             )}
             <div className="flex flex-wrap gap-2">
               <button
@@ -745,8 +810,24 @@ export function NovoCrmSyncPanel() {
               3. Dedupe órfãos/incompletos/duplicados
             </p>
             <p className="text-[11px] text-violet-800/80 flex-1">
-              Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, preenchimento de CPF/RGM e, quando a mesma pessoa tem dois cartões, mantém um e manda o outro para Perdido.
+              Rode por etapa (recomendado): incompletos → duplicados → órfãos. Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. Órfãos: cria deal local se realmente não houver no CRM ao vivo. “Tudo” é lento e junta as três fases.
             </p>
+            <label className="flex flex-col gap-0.5 text-[11px] text-violet-900">
+              <span className="font-medium">Escopo</span>
+              <select
+                value={dedupeScope}
+                disabled={dedupeBusy || dedupeRunning}
+                onChange={(e) =>
+                  setDedupeScope(e.target.value as 'incomplete' | 'duplicates' | 'orphans' | 'both')
+                }
+                className="rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-xs text-violet-950 disabled:opacity-50"
+              >
+                <option value="incomplete">Incompletos (CPF/RGM) — default</option>
+                <option value="duplicates">Duplicados → Perdido</option>
+                <option value="orphans">Órfãos (criar deal se faltar)</option>
+                <option value="both">Tudo (lento)</option>
+              </select>
+            </label>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -763,7 +844,7 @@ export function NovoCrmSyncPanel() {
                   ? dedupeMode === 'apply'
                     ? 'Aplicando…'
                     : 'Prévia rodando…'
-                  : 'Prévia dedupe (confere ao vivo)'}
+                  : `Prévia (${dedupeScope})`}
               </button>
               {dedupeRunning && (
                 <button
@@ -777,8 +858,42 @@ export function NovoCrmSyncPanel() {
                 </button>
               )}
             </div>
+            {lastDedupe?.finished_at && !dedupeRunning && (
+              <div className="text-[12px] space-y-0.5 rounded-md border border-violet-400/60 dark:border-violet-400/50 bg-violet-100/90 dark:bg-violet-950/70 px-2.5 py-2 text-violet-950 dark:text-[#e6edf6]">
+                <p className="font-semibold text-violet-950 dark:text-violet-200">
+                  Última {lastDedupe.dry_run ? 'prévia' : 'apply'}
+                  {lastDedupe.cancelled
+                    ? ' · cancelada'
+                    : lastDedupe.ok === false
+                      ? ' · incompleta'
+                      : ''}
+                  {lastDedupe.scope ? ` · ${lastDedupe.scope}` : ''}
+                </p>
+                <p className="tabular-nums font-medium">{fmtDt(lastDedupe.finished_at)}</p>
+                <p className="tabular-nums font-semibold">
+                  Órfãos: {Number(lastDedupe.orphans_total || 0).toLocaleString('pt-BR')}
+                  {' · '}a criar:{' '}
+                  {Number(lastDedupe.would_create || 0).toLocaleString('pt-BR')}
+                  {' · '}incompletos enriq.:{' '}
+                  {Number(lastDedupe.incomplete_enriched || 0).toLocaleString('pt-BR')}
+                  {' · '}dups Perdido:{' '}
+                  {Number(
+                    lastDedupe.dup_deals_moved_perdido ??
+                      lastDedupe.dup_deals_would_move_perdido ??
+                      lastDedupe.dup_to_perdido ??
+                      0
+                  ).toLocaleString('pt-BR')}
+                  {!lastDedupe.dry_run
+                    ? ` · criados ${Number(lastDedupe.created_deals || 0).toLocaleString('pt-BR')}`
+                    : ''}
+                  {lastDedupe.errors
+                    ? ` · ${Number(lastDedupe.errors).toLocaleString('pt-BR')} erros`
+                    : ''}
+                </p>
+              </div>
+            )}
             {dedupeMsg && !dedupeRunning && (
-              <p className="text-[11px] text-violet-700">{dedupeMsg}</p>
+              <p className="text-[11px] font-medium text-violet-900 dark:text-violet-200">{dedupeMsg}</p>
             )}
             {dedupePreview && (
               <div className="mt-1 text-[11px] text-violet-900 space-y-0.5">

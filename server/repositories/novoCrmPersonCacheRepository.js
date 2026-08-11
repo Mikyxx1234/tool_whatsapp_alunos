@@ -141,12 +141,15 @@ export async function updateSyncState({ cursorUpdatedAt, cursorId = null }) {
 }
 
 const FLAGS_STAGE_LAST_KEY = 'flags_stage_last';
+const ORPHAN_DEDUPE_LAST_KEY = 'orphan_dedupe_last';
 
 /**
- * Persiste resumo da última Att de etapas (sobrevive a restart; jobs em memória não).
+ * Persistência genérica de resumo em `novo_crm_cache_sync_state.cursor_id` (JSON).
+ * Jobs em memória somem no restart — last-run sobrevive.
+ * @param {string} key
  * @param {object} summary
  */
-export async function saveFlagsStageLastRun(summary) {
+async function saveJsonSyncState(key, summary) {
   const payload = JSON.stringify(summary || {});
   await query(
     `insert into novo_crm_cache_sync_state (key, cursor_updated_at, cursor_id, updated_at)
@@ -155,17 +158,17 @@ export async function saveFlagsStageLastRun(summary) {
        cursor_updated_at = now(),
        cursor_id = excluded.cursor_id,
        updated_at = now()`,
-    [FLAGS_STAGE_LAST_KEY, payload]
+    [key, payload]
   );
 }
 
-/** @returns {Promise<object|null>} */
-export async function getFlagsStageLastRun() {
+/** @param {string} key @returns {Promise<object|null>} */
+async function getJsonSyncState(key) {
   const { rows } = await query(
     `select cursor_id, cursor_updated_at, updated_at
        from novo_crm_cache_sync_state
       where key = $1`,
-    [FLAGS_STAGE_LAST_KEY]
+    [key]
   );
   const row = rows[0];
   if (!row?.cursor_id) return null;
@@ -178,6 +181,33 @@ export async function getFlagsStageLastRun() {
   } catch {
     return { raw: row.cursor_id, finished_at: row.updated_at || null };
   }
+}
+
+/**
+ * Persiste resumo da última Att de etapas (sobrevive a restart; jobs em memória não).
+ * Inclui cancel parcial (scanned/flags/etapas até o stop).
+ * @param {object} summary
+ */
+export async function saveFlagsStageLastRun(summary) {
+  await saveJsonSyncState(FLAGS_STAGE_LAST_KEY, summary);
+}
+
+/** @returns {Promise<object|null>} */
+export async function getFlagsStageLastRun() {
+  return getJsonSyncState(FLAGS_STAGE_LAST_KEY);
+}
+
+/**
+ * Última prévia/apply de dedupe órfãos (dry + apply).
+ * @param {object} summary
+ */
+export async function saveOrphanDedupeLastRun(summary) {
+  await saveJsonSyncState(ORPHAN_DEDUPE_LAST_KEY, summary);
+}
+
+/** @returns {Promise<object|null>} */
+export async function getOrphanDedupeLastRun() {
+  return getJsonSyncState(ORPHAN_DEDUPE_LAST_KEY);
 }
 
 async function loadExisting(contactId) {
@@ -360,6 +390,7 @@ export async function getCacheStats() {
     { rows: stateRows },
     { rows: gapRows },
     lastFlagsRun,
+    lastOrphanDedupe,
   ] = await Promise.all([
     query(
       `select count(*)::int as total,
@@ -410,6 +441,7 @@ export async function getCacheStats() {
          from novo_crm_person_cache`
     ),
     getFlagsStageLastRun(),
+    getOrphanDedupeLastRun(),
   ]);
 
   return {
@@ -424,6 +456,7 @@ export async function getCacheStats() {
     open_data_loss_events: eventRows[0]?.open_events ?? 0,
     state: stateRows[0] || null,
     last_flags_sync: lastFlagsRun || null,
+    last_orphan_dedupe: lastOrphanDedupe || null,
   };
 }
 

@@ -224,6 +224,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       running_sync: stats.running,
       last_sync: stats.last_sync,
       last_flags_sync: stats.last_flags_sync || null,
+      last_orphan_dedupe: stats.last_orphan_dedupe || null,
       running_flags: flagsJob
         ? {
             jobId: flagsJob.jobId,

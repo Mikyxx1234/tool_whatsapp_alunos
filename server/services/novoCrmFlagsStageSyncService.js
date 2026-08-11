@@ -408,6 +408,8 @@ export async function runFlagsStageSync(opts = {}) {
   let aborted = false;
   let abortReason = null;
   let cancelled = false;
+  /** Fase atual p/ last-run / cancel (UI parcial). */
+  let currentPhase = 'starting';
 
   if (!isNovoCrmApiConfigured()) {
     const err = new Error('NOVO_CRM_ENABLED/TOKEN/BASE_URL não configurados');
@@ -423,6 +425,7 @@ export async function runFlagsStageSync(opts = {}) {
   }
 
   const patchJob = (p) => {
+    if (p?.phase) currentPhase = p.phase;
     if (!jobId) return;
     const j = jobs.get(jobId);
     if (j) Object.assign(j, p);
@@ -548,6 +551,9 @@ export async function runFlagsStageSync(opts = {}) {
   let flagsExitCleared = 0;
   let stagesExitRemat = 0;
   let stagesExitRematOrphan = 0;
+  /** Identificados na varredura (ainda não gravados no apply). */
+  let flagsQueued = 0;
+  let stagesQueued = 0;
   /** @type {Record<string, number>} */
   const exitSkippedSanity = {};
 
@@ -592,13 +598,16 @@ export async function runFlagsStageSync(opts = {}) {
       if (aborted || checkCancel() || scanned >= maxDeals) break outer;
       scanned += 1;
       if (scanned % 50 === 0 || scanned === 1) {
+        // Apply: during scan flags_updated still 0 — expose queue + partial scanned for live UI / cancel.
+        const liveFlags = dryRun ? flagsUpdated : flagsUpdated + flagsQueued;
+        const liveStages = dryRun ? stagesMoved : stagesMoved + stagesQueued;
         patchJob({
           processed: scanned,
           total: Math.min(maxDeals, cacheRows.length) || scanned,
           sent: flagsUpdated + stagesMoved + fieldsUpdated,
           matched,
-          flags_updated: flagsUpdated,
-          stages_moved: stagesMoved,
+          flags_updated: liveFlags,
+          stages_moved: liveStages,
           status_message: dryRun
             ? `Prévia: ${scanned.toLocaleString('pt-BR')} deals (match ${matched})…`
             : `Calculando: ${scanned.toLocaleString('pt-BR')} deals · match ${matched} · fila ${workQueue.length}…`,
@@ -831,9 +840,15 @@ export async function runFlagsStageSync(opts = {}) {
       const needsSemRematSituacao = semRematSituacaoValues.length > 0;
       const needsMove = Boolean(cacheDecide.move && classification.stageId);
       // Etapa desconhecida no cache: só getDeal se LIVE_STAGE=1; senão skip move.
+      const enqueue = (item) => {
+        workQueue.push(item);
+        if (item.needsFlagWrite) flagsQueued += 1;
+        if (item.needsMove) stagesQueued += 1;
+      };
+
       if (cacheDecide.unknown) {
         if (liveStage && canMoveStages && classification.stageId) {
-          workQueue.push({
+          enqueue({
             dealId,
             cpf,
             rgm,
@@ -852,7 +867,7 @@ export async function runFlagsStageSync(opts = {}) {
           stagesSkippedUnknown += 1;
           if (!needsFlagWrite && !needsFieldWrite && !needsSemRematSituacao) skippedUnchanged += 1;
           else {
-            workQueue.push({
+            enqueue({
               dealId,
               cpf,
               rgm,
@@ -878,7 +893,7 @@ export async function runFlagsStageSync(opts = {}) {
         continue;
       }
 
-      workQueue.push({
+      enqueue({
         dealId,
         cpf,
         rgm,
@@ -1402,18 +1417,24 @@ export async function runFlagsStageSync(opts = {}) {
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
   }
 
+  // Fase onde o job realmente parou (antes de marcar done) — útil no cancel.
+  const stoppedPhase = currentPhase || 'starting';
+
   const result = {
-    ok: !aborted,
+    ok: !aborted && !cancelled,
     dry_run: dryRun,
     mode,
+    phase: stoppedPhase,
     scanned,
     matched,
     flags_updated: flagsUpdated,
+    flags_queued: workQueue.filter((i) => i.needsFlagWrite).length,
     flags_exit_cleared: flagsExitCleared,
     fields_updated: fieldsUpdated,
     situacao_sem_remat_updated: dryRun ? situacaoSemRematWouldUpdate : situacaoSemRematUpdated,
     situacao_sem_remat_would_update: situacaoSemRematWouldUpdate,
     stages_moved: stagesMoved,
+    stages_queued: workQueue.filter((i) => i.needsMove).length,
     stages_exit_remat: stagesExitRemat,
     stages_exit_remat_orphan: stagesExitRematOrphan,
     stages_skipped_untouchable: stagesSkippedUntouchable,
@@ -1424,7 +1445,7 @@ export async function runFlagsStageSync(opts = {}) {
     skipped_no_deal: skippedNoDeal,
     skipped_missing: skippedMissing,
     skipped_unchanged: skippedUnchanged,
-    write_queue: dryRun ? 0 : workQueue.length,
+    write_queue: workQueue.length,
     concurrency,
     live_stage: liveStage,
     caa_retencao_hours: caaRetencaoHours,
@@ -1451,11 +1472,20 @@ export async function runFlagsStageSync(opts = {}) {
     processed: scanned,
     sent: flagsUpdated + stagesMoved + fieldsUpdated,
     matched,
-    flags_updated: flagsUpdated,
-    stages_moved: stagesMoved,
+    flags_updated: dryRun ? flagsUpdated : flagsUpdated + (cancelled ? flagsQueued : 0),
+    stages_moved: dryRun ? stagesMoved : stagesMoved + (cancelled ? stagesQueued : 0),
+    // Cancel parcial: mostre gravados + enfileirados (fila ainda não escrita).
     eta_ms: null,
     status_message: cancelled
-      ? 'Cancelado pelo operador'
+      ? `Cancelado pelo operador` +
+        (scanned
+          ? ` · até então ${scanned.toLocaleString('pt-BR')} deals` +
+            (flagsUpdated || stagesMoved
+              ? ` · ${flagsUpdated} flags · ${stagesMoved} etapas`
+              : workQueue.length
+                ? ` · fila ${workQueue.length}`
+                : '')
+          : ` · fase ${stoppedPhase || 'start'}`)
       : aborted
         ? abortReason
         : dryRun
@@ -1464,25 +1494,29 @@ export async function runFlagsStageSync(opts = {}) {
   });
 
   // Persiste última Att (apply real) — jobs em memória somem no restart.
-  // Também grava cancel parcial (útil pra painel: não fica preso na Att antiga).
+  // Também grava cancel parcial (scanned / gravados / fila) e fase onde parou.
   if (!dryRun) {
     try {
       await cacheRepo.saveFlagsStageLastRun({
         finished_at: new Date().toISOString(),
-        ok: !aborted,
+        ok: !aborted && !cancelled,
         mode,
         dry_run: false,
+        phase: stoppedPhase,
         scanned,
         matched,
         flags_updated: flagsUpdated,
+        flags_queued: workQueue.filter((i) => i.needsFlagWrite).length,
         flags_exit_cleared: flagsExitCleared,
         fields_updated: fieldsUpdated,
         stages_moved: stagesMoved,
+        stages_queued: workQueue.filter((i) => i.needsMove).length,
         stages_exit_remat: stagesExitRemat,
         stages_exit_remat_orphan: stagesExitRematOrphan,
         stages_skipped_untouchable: stagesSkippedUntouchable,
         exit_skipped_sanity: exitSkippedSanity,
         skipped_unchanged: skippedUnchanged,
+        write_queue: workQueue.length,
         errors,
         aborted,
         cancelled,

@@ -104,17 +104,51 @@ export interface NovoCrmFlagsLastSync {
   finished_at?: string | null;
   ok?: boolean;
   mode?: string;
+  dry_run?: boolean;
+  phase?: string | null;
   scanned?: number;
   matched?: number;
   flags_updated?: number;
+  flags_queued?: number;
   fields_updated?: number;
   stages_moved?: number;
+  stages_queued?: number;
   stages_skipped_untouchable?: number;
+  write_queue?: number;
   errors?: number;
   aborted?: boolean;
   cancelled?: boolean;
   abort_reason?: string | null;
   matriculados_snapshot_id?: string | null;
+}
+
+export interface NovoCrmOrphanDedupeLastRun {
+  finished_at?: string | null;
+  ok?: boolean;
+  cancelled?: boolean;
+  dry_run?: boolean;
+  status?: string;
+  scope?: string;
+  orphans_total?: number;
+  orphans_scanned?: number;
+  would_create?: number;
+  deals_would_create_on_orphan?: number;
+  deals_would_create_on_sibling?: number;
+  skipped_already_has_deal_live?: number;
+  incomplete_total?: number;
+  incomplete_enriched?: number;
+  incomplete_scanned?: number;
+  dup_to_perdido?: number;
+  deals_would_move_perdido?: number;
+  deals_moved_perdido?: number;
+  dup_deal_groups?: number;
+  dup_deals_would_move_perdido?: number;
+  dup_deals_moved_perdido?: number;
+  created_deals?: number;
+  orphan_no_match?: number;
+  errors?: number;
+  deal_not_found?: number;
+  warmed_cache?: number;
 }
 
 export interface NovoCrmFlagsRunningJob {
@@ -172,6 +206,7 @@ export interface NovoCrmCacheStatusResponse {
   running_sync: NovoCrmCacheRunningSync | null;
   last_sync: NovoCrmCacheLastSync | null;
   last_flags_sync?: NovoCrmFlagsLastSync | null;
+  last_orphan_dedupe?: NovoCrmOrphanDedupeLastRun | null;
   running_flags?: NovoCrmFlagsRunningJob | null;
   running_orphan_dedupe?: NovoCrmOrphanDedupeRunningJob | null;
   state: { cursor_updated_at: string | null } | null;
@@ -249,14 +284,20 @@ export interface NovoCrmFlagsStagePreviewResponse {
   ok: boolean;
   dry_run: boolean;
   mode: NovoCrmFlagsStageMode | string;
+  phase?: string;
   scanned: number;
   matched: number;
   flags_updated: number;
+  flags_queued?: number;
   fields_updated: number;
   stages_moved: number;
+  stages_queued?: number;
   stages_skipped_untouchable: number;
   skipped_no_match: number;
   skipped_no_deal: number;
+  write_queue?: number;
+  cancelled?: boolean;
+  abort_reason?: string | null;
   errors: number;
   samples: Array<{
     dealId?: string;
@@ -390,6 +431,7 @@ export interface NovoCrmRegressionsResponse {
 export interface OrphanDedupePreviewResponse {
   ok: boolean;
   dry_run: boolean;
+  cancelled?: boolean;
   scope: string;
   matriculados_snapshot_id: string;
   matriculados_file: string | null;
