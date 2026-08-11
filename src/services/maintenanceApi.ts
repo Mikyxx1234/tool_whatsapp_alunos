@@ -135,6 +135,32 @@ export interface NovoCrmFlagsRunningJob {
   cancel_requested?: boolean;
 }
 
+export interface NovoCrmOrphanDedupeRunningJob {
+  jobId: string;
+  status: string;
+  dry_run?: boolean;
+  total: number;
+  processed: number;
+  sent: number;
+  failed?: number;
+  eta_ms?: number | null;
+  phase: string | null;
+  status_message: string | null;
+  started_at: string;
+  cancel_requested?: boolean;
+  orphans_total?: number;
+  orphans_processed?: number;
+  incomplete_total?: number;
+  incomplete_processed?: number;
+  dup_groups?: number;
+  dup_groups_processed?: number;
+  already_has_deal?: number;
+  would_create?: number;
+  live_ok?: number;
+  deal_not_found?: number;
+  errors?: number;
+}
+
 export interface NovoCrmCacheStatusResponse {
   ok: boolean;
   cache_total: number;
@@ -147,6 +173,7 @@ export interface NovoCrmCacheStatusResponse {
   last_sync: NovoCrmCacheLastSync | null;
   last_flags_sync?: NovoCrmFlagsLastSync | null;
   running_flags?: NovoCrmFlagsRunningJob | null;
+  running_orphan_dedupe?: NovoCrmOrphanDedupeRunningJob | null;
   state: { cursor_updated_at: string | null } | null;
   open_data_loss_events: number;
 }
@@ -429,10 +456,23 @@ export interface OrphanDedupeJobStatusResponse {
     processed: number;
     sent: number;
     failed: number;
+    eta_ms?: number | null;
     phase: string | null;
     status_message: string | null;
     started_at: string;
     finished_at: string | null;
+    cancel_requested?: boolean;
+    orphans_total?: number;
+    orphans_processed?: number;
+    incomplete_total?: number;
+    incomplete_processed?: number;
+    dup_groups?: number;
+    dup_groups_processed?: number;
+    already_has_deal?: number;
+    would_create?: number;
+    live_ok?: number;
+    deal_not_found?: number;
+    errors?: number;
     error: string | null;
     result: OrphanDedupePreviewResponse | null;
   } | null;
@@ -456,8 +496,14 @@ async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
     data = { raw: text };
   }
   if (!response.ok) {
-    const payload = data as { error?: string };
-    throw new Error(payload?.error || `Requisição falhou (${response.status})`);
+    const payload = data as { error?: string; jobId?: string };
+    const err = new Error(payload?.error || `Requisição falhou (${response.status})`) as Error & {
+      status?: number;
+      jobId?: string;
+    };
+    err.status = response.status;
+    if (payload?.jobId) err.jobId = payload.jobId;
+    throw err;
   }
   return data as T;
 }
@@ -701,6 +747,15 @@ export const maintenanceApi = {
     const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
     return jsonFetch<OrphanDedupeJobStatusResponse>(
       `/api/maintenance/provision-orphan-alunos-novo-crm-status${qs}`
+    );
+  },
+
+  /** Pedido cooperativo para parar prévia/apply de dedupe órfãos. */
+  stopOrphanDedupe(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<{ ok: boolean; status: string; jobId?: string }>(
+      `/api/maintenance/provision-orphan-alunos-novo-crm-stop${qs}`,
+      { method: 'POST', body: '{}' }
     );
   },
 };

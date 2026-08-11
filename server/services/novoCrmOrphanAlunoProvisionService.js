@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Provisionamento / dedupe de órfãos + incompletos no Novo CRM.
  *
  * Match matriculados: e-mail **ou telefone** (além de cpf/rgm no sibling).
@@ -127,23 +127,58 @@ function panelFieldValue(dealDetail, names) {
   return '';
 }
 
+/** Deal ausente no CRM (cache stale após delete) — contamos como skip, não erro. */
+function isDealMissingError(err) {
+  const status = Number(err?.status);
+  if (status === 404) return true;
+  const msg = String(err?.message || err || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  return (
+    msg.includes('nao encontrado') ||
+    msg.includes('not found') ||
+    msg.includes('negocio nao encontrado')
+  );
+}
+
+/** Soft-log: 3 primeiras + a cada 100 (evita flood "Negócio não encontrado"). */
+let _dealNotFoundLogCount = 0;
+function noteDealNotFoundSoft(dealId, context) {
+  _dealNotFoundLogCount += 1;
+  if (_dealNotFoundLogCount <= 3 || _dealNotFoundLogCount % 100 === 0) {
+    console.warn(
+      `[novo-crm-orphan-provision] deal not found (stale) ${context || ''} deal=${dealId} total=${_dealNotFoundLogCount}`
+    );
+  }
+}
+
 /**
  * Lê stage + CPF/RGM de um deal ao vivo. `ok:false` quando a API falhou —
  * chamador deve tratar como "não sei" e não escrever.
+ * `notFound:true` = deal apagado no CRM (espelho stale).
  */
 async function liveDealIdentity(dealId) {
   try {
     const detail = await getDeal(dealId);
-    if (!detail?.id) return { ok: false };
+    if (!detail?.id) {
+      noteDealNotFoundSoft(dealId, 'identity empty');
+      return { ok: false, notFound: true };
+    }
     return {
       ok: true,
+      notFound: false,
       stageId: String(detail?.stage?.id || detail?.stageId || '').trim(),
       cpf: panelFieldValue(detail, ['cpf', 'documento', 'taxid']),
       rgm: panelFieldValue(detail, ['rgm']),
     };
   } catch (err) {
+    if (isDealMissingError(err)) {
+      noteDealNotFoundSoft(dealId, 'identity');
+      return { ok: false, notFound: true };
+    }
     console.warn('[novo-crm-orphan-provision] live deal read failed', dealId, err?.message || err);
-    return { ok: false };
+    return { ok: false, notFound: false };
   }
 }
 
@@ -183,11 +218,15 @@ function isPlausibleEmail(v) {
 /**
  * Leitura live rica de um deal para escolher qual card sobrevive num grupo de
  * duplicados. `ok:false` = não sei → grupo inteiro é pulado.
+ * `notFound:true` = deal apagado (contagem not_found no progresso).
  */
 async function liveDealForDedupe(dealId) {
   try {
     const detail = await getDeal(dealId);
-    if (!detail?.id) return { ok: false };
+    if (!detail?.id) {
+      noteDealNotFoundSoft(dealId, 'dedupe empty');
+      return { ok: false, notFound: true };
+    }
     const fields = detail?.dealPanelFields || detail?.customFields || [];
     let filled = 0;
     for (const f of fields) {
@@ -198,6 +237,7 @@ async function liveDealForDedupe(dealId) {
     const contact = detail.contact || {};
     return {
       ok: true,
+      notFound: false,
       dealId: String(detail.id),
       number: detail.number ?? null,
       title: detail.title || null,
@@ -216,8 +256,12 @@ async function liveDealForDedupe(dealId) {
       conversations: (contact.conversations || []).length,
     };
   } catch (err) {
+    if (isDealMissingError(err)) {
+      noteDealNotFoundSoft(dealId, 'dedupe');
+      return { ok: false, notFound: true };
+    }
     console.warn('[novo-crm-orphan-provision] live dedupe read failed', dealId, err?.message || err);
-    return { ok: false };
+    return { ok: false, notFound: false };
   }
 }
 
@@ -716,6 +760,27 @@ export async function runOrphanAlunoProvision(opts = {}) {
     }
   }
 
+  const runStartedAt = Date.now();
+  _dealNotFoundLogCount = 0;
+  let cancelled = false;
+  let dealNotFound = 0;
+  let phaseStartedAt = Date.now();
+  let phaseProcessedBase = 0;
+
+  /** Contadores expostos no job (sempre definidos — evita TDZ no tickProgress). */
+  const counters = {
+    orphans_total: 0,
+    orphans_processed: 0,
+    incomplete_total: 0,
+    incomplete_processed: 0,
+    dup_groups: 0,
+    dup_groups_processed: 0,
+    already_has_deal: 0,
+    would_create: 0,
+    live_ok: 0,
+    errors: 0,
+  };
+
   const patchJob = (p) => {
     if (!jobId) return;
     const entry = jobs.get(jobId);
@@ -723,7 +788,67 @@ export async function runOrphanAlunoProvision(opts = {}) {
     Object.assign(entry, p);
   };
 
-  patchJob({ phase: 'load_matriculados', status_message: 'Indexando matriculados (e-mail + telefone)…' });
+  const checkCancel = () => {
+    if (!jobId) return false;
+    const j = jobs.get(jobId);
+    if (j?.cancel_requested) {
+      cancelled = true;
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Atualiza progresso rico + ETA por fase.
+   * @param {Record<string, unknown>} extra
+   */
+  const tickProgress = (extra = {}) => {
+    if (!jobId) return;
+    const entry = jobs.get(jobId);
+    if (!entry) return;
+    const total = Number(extra.total != null ? extra.total : entry.total) || 0;
+    const processed = Number(extra.processed != null ? extra.processed : entry.processed) || 0;
+    const elapsedPhase = Math.max(1, Date.now() - phaseStartedAt);
+    const doneInPhase = Math.max(0, processed - phaseProcessedBase);
+    const rate = doneInPhase > 0 ? doneInPhase / elapsedPhase : 0;
+    const remaining = total > 0 ? Math.max(0, total - processed) : 0;
+    const etaMs = rate > 0 && remaining > 0 ? Math.round(remaining / rate) : null;
+    Object.assign(entry, {
+      ...counters,
+      deal_not_found: dealNotFound,
+      cancel_requested: Boolean(entry.cancel_requested),
+      eta_ms: etaMs,
+      ...extra,
+      total,
+      processed,
+      failed: counters.errors,
+      sent: dryRun ? counters.would_create : Number(extra.sent != null ? extra.sent : entry.sent) || 0,
+    });
+  };
+
+  const beginPhase = (phase, total, message) => {
+    phaseStartedAt = Date.now();
+    phaseProcessedBase = 0;
+    tickProgress({
+      phase,
+      total,
+      processed: 0,
+      status_message: message,
+      eta_ms: null,
+    });
+  };
+
+  if (checkCancel()) {
+    patchJob({
+      phase: 'done',
+      status: 'cancelled',
+      finished_at: new Date().toISOString(),
+      status_message: 'Cancelado antes de iniciar',
+    });
+    return { ok: false, cancelled: true, dry_run: dryRun, scope };
+  }
+
+  beginPhase('load_matriculados', 0, 'Indexando matriculados (e-mail + telefone)…');
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
   if (!matSnap?.id) {
     const err = new Error('Nenhum snapshot de matriculados encontrado. Faça upload em Bases.');
@@ -744,7 +869,17 @@ export async function runOrphanAlunoProvision(opts = {}) {
     if (cpf && !byCpfMat.has(cpf)) byCpfMat.set(cpf, row);
   });
 
-  patchJob({ phase: 'load_bases', status_message: 'Carregando bases satélite…' });
+  if (checkCancel()) {
+    patchJob({
+      phase: 'done',
+      status: 'cancelled',
+      finished_at: new Date().toISOString(),
+      status_message: 'Cancelado',
+    });
+    return { ok: false, cancelled: true, dry_run: dryRun, scope };
+  }
+
+  beginPhase('load_bases', 0, 'Carregando bases satélite…');
   const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
     caaProtocolsRepo.loadOpenCaaT0Map(),
@@ -755,13 +890,15 @@ export async function runOrphanAlunoProvision(opts = {}) {
     loadIdSetFromBase('provavel-evasao'),
   ]);
 
-  patchJob({ phase: 'load_cache', status_message: 'Carregando cache do CRM…' });
+  beginPhase('scan_mirror', 0, 'Escaneando espelho (órfãos / incompletos)…');
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({ scope: 'all_mapped', limit: 100000 });
   const indices = buildCacheIndices(cacheRows);
   const orphans = doOrphans
     ? cacheRows.filter((r) => !r.primary_deal_id && dealsFromCacheRow(r).length === 0)
     : [];
   const incompletes = doIncomplete ? cacheRows.filter((r) => isIncompleteWithDeal(r)) : [];
+  counters.orphans_total = orphans.length;
+  counters.incomplete_total = incompletes.length;
 
   const fieldIds = getNovoCrmDealFieldIds();
   const perdidoStageId = String(getNovoCrmStageIds().Perdido || '').trim();
@@ -867,11 +1004,19 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const skipFieldsAll = String(process.env.NOVO_CRM_ORPHAN_SKIP_FIELDS || '').trim() === '1';
 
   patchJob({
-    phase: 'process',
+    phase: 'live_check_orphans',
     total: orphans.length,
     processed: offset,
-    status_message: dryRun ? 'Calculando prévia…' : 'Criando deals no CRM…',
+    status_message:
+      orphans.length === 0
+        ? 'Sem órfãos no espelho — pulando…'
+        : dryRun
+          ? `Conferindo ${orphans.length} órfãos ao vivo…`
+          : `Criando deals para ${orphans.length} órfãos…`,
   });
+  phaseStartedAt = Date.now();
+  phaseProcessedBase = offset;
+  counters.orphans_processed = offset;
 
   console.log(
     `[novo-crm-orphan-provision] start dry=${dryRun} scope=${scope} max=${maxCreates} offset=${offset} conc=${concurrency} orphans=${orphans.length} incompletes=${incompletes.length}`
@@ -993,12 +1138,31 @@ export async function runOrphanAlunoProvision(opts = {}) {
   }
 
   async function processOrphanAt(i) {
-    if (stoppedAtMax || atMax()) {
-      stoppedAtMax = true;
+    if (cancelled || checkCancel() || stoppedAtMax || atMax()) {
+      if (atMax()) stoppedAtMax = true;
       return;
     }
     const row = orphans[i];
     scanned += 1;
+
+    const reportOrphanProgress = () => {
+      counters.orphans_processed = Math.max(i + 1, offset);
+      counters.already_has_deal = skippedAlreadyHasDeal;
+      counters.would_create = dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling;
+      counters.live_ok = Math.max(0, orphanAluno + skippedAlreadyHasDeal);
+      counters.errors = errors;
+      tickProgress({
+        processed: Math.max(i + 1, offset),
+        total: orphans.length,
+        sent: dryRun ? counters.would_create : createdDeals,
+        failed: errors,
+        status_message:
+          (dryRun
+            ? `Órfãos ${Math.max(i + 1, offset)}/${orphans.length} · já tinham negócio ${skippedAlreadyHasDeal} · a criar ${counters.would_create}`
+            : `Órfãos ${Math.max(i + 1, offset)}/${orphans.length} · criados ${createdDeals}`) +
+          (dealNotFound ? ` · not_found ${dealNotFound}` : ''),
+      });
+    };
 
     const emailCandidates = contactEmails(row);
     const phoneCandidates = contactPhones(row);
@@ -1025,7 +1189,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
     }
     if (!group) {
       orphanNoMatch += 1;
-      patchJob({ processed: Math.max(i + 1, offset), sent: createdDeals, failed: errors });
+      reportOrphanProgress();
       return;
     }
     orphanAluno += 1;
@@ -1113,7 +1277,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
             siaa_rgm_count: siaaRgms.size,
           });
         }
-        patchJob({ processed: Math.max(i + 1, offset), sent: createdDeals, failed: errors });
+        reportOrphanProgress();
         return;
       }
 
@@ -1191,15 +1355,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
             err?.message || err
           );
         }
-        patchJob({
-          processed: Math.max(i + 1, offset),
-          sent: createdDeals,
-          failed: errors,
-          status_message: dryRun
-            ? `Verificados ${scanned}/${orphans.length} · ${skippedAlreadyHasDeal} já tinham negócio · ` +
-              `${dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling} a criar`
-            : undefined,
-        });
+        reportOrphanProgress();
         return;
       }
       const orphanRgms = rgmsOnCacheRow(row);
@@ -1259,35 +1415,52 @@ export async function runOrphanAlunoProvision(opts = {}) {
       }
     }
 
-    patchJob({
-      processed: Math.max(i + 1, offset),
-      sent: dryRun ? dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling : createdDeals,
-      failed: errors,
-    });
+    reportOrphanProgress();
   }
 
   let nextIndex = offset;
   const worker = async () => {
     while (true) {
-      if (stoppedAtMax || atMax()) return;
+      if (cancelled || checkCancel() || stoppedAtMax || atMax()) return;
       const idx = nextIndex++;
       if (idx >= orphans.length) return;
       await processOrphanAt(idx);
     }
   };
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  if (orphans.length > 0 && !cancelled) {
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  }
 
   // === INCOMPLETE PASS ===
-  if (doIncomplete && incompletes.length > 0) {
-    patchJob({
-      phase: 'process_incomplete',
-      total: incompletes.length,
-      processed: 0,
-      status_message: 'Processando incompletos (dedupe + enrich)…',
-    });
+  if (!cancelled && checkCancel()) {
+    /* flag set */
+  }
+  if (!cancelled && doIncomplete && incompletes.length > 0) {
+    beginPhase(
+      'process_incomplete',
+      incompletes.length,
+      `Processando incompletos (${incompletes.length})…`
+    );
 
     let incIdx = 0;
+    const reportIncProgress = () => {
+      counters.incomplete_processed = incIdx;
+      counters.errors = errors;
+      counters.already_has_deal = skippedAlreadyHasDeal;
+      counters.would_create = dealsWouldCreateOnOrphan + dealsWouldCreateOnSibling;
+      tickProgress({
+        processed: incIdx,
+        total: incompletes.length,
+        failed: errors,
+        status_message:
+          `Incompletos ${incIdx}/${incompletes.length}` +
+          (incompleteEnriched ? ` · enrich ${incompleteEnriched}` : '') +
+          (dupToPerdido ? ` · →Perdido ${dupToPerdido}` : '') +
+          (dealNotFound ? ` · not_found ${dealNotFound}` : ''),
+      });
+    };
     for (const row of incompletes) {
+      if (cancelled || checkCancel()) break;
       incompleteScanned += 1;
       incIdx += 1;
 
@@ -1307,7 +1480,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
       }
       if (!group) {
         incompleteNoMatch += 1;
-        patchJob({ processed: incIdx });
+        reportIncProgress();
         continue;
       }
       if (matchVia === 'email') matchedEmail += 1;
@@ -1332,7 +1505,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
             candidatos: [...distinctPeople].slice(0, 4),
           });
         }
-        patchJob({ processed: incIdx });
+        reportIncProgress();
         continue;
       }
 
@@ -1363,7 +1536,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
         // Sibling is more complete → mark bad deals on this contact as Perdido.
         if (!perdidoStageId) {
           // Cannot resolve Perdido stage (probably missing env / wrong host) — skip.
-          patchJob({ processed: incIdx });
+          reportIncProgress();
           continue;
         }
         if (!namesPlausiblyMatch(row.nome, siblingRow.nome)) {
@@ -1379,7 +1552,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
               match_key: matchedKey,
             });
           }
-          patchJob({ processed: incIdx });
+          reportIncProgress();
           continue;
         }
         dupToPerdido += 1;
@@ -1402,6 +1575,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
           if (liveCheck) {
             const live = await liveDealIdentity(deal.id);
             if (!live.ok) {
+              if (live.notFound) dealNotFound += 1;
               perdidoLiveUnknown += 1;
               continue;
             }
@@ -1463,7 +1637,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
           null;
 
         if (!primaryDeal?.id || !fieldIds?.cpf) {
-          patchJob({ processed: incIdx });
+          reportIncProgress();
           continue;
         }
 
@@ -1483,7 +1657,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
               match_key: matchedKey,
             });
           }
-          patchJob({ processed: incIdx });
+          reportIncProgress();
           continue;
         }
 
@@ -1493,7 +1667,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
         ].filter(Boolean);
 
         if (!enrichValues.length) {
-          patchJob({ processed: incIdx });
+          reportIncProgress();
           continue;
         }
 
@@ -1502,8 +1676,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
         if (liveCheck) {
           const live = await liveDealIdentity(primaryDeal.id);
           if (!live.ok) {
+            if (live.notFound) dealNotFound += 1;
             incompleteLiveUnknown += 1;
-            patchJob({ processed: incIdx });
+            reportIncProgress();
             continue;
           }
           const before = enrichValues.length;
@@ -1530,7 +1705,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
           });
           if (!enrichValues.length) {
             if (before) incompleteLiveAlreadyOk += 1;
-            patchJob({ processed: incIdx });
+            reportIncProgress();
             continue;
           }
         }
@@ -1567,7 +1742,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
       }
 
-      patchJob({ processed: incIdx, failed: errors });
+      reportIncProgress();
     }
   }
 
@@ -1575,28 +1750,44 @@ export async function runOrphanAlunoProvision(opts = {}) {
   // Mesma pessoa (mesmo RGM) com 2+ cartões em etapa mexível. Não é coberto
   // pelos passes acima: os dois cards têm CPF/RGM, então nenhum é "órfão" nem
   // "incompleto". Mantém 1 card por score e manda os outros para Perdido.
-  if (doDuplicates) {
+  if (!cancelled && doDuplicates) {
     const maxMoves = Math.min(
       Math.max(Number(process.env.NOVO_CRM_DEDUPE_MAX_MOVES) || 1000, 1),
       20000
     );
-    patchJob({ phase: 'duplicates', status_message: 'Procurando cartões duplicados…' });
+    beginPhase('duplicates', 0, 'Procurando cartões duplicados…');
 
     const dealsByRgm = buildDedupeDealGroupsByRgm(cacheRows);
 
     const groups = [...dealsByRgm.entries()];
     dupGroups = groups.length;
-    patchJob({
-      total: groups.length,
-      processed: 0,
-      status_message: `Conferindo ${groups.length} pessoas com 2+ cartões…`,
-    });
+    counters.dup_groups = groups.length;
+    beginPhase(
+      'duplicates',
+      groups.length,
+      `Conferindo ${groups.length} pessoas com 2+ cartões…`
+    );
 
     /** Deals já “consumidos” como survivor/loser — evita reprocessar no mesmo run. */
     const consumedDealIds = new Set();
 
+    const reportDupProgress = () => {
+      counters.dup_groups_processed = groupIdx;
+      counters.errors = errors;
+      tickProgress({
+        processed: groupIdx,
+        total: groups.length,
+        failed: errors,
+        status_message:
+          `Duplicados ${groupIdx}/${groups.length}` +
+          (dupDealsMoved ? ` · →Perdido ${dupDealsMoved}` : '') +
+          (dealNotFound ? ` · not_found ${dealNotFound}` : ''),
+      });
+    };
+
     let groupIdx = 0;
     for (const [rgm, cands] of groups) {
+      if (cancelled || checkCancel()) break;
       groupIdx += 1;
       if (dupDealsMoved >= maxMoves) {
         dupStoppedAtMax = true;
@@ -1605,7 +1796,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
 
       const pendingCands = cands.filter((c) => !consumedDealIds.has(c.dealId));
       if (pendingCands.length < 2) {
-        patchJob({ processed: groupIdx });
+        reportDupProgress();
         continue;
       }
 
@@ -1615,6 +1806,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
       for (const c of pendingCands) {
         const d = await liveDealForDedupe(c.dealId);
         if (!d.ok) {
+          if (d.notFound) dealNotFound += 1;
           unknown = true;
           break;
         }
@@ -1628,12 +1820,12 @@ export async function runOrphanAlunoProvision(opts = {}) {
       }
       if (unknown) {
         dupLiveUnknown += 1;
-        patchJob({ processed: groupIdx });
+        reportDupProgress();
         continue;
       }
       if (live.length < 2) {
         dupResolvedLive += 1;
-        patchJob({ processed: groupIdx });
+        reportDupProgress();
         continue;
       }
 
@@ -1661,7 +1853,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
       }
       if (samePerson.length < 2) {
-        patchJob({ processed: groupIdx });
+        reportDupProgress();
         continue;
       }
 
@@ -1721,12 +1913,13 @@ export async function runOrphanAlunoProvision(opts = {}) {
           }
         }
       }
-      patchJob({ processed: groupIdx, failed: errors });
+      reportDupProgress();
     }
   }
 
   const result = {
-    ok: true,
+    ok: !cancelled,
+    cancelled,
     dry_run: dryRun,
     scope,
     matriculados_snapshot_id: matSnap.id,
@@ -1789,10 +1982,17 @@ export async function runOrphanAlunoProvision(opts = {}) {
 
   patchJob({
     phase: 'done',
-    status: 'completed',
+    status: cancelled ? 'cancelled' : 'completed',
     finished_at: new Date().toISOString(),
-    result,
-    status_message: dryRun ? 'Prévia pronta' : 'Provisionamento concluído',
+    result: { ...result, cancelled, deal_not_found: dealNotFound },
+    eta_ms: null,
+    ...counters,
+    deal_not_found: dealNotFound,
+    status_message: cancelled
+      ? (dryRun ? 'Prévia cancelada' : 'Provisionamento cancelado')
+      : dryRun
+        ? 'Prévia pronta'
+        : 'Provisionamento concluído',
   });
 
   console.log('[novo-crm-orphan-provision] done', JSON.stringify({ ...result, samples: undefined, error_samples: undefined }));
@@ -1829,12 +2029,26 @@ export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
     processed: 0,
     sent: 0,
     failed: 0,
+    eta_ms: null,
+    cancel_requested: false,
     phase: 'starting',
     status_message: 'Iniciando…',
     started_at: new Date().toISOString(),
     finished_at: null,
     result: null,
     error: null,
+    scope: opts.scope || 'orphans',
+    orphans_total: 0,
+    orphans_processed: 0,
+    incomplete_total: 0,
+    incomplete_processed: 0,
+    dup_groups: 0,
+    dup_groups_processed: 0,
+    already_has_deal: 0,
+    would_create: 0,
+    live_ok: 0,
+    deal_not_found: 0,
+    errors: 0,
   };
   jobs.set(jobId, entry);
   runningJobId = jobId;
@@ -1848,14 +2062,27 @@ export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
     jobId,
   })
     .then((result) => {
-      entry.status = 'completed';
+      entry.status = result?.cancelled || entry.status === 'cancelled' ? 'cancelled' : 'completed';
       entry.result = result;
       entry.finished_at = new Date().toISOString();
+      entry.phase = 'done';
+      entry.eta_ms = null;
+      if (!entry.status_message || !/cancel|pronta|conclu/i.test(String(entry.status_message))) {
+        entry.status_message =
+          entry.status === 'cancelled'
+            ? entry.dry_run
+              ? 'Prévia cancelada'
+              : 'Cancelado'
+            : entry.dry_run
+              ? 'Prévia pronta'
+              : 'Provisionamento concluído';
+      }
     })
     .catch((err) => {
       entry.status = 'failed';
       entry.error = err?.message || String(err);
       entry.finished_at = new Date().toISOString();
+      entry.phase = 'done';
     })
     .finally(() => {
       if (runningJobId === jobId) runningJobId = null;
@@ -1872,4 +2099,22 @@ export function getRunningOrphanAlunoProvisionJob() {
   if (!runningJobId) return null;
   const j = jobs.get(runningJobId);
   return j?.status === 'running' ? j : null;
+}
+
+/**
+ * Cancel cooperativo (para no próximo item da fase atual).
+ * @param {string} [jobId]
+ */
+export function requestCancelOrphanAlunoProvision(jobId) {
+  const id = jobId ? String(jobId) : runningJobId;
+  if (!id) return { ok: false, error: 'Nenhum job de dedupe em andamento' };
+  const j = jobs.get(id);
+  if (!j) return { ok: false, error: 'Job não encontrado' };
+  if (j.status !== 'running') {
+    return { ok: false, jobId: id, error: 'Job não está rodando (status=' + j.status + ')' };
+  }
+  j.cancel_requested = true;
+  j.status_message = 'Cancelando… (para no próximo item)';
+  console.log('[novo-crm-orphan-provision] cancel requested job=' + id);
+  return { ok: true, jobId: id };
 }

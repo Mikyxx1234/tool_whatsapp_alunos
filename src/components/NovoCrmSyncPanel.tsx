@@ -15,9 +15,9 @@ import {
   type NovoCrmCacheStatusResponse,
   type NovoCrmFlagsStageJobStatusResponse,
   type NovoCrmRegressionEvent,
+  type OrphanDedupeJobStatusResponse,
   type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
-
 function fmtDt(iso: string | null | undefined) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('pt-BR', {
@@ -44,9 +44,21 @@ function phaseLabel(phase: string | null | undefined) {
     case 'starting':
       return 'Iniciando';
     case 'loading_bases':
-      return 'Carregando bases SIAA';
+    case 'load_bases':
+      return 'Carregando bases';
+    case 'load_matriculados':
+      return 'Indexando SIAA';
     case 'loading_cache':
-      return 'Carregando espelho';
+    case 'load_cache':
+    case 'scan_mirror':
+      return 'Escaneando espelho';
+    case 'live_check_orphans':
+    case 'process':
+      return 'Conferindo órfãos ao vivo';
+    case 'process_incomplete':
+      return 'Incompletos';
+    case 'duplicates':
+      return 'Duplicados';
     case 'processing':
       return 'Calculando alterações';
     case 'processing_exit':
@@ -67,6 +79,7 @@ type AlertsPreview = {
 };
 
 type FlagsJobLive = NonNullable<NovoCrmFlagsStageJobStatusResponse['job']>;
+type DedupeJobLive = NonNullable<OrphanDedupeJobStatusResponse['job']>;
 
 export function NovoCrmSyncPanel() {
   const [status, setStatus] = useState<NovoCrmCacheStatusResponse | null>(null);
@@ -88,8 +101,10 @@ export function NovoCrmSyncPanel() {
   const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
   const [dedupePreview, setDedupePreview] = useState<OrphanDedupePreviewResponse | null>(null);
   const [dedupeJobId, setDedupeJobId] = useState<string | null>(null);
+  const [dedupeJob, setDedupeJob] = useState<DedupeJobLive | null>(null);
   const [dedupeMode, setDedupeMode] = useState<'preview' | 'apply'>('preview');
   const [dedupeApplied, setDedupeApplied] = useState(false);
+  const [dedupeStopping, setDedupeStopping] = useState(false);
 
   const pollRef = useRef<number | null>(null);
 
@@ -130,6 +145,42 @@ export function NovoCrmSyncPanel() {
           error: null,
           result: null,
         });
+      }
+      // Reanexa dedupe/órfãos em andamento.
+      if (s.running_orphan_dedupe?.jobId) {
+        const o = s.running_orphan_dedupe;
+        setDedupeJobId((prev) => prev || o.jobId);
+        setDedupeBusy(true);
+        setDedupeMode(o.dry_run === false ? 'apply' : 'preview');
+        setDedupeJob({
+          jobId: o.jobId,
+          status: o.status,
+          dry_run: Boolean(o.dry_run),
+          total: o.total ?? 0,
+          processed: o.processed ?? 0,
+          sent: o.sent ?? 0,
+          failed: o.failed ?? o.errors ?? 0,
+          eta_ms: o.eta_ms ?? null,
+          phase: o.phase,
+          status_message: o.status_message,
+          started_at: o.started_at,
+          finished_at: null,
+          cancel_requested: o.cancel_requested,
+          orphans_total: o.orphans_total,
+          orphans_processed: o.orphans_processed,
+          incomplete_total: o.incomplete_total,
+          incomplete_processed: o.incomplete_processed,
+          dup_groups: o.dup_groups,
+          dup_groups_processed: o.dup_groups_processed,
+          already_has_deal: o.already_has_deal,
+          would_create: o.would_create,
+          live_ok: o.live_ok,
+          deal_not_found: o.deal_not_found,
+          errors: o.errors ?? o.failed ?? 0,
+          error: null,
+          result: null,
+        });
+        setDedupeMsg(o.status_message || phaseLabel(o.phase));
       }
       return s;
     } catch (e) {
@@ -196,14 +247,27 @@ export function NovoCrmSyncPanel() {
             .getOrphanDedupeStatus(dedupeJobId)
             .then((r) => {
               if (!r.job) return;
-              setDedupeMsg(r.job.status_message || r.job.phase || null);
+              setDedupeJob(r.job);
+              setDedupeMsg(r.job.status_message || phaseLabel(r.job.phase));
               if (r.job.status !== 'running') {
                 setDedupeJobId(null);
                 setDedupeBusy(false);
+                setDedupeStopping(false);
                 if (r.job.status === 'completed' && r.job.result) {
                   setDedupePreview(r.job.result);
                   setDedupeApplied(!r.job.result.dry_run);
                   setDedupeMsg(null);
+                } else if (r.job.status === 'cancelled') {
+                  if (r.job.result) {
+                    setDedupePreview(r.job.result);
+                    setDedupeApplied(false);
+                  }
+                  setDedupeMsg(
+                    `Dedupe cancelada` +
+                      (r.job.processed
+                        ? ` (até ${Number(r.job.processed).toLocaleString('pt-BR')} processados)`
+                        : '')
+                  );
                 } else if (r.job.status === 'failed') {
                   setDedupeMsg(
                     r.job.error || (dedupeMode === 'apply' ? 'Dedupe falhou' : 'Prévia dedupe falhou')
@@ -348,12 +412,35 @@ export function NovoCrmSyncPanel() {
     setDedupeBusy(true);
     setDedupeMode('preview');
     setDedupeApplied(false);
-    setDedupeMsg('Conferindo cada órfão ao vivo no CRM… (leva alguns minutos)');
+    setDedupeMsg('Iniciando prévia…');
     setDedupePreview(null);
+    setDedupeJob(null);
     try {
       const started = await maintenanceApi.startOrphanDedupePreview({ scope: 'both' });
       setDedupeJobId(started.jobId);
     } catch (e) {
+      const err = e as Error & { jobId?: string; status?: number };
+      if (err.jobId || /já em andamento/i.test(err.message || '')) {
+        const jid = err.jobId;
+        if (jid) setDedupeJobId(jid);
+        else {
+          try {
+            const st = await maintenanceApi.getOrphanDedupeStatus();
+            if (st.job?.jobId) {
+              setDedupeJobId(st.job.jobId);
+              setDedupeJob(st.job);
+              setDedupeMode(st.job.dry_run === false ? 'apply' : 'preview');
+              setDedupeMsg(st.job.status_message || phaseLabel(st.job.phase));
+              return;
+            }
+          } catch {
+            /* fallthrough */
+          }
+        }
+        setDedupeMsg('Reanexando job em andamento…');
+        void loadStatus();
+        return;
+      }
       setDedupeBusy(false);
       setDedupeMsg(e instanceof Error ? e.message : 'Falha na prévia dedupe');
     }
@@ -364,14 +451,35 @@ export function NovoCrmSyncPanel() {
     setDedupeBusy(true);
     setDedupeMode('apply');
     setDedupeApplied(false);
-    setDedupeMsg('Aplicando no CRM… (confere cada registro ao vivo antes de escrever)');
+    setDedupeMsg('Aplicando no CRM…');
     setDedupePreview(null);
+    setDedupeJob(null);
     try {
       const started = await maintenanceApi.startOrphanDedupe({ scope: 'both' });
       setDedupeJobId(started.jobId);
     } catch (e) {
+      const err = e as Error & { jobId?: string };
+      if (err.jobId || /já em andamento/i.test(err.message || '')) {
+        if (err.jobId) setDedupeJobId(err.jobId);
+        setDedupeMsg('Reanexando job em andamento…');
+        void loadStatus();
+        return;
+      }
       setDedupeBusy(false);
       setDedupeMsg(e instanceof Error ? e.message : 'Falha ao aplicar dedupe');
+    }
+  };
+
+  const stopDedupe = async () => {
+    if (dedupeStopping) return;
+    if (!window.confirm('Interromper a prévia/aplicação de dedupe? O que já contou permanece.')) return;
+    setDedupeStopping(true);
+    try {
+      await maintenanceApi.stopOrphanDedupe(dedupeJobId || undefined);
+      setDedupeMsg('Cancelando dedupe… (para no próximo item)');
+    } catch (e) {
+      setDedupeMsg(e instanceof Error ? e.message : 'Falha ao pedir cancelamento');
+      setDedupeStopping(false);
     }
   };
 
@@ -379,6 +487,7 @@ export function NovoCrmSyncPanel() {
     setDedupePreview(null);
     setDedupeApplied(false);
     setDedupeMsg(null);
+    setDedupeJob(null);
   };
 
   const running = status?.running_sync || null;
@@ -400,6 +509,17 @@ export function NovoCrmSyncPanel() {
   const flagsElapsed =
     fj?.started_at != null
       ? fmtDurationMs(Date.now() - new Date(fj.started_at).getTime())
+      : null;
+
+  const dedupeRunning = Boolean(dedupeJobId) || Boolean(status?.running_orphan_dedupe);
+  const dj = dedupeJob;
+  const dedupePct =
+    dj && dj.total > 0 ? Math.min(100, Math.round((dj.processed / dj.total) * 100)) : null;
+  const dedupeEta =
+    dj?.eta_ms != null && dj.eta_ms > 0 ? fmtDurationMs(dj.eta_ms) : null;
+  const dedupeElapsed =
+    dj?.started_at != null
+      ? fmtDurationMs(Date.now() - new Date(dj.started_at).getTime())
       : null;
 
   const tiles: Array<{
@@ -627,20 +747,39 @@ export function NovoCrmSyncPanel() {
             <p className="text-[11px] text-violet-800/80 flex-1">
               Confere no CRM ao vivo cada pessoa que o espelho diz estar sem negócio (o espelho gera falsos órfãos) e sincroniza quem já tem. Depois conta o que sobra: negócio novo para quem realmente não tem, preenchimento de CPF/RGM e, quando a mesma pessoa tem dois cartões, mantém um e manda o outro para Perdido.
             </p>
-            <button
-              type="button"
-              onClick={() => void runDedupePreview()}
-              disabled={dedupeBusy || Boolean(dedupeJobId)}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {dedupeBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserRound className="w-3.5 h-3.5" />}
-              {dedupeBusy
-                ? dedupeMode === 'apply'
-                  ? 'Aplicando no CRM…'
-                  : 'Conferindo no CRM…'
-                : 'Prévia dedupe (confere ao vivo)'}
-            </button>
-            {dedupeMsg && <p className="text-[11px] text-violet-700">{dedupeMsg}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void runDedupePreview()}
+                disabled={dedupeBusy || dedupeRunning}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {dedupeBusy || dedupeRunning ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserRound className="w-3.5 h-3.5" />
+                )}
+                {dedupeRunning
+                  ? dedupeMode === 'apply'
+                    ? 'Aplicando…'
+                    : 'Prévia rodando…'
+                  : 'Prévia dedupe (confere ao vivo)'}
+              </button>
+              {dedupeRunning && (
+                <button
+                  type="button"
+                  onClick={() => void stopDedupe()}
+                  disabled={dedupeStopping || Boolean(dj?.cancel_requested)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-white border border-rose-300 hover:bg-rose-50 rounded-lg disabled:opacity-50"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  {dedupeStopping || dj?.cancel_requested ? 'Parando…' : 'Parar'}
+                </button>
+              )}
+            </div>
+            {dedupeMsg && !dedupeRunning && (
+              <p className="text-[11px] text-violet-700">{dedupeMsg}</p>
+            )}
             {dedupePreview && (
               <div className="mt-1 text-[11px] text-violet-900 space-y-0.5">
                 <p>
@@ -818,6 +957,72 @@ export function NovoCrmSyncPanel() {
               {fj?.status_message && (
                 <p className="text-xs font-medium text-emerald-950/90 dark:text-slate-200/90 truncate">
                   {fj.status_message}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {dedupeRunning && (
+          <div className="mt-4 max-w-xl rounded-xl border border-violet-300/70 dark:border-violet-400/50 bg-violet-50/80 dark:bg-violet-900/40 p-3.5">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">
+                {dj?.dry_run === false ? 'Dedupe (apply)' : 'Prévia dedupe'} · {phaseLabel(dj?.phase)}
+                {dj?.cancel_requested ? ' · cancelando…' : ''}
+              </p>
+              <button
+                type="button"
+                onClick={() => void stopDedupe()}
+                disabled={dedupeStopping || Boolean(dj?.cancel_requested)}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-400/50 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50"
+              >
+                <Square className="w-2.5 h-2.5 fill-current" />
+                Parar
+              </button>
+            </div>
+            <div className="h-3 w-full overflow-hidden rounded-full bg-violet-200/90 dark:bg-black/55 ring-1 ring-inset ring-violet-600/15 dark:ring-violet-400/35">
+              <div
+                className={`h-full rounded-full bg-violet-500 dark:bg-violet-400 shadow-[0_0_10px_rgba(167,139,250,0.45)] transition-[width] duration-500 ${
+                  dedupePct == null ? 'animate-pulse w-1/3' : ''
+                }`}
+                style={dedupePct == null ? undefined : { width: `${dedupePct}%` }}
+              />
+            </div>
+            <div className="mt-2 space-y-1 tabular-nums">
+              <p className="text-sm font-semibold text-violet-950 dark:text-slate-100">
+                {dedupePct != null
+                  ? `${dedupePct}% · ${Number(dj?.processed || 0).toLocaleString('pt-BR')} / ${Number(dj?.total || 0).toLocaleString('pt-BR')}`
+                  : `${Number(dj?.processed || 0).toLocaleString('pt-BR')} processados…`}
+              </p>
+              <p className="text-[13px] font-medium text-violet-950 dark:text-[#e6edf6]">
+                Órfãos: {Number(dj?.orphans_processed ?? 0).toLocaleString('pt-BR')}
+                {dj?.orphans_total != null && dj.orphans_total > 0
+                  ? `/${Number(dj.orphans_total).toLocaleString('pt-BR')}`
+                  : ''}
+                {' · '}já tinham negócio: {Number(dj?.already_has_deal ?? 0).toLocaleString('pt-BR')}
+                {' · '}a criar: {Number(dj?.would_create ?? 0).toLocaleString('pt-BR')}
+              </p>
+              <p className="text-[12px] font-medium text-violet-900/90 dark:text-slate-200">
+                Incompletos: {Number(dj?.incomplete_processed ?? 0).toLocaleString('pt-BR')}
+                {dj?.incomplete_total != null && dj.incomplete_total > 0
+                  ? `/${Number(dj.incomplete_total).toLocaleString('pt-BR')}`
+                  : ''}
+                {' · '}dup grupos: {Number(dj?.dup_groups_processed ?? 0).toLocaleString('pt-BR')}
+                {dj?.dup_groups != null && dj.dup_groups > 0
+                  ? `/${Number(dj.dup_groups).toLocaleString('pt-BR')}`
+                  : ''}
+                {Number(dj?.deal_not_found || 0) > 0
+                  ? ` · not_found ${Number(dj?.deal_not_found).toLocaleString('pt-BR')}`
+                  : ''}
+                {Number(dj?.errors || 0) > 0
+                  ? ` · erros ${Number(dj?.errors).toLocaleString('pt-BR')}`
+                  : ''}
+                {dedupeElapsed ? ` · decorrido ${dedupeElapsed}` : ''}
+                {dedupeEta ? ` · ETA ~${dedupeEta}` : ''}
+              </p>
+              {dj?.status_message && (
+                <p className="text-xs font-medium text-violet-950/90 dark:text-slate-200/90 truncate">
+                  {dj.status_message}
                 </p>
               )}
             </div>

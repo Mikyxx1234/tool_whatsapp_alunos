@@ -27,6 +27,7 @@ import {
   startOrphanAlunoProvisionApplyBackground,
   getOrphanAlunoProvisionJob,
   getRunningOrphanAlunoProvisionJob,
+  requestCancelOrphanAlunoProvision,
 } from '../services/novoCrmOrphanAlunoProvisionService.js';
 import {
   runMatriculadosProvision,
@@ -211,6 +212,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
     await novoCrmPersonCacheRepo.closeStaleRunningSyncs();
     const stats = await novoCrmPersonCacheRepo.getCacheStats();
     const flagsJob = getRunningFlagsStageSyncJob();
+    const orphanJob = getRunningOrphanAlunoProvisionJob();
     res.json({
       ok: true,
       cache_total: stats.total,
@@ -239,6 +241,33 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
             status_message: flagsJob.status_message,
             started_at: flagsJob.started_at,
             cancel_requested: Boolean(flagsJob.cancel_requested),
+          }
+        : null,
+      running_orphan_dedupe: orphanJob
+        ? {
+            jobId: orphanJob.jobId,
+            status: orphanJob.status,
+            dry_run: Boolean(orphanJob.dry_run),
+            total: orphanJob.total ?? 0,
+            processed: orphanJob.processed ?? 0,
+            sent: orphanJob.sent ?? 0,
+            failed: orphanJob.failed ?? orphanJob.errors ?? 0,
+            eta_ms: orphanJob.eta_ms ?? null,
+            phase: orphanJob.phase,
+            status_message: orphanJob.status_message,
+            started_at: orphanJob.started_at,
+            cancel_requested: Boolean(orphanJob.cancel_requested),
+            orphans_total: orphanJob.orphans_total ?? 0,
+            orphans_processed: orphanJob.orphans_processed ?? 0,
+            incomplete_total: orphanJob.incomplete_total ?? 0,
+            incomplete_processed: orphanJob.incomplete_processed ?? 0,
+            dup_groups: orphanJob.dup_groups ?? 0,
+            dup_groups_processed: orphanJob.dup_groups_processed ?? 0,
+            already_has_deal: orphanJob.already_has_deal ?? 0,
+            would_create: orphanJob.would_create ?? 0,
+            live_ok: orphanJob.live_ok ?? 0,
+            deal_not_found: orphanJob.deal_not_found ?? 0,
+            errors: orphanJob.errors ?? orphanJob.failed ?? 0,
           }
         : null,
       state: stats.state,
@@ -832,19 +861,48 @@ router.get('/provision-orphan-alunos-novo-crm-status', requireApiKey, async (req
         jobId: job.jobId,
         status: job.status,
         dry_run: job.dry_run,
-        total: job.total,
-        processed: job.processed,
-        sent: job.sent,
-        failed: job.failed,
+        total: job.total ?? 0,
+        processed: job.processed ?? 0,
+        sent: job.sent ?? 0,
+        failed: job.failed ?? job.errors ?? 0,
+        eta_ms: job.eta_ms ?? null,
         phase: job.phase,
         status_message: job.status_message,
         started_at: job.started_at,
         finished_at: job.finished_at,
+        cancel_requested: Boolean(job.cancel_requested),
+        orphans_total: job.orphans_total ?? 0,
+        orphans_processed: job.orphans_processed ?? 0,
+        incomplete_total: job.incomplete_total ?? 0,
+        incomplete_processed: job.incomplete_processed ?? 0,
+        dup_groups: job.dup_groups ?? 0,
+        dup_groups_processed: job.dup_groups_processed ?? 0,
+        already_has_deal: job.already_has_deal ?? 0,
+        would_create: job.would_create ?? 0,
+        live_ok: job.live_ok ?? 0,
+        deal_not_found: job.deal_not_found ?? 0,
+        errors: job.errors ?? job.failed ?? 0,
         error: job.error,
         result: job.result,
       },
     });
   } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/provision-orphan-alunos-novo-crm-stop?jobId=
+ * Cancel cooperativo da prévia/apply de dedupe órfãos.
+ */
+router.post('/provision-orphan-alunos-novo-crm-stop', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId || req.body?.jobId || null;
+    const r = requestCancelOrphanAlunoProvision(jobId ? String(jobId) : undefined);
+    if (!r.ok) return res.status(409).json(r);
+    res.json({ ok: true, status: 'cancelling', jobId: r.jobId });
+  } catch (err) {
+    console.error('[provision-orphan-alunos-novo-crm-stop]', err);
     res.status(500).json({ error: err?.message || String(err) });
   }
 });

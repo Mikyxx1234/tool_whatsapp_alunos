@@ -5,6 +5,18 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-11 — Dedupe prévia: progresso rich + reattach + Parar (como Att)
+- **Modelo usado:** Composer.
+- **Problema:** dry `scope=both` rodava minutos sem UI de progresso; refresh só via 409 "Provisionamento de órfãos já em andamento"; logs floodavam `live deal read failed … Negócio não encontrado` (cache stale).
+- **Decisão:**
+  1. Job em memória expõe fase (`load_matriculados` → `scan_mirror` → `live_check_orphans` → `process_incomplete` → `duplicates` → `done`), contadores (`orphans_*/incomplete_*/dup_groups_*`, `already_has_deal`, `would_create`, `deal_not_found`, `errors`) e `eta_ms`.
+  2. `GET …/cache-status` inclui `running_orphan_dedupe` (reattach pós-refresh). Status detalhado em `GET …/provision-orphan-alunos-novo-crm-status`.
+  3. Cancel cooperativo: `cancel_requested` + `POST …/provision-orphan-alunos-novo-crm-stop` (`requestCancelOrphanAlunoProvision`) — para no próximo item; não torna apply mais agressivo.
+  4. UI card (barra %, fase, contadores, ETA, Parar); 409 reanexa job em andamento.
+  5. Soft-log de deals apagados (`not_found` contado no progresso); 3 primeiras + a cada 100.
+- **Arquivos:** `novoCrmOrphanAlunoProvisionService.js`, `maintenance.js`, `maintenanceApi.ts`, `NovoCrmSyncPanel.tsx`.
+- **Escopo:** só UX/progresso da dry_run preview (+ cancel); apply inalterado em agressividade.
+
 ### 2026-08-11 — Sync panel: stop Att/Full + progresso real + fim do “1903” de prévia
 - **Modelo usado:** Composer.
 - **Problema:** Att parecia travada (só texto); sem botão parar; confirmar Att rodava dry_run com `max=2000` que todo dia batia ~1900 matches (amostra do espelho, não resultado real).
@@ -15,7 +27,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   4. **UI:** barra % + fase + Parar; `last_flags_sync` detalhado (scanned/match/flags/etapas) como verdade do último apply — sem dry pré-confirmação amostrado.
   5. Dry sync API sem `max` default agora **50000** (antes 500) se alguém chamar dry de script.
 - **Arquivos:** `novoCrmFlagsStageSyncService.js`, `novoCrmPersonCacheSyncService.js`, `maintenance.js`, `maintenanceApi.ts`, `NovoCrmSyncPanel.tsx`.
-- **Não** cancel em Dedupe nesta entrega.
+- **Follow-up:** cancel + progresso rico do **Dedupe** (mesma data) — ver entrada acima.
 
 ### 2026-08-11 — Att flag **Financeiro** (base `financeiro`) → CRM **Dia 10** (`dia`)
 - **Modelo usado:** Composer/Auto.
