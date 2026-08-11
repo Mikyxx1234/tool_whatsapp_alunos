@@ -726,10 +726,12 @@ export function NovoCrmSyncPanel() {
                 <p className="font-semibold text-emerald-950 dark:text-emerald-200">
                   Última Att (resultado real)
                   {lastFlags.cancelled
-                    ? ' · cancelada'
-                    : lastFlags.aborted || lastFlags.ok === false
-                      ? ' · incompleta'
-                      : ''}
+                    ? ' · cancelada (parcial)'
+                    : lastFlags.abort_reason
+                      ? ' · erro'
+                      : lastFlags.aborted || lastFlags.ok === false
+                        ? ' · incompleta'
+                        : ''}
                 </p>
                 <p className="tabular-nums font-medium">{fmtDt(lastFlags.finished_at)}</p>
                 <p className="tabular-nums font-semibold">
@@ -863,13 +865,20 @@ export function NovoCrmSyncPanel() {
                 <p className="font-semibold text-violet-950 dark:text-violet-200">
                   Última {lastDedupe.dry_run ? 'prévia' : 'apply'}
                   {lastDedupe.cancelled
-                    ? ' · cancelada'
-                    : lastDedupe.ok === false
-                      ? ' · incompleta'
-                      : ''}
+                    ? ' · cancelada (parcial)'
+                    : lastDedupe.status === 'failed'
+                      ? ' · erro'
+                      : lastDedupe.ok === false
+                        ? ' · incompleta'
+                        : ''}
                   {lastDedupe.scope ? ` · ${lastDedupe.scope}` : ''}
                 </p>
                 <p className="tabular-nums font-medium">{fmtDt(lastDedupe.finished_at)}</p>
+                {lastDedupe.status === 'failed' && lastDedupe.error && (
+                  <p className="text-[11px] font-medium text-rose-700 dark:text-rose-300 truncate">
+                    {lastDedupe.error}
+                  </p>
+                )}
                 <p className="tabular-nums font-semibold">
                   Órfãos: {Number(lastDedupe.orphans_total || 0).toLocaleString('pt-BR')}
                   {' · '}a criar:{' '}

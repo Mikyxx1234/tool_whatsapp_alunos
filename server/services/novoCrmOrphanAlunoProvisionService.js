@@ -2118,6 +2118,29 @@ export function startOrphanAlunoProvisionApplyBackground(opts = {}) {
       entry.error = err?.message || String(err);
       entry.finished_at = new Date().toISOString();
       entry.phase = 'done';
+      // Exceção no meio da rodada: persiste last-run com o parcial já acumulado
+      // no job em memória, senão o card 3 fica preso no último sucesso/preview
+      // e some o sinal de erro.
+      cacheRepo
+        .saveOrphanDedupeLastRun({
+          finished_at: entry.finished_at,
+          ok: false,
+          cancelled: false,
+          dry_run: entry.dry_run,
+          status: 'failed',
+          scope: entry.scope,
+          orphans_total: entry.orphans_total || 0,
+          orphans_scanned: entry.orphans_processed || 0,
+          would_create: entry.would_create || 0,
+          incomplete_total: entry.incomplete_total || 0,
+          incomplete_scanned: entry.incomplete_processed || 0,
+          dup_deal_groups: entry.dup_groups || 0,
+          errors: entry.errors || 0,
+          error: entry.error,
+        })
+        .catch((saveErr) => {
+          console.warn('[novo-crm-orphan-provision] save last run (error path) failed:', saveErr?.message || saveErr);
+        });
     })
     .finally(() => {
       if (runningJobId === jobId) runningJobId = null;

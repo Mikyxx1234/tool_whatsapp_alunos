@@ -149,6 +149,7 @@ export interface NovoCrmOrphanDedupeLastRun {
   errors?: number;
   deal_not_found?: number;
   warmed_cache?: number;
+  error?: string | null;
 }
 
 export interface NovoCrmFlagsRunningJob {

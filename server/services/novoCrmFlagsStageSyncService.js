@@ -1642,6 +1642,30 @@ export function startFlagsStageSyncBackground(opts = {}) {
       entry.status = 'failed';
       entry.error = err?.message || String(err);
       entry.finished_at = new Date().toISOString();
+      // Exceção no meio da rodada: persiste last-run com o parcial já acumulado
+      // no job em memória (patchJob foi mutando entry.* durante a varredura),
+      // senão o painel fica preso no último sucesso e escondia o erro.
+      if (!entry.dry_run) {
+        cacheRepo
+          .saveFlagsStageLastRun({
+            finished_at: entry.finished_at,
+            ok: false,
+            mode: entry.mode,
+            dry_run: false,
+            phase: entry.phase,
+            scanned: entry.processed || 0,
+            matched: entry.matched || 0,
+            flags_updated: entry.flags_updated || 0,
+            stages_moved: entry.stages_moved || 0,
+            aborted: true,
+            cancelled: false,
+            error: entry.error,
+            abort_reason: entry.error,
+          })
+          .catch((saveErr) => {
+            console.warn('[novo-crm-flags-stage] save last run (error path) failed:', saveErr?.message || saveErr);
+          });
+      }
       throw err;
     })
     .finally(() => {
