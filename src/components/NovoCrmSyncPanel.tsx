@@ -776,9 +776,9 @@ export function NovoCrmSyncPanel() {
         )}
 
         {flagsRunning && (
-          <div className="mt-4 max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <p className="text-xs font-semibold text-emerald-900">
+          <div className="mt-4 max-w-xl rounded-xl border border-emerald-300/70 dark:border-emerald-400/50 bg-emerald-50/80 dark:bg-emerald-900/45 p-3.5">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-300">
                 Att de etapas · {phaseLabel(fj?.phase)}
                 {fj?.cancel_requested ? ' · cancelando…' : ''}
               </p>
@@ -786,22 +786,22 @@ export function NovoCrmSyncPanel() {
                 type="button"
                 onClick={() => void stopFlagsStage()}
                 disabled={flagsStopping || Boolean(fj?.cancel_requested)}
-                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-rose-700 border border-rose-300 rounded-md hover:bg-rose-50 disabled:opacity-50"
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-400/50 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50"
               >
                 <Square className="w-2.5 h-2.5 fill-current" />
                 Parar
               </button>
             </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-full bg-emerald-100">
+            <div className="h-3 w-full overflow-hidden rounded-full bg-emerald-200/90 dark:bg-black/55 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/35">
               <div
-                className={`h-full rounded-full bg-emerald-600 transition-[width] duration-500 ${
+                className={`h-full rounded-full bg-emerald-500 dark:bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.45)] transition-[width] duration-500 ${
                   flagsPct == null ? 'animate-pulse w-1/3' : ''
                 }`}
                 style={flagsPct == null ? undefined : { width: `${flagsPct}%` }}
               />
             </div>
-            <div className="mt-1.5 space-y-0.5 text-[11px] text-emerald-950/80 tabular-nums">
-              <p>
+            <div className="mt-2 space-y-1 tabular-nums">
+              <p className="text-sm font-semibold text-emerald-950 dark:text-slate-100">
                 {flagsPct != null
                   ? `${flagsPct}% · ${Number(fj?.processed || 0).toLocaleString('pt-BR')} / ${Number(fj?.total || 0).toLocaleString('pt-BR')}`
                   : `${Number(fj?.processed || 0).toLocaleString('pt-BR')} processados…`}
@@ -809,14 +809,16 @@ export function NovoCrmSyncPanel() {
                   ? ` · match ${Number(fj.matched).toLocaleString('pt-BR')}`
                   : ''}
               </p>
-              <p>
+              <p className="text-[13px] font-medium text-emerald-950 dark:text-[#e6edf6]">
                 Flags gravadas: {Number(fj?.flags_updated || 0).toLocaleString('pt-BR')} · Etapas:{' '}
                 {Number(fj?.stages_moved || 0).toLocaleString('pt-BR')}
                 {flagsElapsed ? ` · decorrido ${flagsElapsed}` : ''}
                 {flagsEta ? ` · ETA ~${flagsEta}` : ''}
               </p>
               {fj?.status_message && (
-                <p className="text-emerald-800/70 truncate">{fj.status_message}</p>
+                <p className="text-xs font-medium text-emerald-950/90 dark:text-slate-200/90 truncate">
+                  {fj.status_message}
+                </p>
               )}
             </div>
           </div>
