@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-11 — CRM redondo: apply por scope (incomplete → duplicates → orphans)
+- **Modelo usado:** Composer.
+- **Ops PROD (crm.eduit.com.br, ALLOW_PROD):** sem novo dry 3h; apply sequencial CLI `scripts/novo-crm-orphan-dedupe-scope-apply.mjs` com live_check, conc=3, rate~3–4.
+  1. **incomplete** (~10 min, N=2820): `enriched=21`, `no_match=2719`, `live_already_ok=40`, sibling→Perdido contados, `created=0`, `errors=0`. Residuais sem match SIAA (e-mail/tel) — não dá pra preencher CPF/RGM automático.
+  2. **duplicates** em 2 passes: 1ª cap `NOVO_CRM_DEDUPE_MAX_MOVES=1000` (default service) → 1000→Perdido; 2ª com max 15k → +1329 (total sessão ~2329 moves), 3805 grupos varridos, `dup_resolved_live` alto no 2º pass, 1 erro, tag `limpeza_duplicata_DD.MM.YYYY`.
+  3. **orphans** N=84, maxCreates=100: `created_deals=7` (sibling multicurso), `skipped_cpf_capacity=52` (anti-spam), `no_match=26`.
+- **UI:** seletor de escopo no card Dedupe (default **incomplete**; opções duplicates/orphans/both) — já em main line com progresso 296ed8b.
+- **Não refez:** Att em massa / full dry both / multi-dup DELETE residual (Perdido cobre spam de cartão).
+- **Cache:** contadores incompletos no espelho só mudam após Full Sync noturno (writes no CRM não invalidam KPI SQL).
+- **Amanhã:** Full Sync (já 05:00); residual multi-dup opcional se `dup_deal_groups` ainda alto pós-cache; incompletos no_match = limpeza manual / classificação não-aluno.
+
 ### 2026-08-11 — Dedupe prévia: progresso rich + reattach + Parar (como Att)
 - **Modelo usado:** Composer.
 - **Problema:** dry `scope=both` rodava minutos sem UI de progresso; refresh só via 409 "Provisionamento de órfãos já em andamento"; logs floodavam `live deal read failed … Negócio não encontrado` (cache stale).
