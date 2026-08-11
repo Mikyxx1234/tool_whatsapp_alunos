@@ -146,8 +146,8 @@ export function getNovoCrmDealFieldIds() {
     doc_pendentes: envId('NOVO_CRM_FIELD_DOC_PENDENTES', 'cmrtjumbj007nua48rqjbzzj8'),
     // PROD: situacaofinanceira ("Financeira") = inadimplentes-vencidos (não a base Financeiro).
     inadimplente: envId('NOVO_CRM_FIELD_INADIMPLENTE', 'cmrtjygzx008bua48uiugpx9u'),
-    // Financeiro = mensalidade em aberto ainda no prazo (base slug `financeiro`).
-    // PROD: sem field até criar no CRM (name=financeiro); id em JSON/env.
+    // Financeiro (base slug `financeiro`) → PROD custom field label "Dia 10", name `dia` (SELECT Sim/Não).
+    // NÃO é um field name `financeiro` — ver NOVO_CRM_FIELD_FINANCEIRO no JSON/env.
     financeiro: envId('NOVO_CRM_FIELD_FINANCEIRO', ''),
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
     // PROD: "Atualizado?" — Sim só com escrita de campos SIAA (não stage/flags-only).

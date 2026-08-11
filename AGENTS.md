@@ -5,16 +5,16 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
-### 2026-08-11 — Att flag **Financeiro** (base `financeiro`) separado de Situação Financeira
+### 2026-08-11 — Att flag **Financeiro** (base `financeiro`) → CRM **Dia 10** (`dia`)
 - **Modelo usado:** Composer/Auto.
-- **Produto:** Grad mensalidade vence dia **25** → base **Inadimplentes vencidos** grava **Situação Financeira** (`situacaofinanceira` / `NOVO_CRM_FIELD_INADIMPLENTE`). Até o dia **10** ainda há desconto; quem está na base **Financeiro** = mensalidade em aberto **ainda no prazo** (não é vencido efetivo) → flag CRM **Financeiro** (`NOVO_CRM_FIELD_FINANCEIRO`, name preferido `financeiro`).
+- **Produto:** Grad mensalidade vence dia **25** → base **Inadimplentes vencidos** grava **Situação Financeira** (`situacaofinanceira` / `NOVO_CRM_FIELD_INADIMPLENTE`). Até o dia **10** ainda há desconto; quem está na base **Financeiro** (snapshot slug `financeiro`) = mensalidade em aberto **ainda no prazo** → grava SELECT **Dia 10** no deal.
+- **Campo CRM (PROD live 2026-08-11):** label **Dia 10**, internal name **`dia`**, type **SELECT**, id **`cmsoqzzbwgs3yom01n0c5txvi`** → `NOVO_CRM_FIELD_FINANCEIRO` / `getNovoCrmDealFieldIds().financeiro`. Valor escrito **exatamente** `Sim` / `Não` (helpers `simNao`). **Não** existe field name/label `financeiro` no CRM.
 - **Decisão:** mirror do pipeline doc_pendentes/inad:
-  1. `loadIdentityIndexFromBase('financeiro')` + `classification.flags.financeiro`.
+  1. `loadIdentityIndexFromBase('financeiro')` + `classification.flags.financeiro` — só quem está no relatório/base Financeiro fica Sim.
   2. Write Sim/Não com empty→Não skip (mesma política).
   3. Passo saída: Sim→Não fora do índice + sanity ratio.
-  4. Aliases de leitura do flag Financeiro: `financeiro`, `financ`. **NÃO** misturar com `situacaofinanceira` (aliases inad: `inadimplente`, `situacaofinanceira`, `situacao financeira`, `financeira`).
-- **PROD 2026-08-11:** listagem `/api/custom-fields?entity=deal` **não tem** field `financeiro` (só `situacaofinanceira` = Financeira). POST create → 401. Escrita no-op até criar o campo no CRM (UI admin) e gravar id em `data/novo-crm-prod-ids.json` (`NOVO_CRM_FIELD_FINANCEIRO`) ou env. Sem id, `if (!fieldId) continue` — não quebra Situação Financeira.
-- **Arquivos:** `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `novo-crm-discover-prod-ids.mjs`, `.env.example`, `NovoCrmSyncPanel.tsx`.
+  4. Aliases de leitura: `dia 10`, `dia10`, `dia`, `financeiro`. **NÃO** misturar com `situacaofinanceira` (aliases inad: `inadimplente`, `situacaofinanceira`, `situacao financeira`, `financeira`).
+- **Arquivos:** `data/novo-crm-prod-ids.json`, `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `novo-crm-discover-prod-ids.mjs`, `.env.example`.
 
 ### 2026-08-06 — Sync: sem "Criação de leads novos"; tag limpeza em Perdido (dedupe)
 - **Modelo usado:** Composer.

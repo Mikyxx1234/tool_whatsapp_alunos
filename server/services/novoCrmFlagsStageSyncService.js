@@ -659,7 +659,8 @@ export async function runFlagsStageSync(opts = {}) {
           [
             fieldIds.financeiro,
             simNao(classification.flags.financeiro),
-            ['financeiro', 'financ'],
+            // PROD: name `dia` label "Dia 10" — aliases de leitura (não misturar com situacaofinanceira).
+            ['dia 10', 'dia10', 'dia', 'financeiro'],
           ],
           [
             fieldIds.acessoblack,
@@ -901,7 +902,7 @@ export async function runFlagsStageSync(opts = {}) {
           {
             key: 'financeiro',
             fieldId: fieldIds.financeiro,
-            names: ['financeiro', 'financ'],
+            names: ['dia 10', 'dia10', 'dia', 'financeiro'],
             index: fin,
           },
           {

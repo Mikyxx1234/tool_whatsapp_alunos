@@ -122,7 +122,10 @@ const EXACT_FIELD = {
   // Inadimplentes vencidos → situacaofinanceira (label Financeira) no PROD.
   situacaofinanceira: 'NOVO_CRM_FIELD_INADIMPLENTE',
   inadimplente: 'NOVO_CRM_FIELD_INADIMPLENTE',
-  // Mensalidade em aberto no prazo (base financeiro) — campo separado.
+  // Base financeiro → PROD field name `dia` label "Dia 10" (SELECT Sim/Não).
+  dia: 'NOVO_CRM_FIELD_FINANCEIRO',
+  dia10: 'NOVO_CRM_FIELD_FINANCEIRO',
+  'dia_10': 'NOVO_CRM_FIELD_FINANCEIRO',
   financeiro: 'NOVO_CRM_FIELD_FINANCEIRO',
   evasao: 'NOVO_CRM_FIELD_EVASAO',
 };
@@ -150,7 +153,13 @@ for (const f of fields) {
     envKey = 'NOVO_CRM_FIELD_INADIMPLENTE';
   } else if (
     !fieldEnvMap.has('NOVO_CRM_FIELD_FINANCEIRO') &&
-    (n === 'financeiro' || n === 'financ')
+    (n === 'dia' ||
+      n === 'dia10' ||
+      n === 'dia_10' ||
+      l === 'dia 10' ||
+      l.includes('dia 10') ||
+      n === 'financeiro' ||
+      n === 'financ')
   ) {
     envKey = 'NOVO_CRM_FIELD_FINANCEIRO';
   } else if (!fieldEnvMap.has('NOVO_CRM_FIELD_EMAIL') && n === 'email') {
