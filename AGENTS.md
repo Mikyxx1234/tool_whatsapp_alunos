@@ -15,6 +15,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   3. Passo saída: Sim→Não fora do índice + sanity ratio.
   4. Aliases de leitura: `dia 10`, `dia10`, `dia`, `financeiro`. **NÃO** misturar com `situacaofinanceira` (aliases inad: `inadimplente`, `situacaofinanceira`, `situacao financeira`, `financeira`).
 - **Arquivos:** `data/novo-crm-prod-ids.json`, `novoCrmStageRules.js`, `novoCrmFlagsStageSyncService.js`, `novoCrmMatriculadosProvisionService.js`, `novoCrmOrphanAlunoProvisionService.js`, `novo-crm-discover-prod-ids.mjs`, `.env.example`.
+- **Docker:** runtime **deve** `COPY data/novo-crm-prod-ids.json` → `/app/data/` (lido por `novoCrmStageRules.js` via `server/utils` → `../../data/…`); sem o arquivo, `NOVO_CRM_FIELD_FINANCEIRO` / Dia 10 fica vazio em PROD mesmo com o JSON no repo.
 
 ### 2026-08-06 — Sync: sem "Criação de leads novos"; tag limpeza em Perdido (dedupe)
 - **Modelo usado:** Composer.

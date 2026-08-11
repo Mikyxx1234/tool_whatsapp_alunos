@@ -36,6 +36,8 @@ COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/package.json ./package.json
 COPY --chown=node:node --from=builder /app/server ./server
 COPY --chown=node:node --from=builder /app/dist ./dist
+# PROD field/stage IDs (envId → getNovoCrmDealFieldIds); path: /app/data/novo-crm-prod-ids.json
+COPY --chown=node:node --from=builder /app/data/novo-crm-prod-ids.json ./data/novo-crm-prod-ids.json
 
 EXPOSE 3001
 
