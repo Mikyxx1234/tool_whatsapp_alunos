@@ -87,6 +87,24 @@ function simNao(v) {
   return v ? 'Sim' : 'Não';
 }
 
+const LIMPEZA_DUPLICATA_TAG_PREFIX = 'limpeza_duplicata_';
+
+/**
+ * Deals marcados pelo dedupe são quarentena: nenhum job automático pode
+ * trocar sua etapa, mesmo que o SIAA/rematrícula classifique outro destino.
+ * @param {object|null|undefined} deal
+ */
+function hasLimpezaDuplicataTag(deal) {
+  const tags = Array.isArray(deal?.tags) ? deal.tags : [];
+  return tags.some((tag) => {
+    const name =
+      typeof tag === 'string'
+        ? tag
+        : String(tag?.name ?? tag?.tagName ?? tag?.value ?? '');
+    return name.trim().toLowerCase().startsWith(LIMPEZA_DUPLICATA_TAG_PREFIX);
+  });
+}
+
 /**
  * Core SIAA keys that count as "preencheu dados" for Atualizado?=Sim.
  * Flags (doc/inad/bb/evasao) e o próprio Atualizado NÃO entram.
@@ -528,6 +546,7 @@ export async function runFlagsStageSync(opts = {}) {
   let flagsUpdated = 0;
   let stagesMoved = 0;
   let stagesSkippedUntouchable = 0;
+  let stagesSkippedLimpezaDuplicata = 0;
   let stagesSkippedUnknown = 0;
   let fieldsUpdated = 0;
   let skippedNoMatch = 0;
@@ -668,6 +687,7 @@ export async function runFlagsStageSync(opts = {}) {
 
       // Cache stageId — se ausente, fail-closed (não move).
       let currentStageId = String(deal.stageId || '').trim() || null;
+      const cleanupProtected = hasLimpezaDuplicataTag(deal);
 
       /** @type {Array<{fieldId:string,value:string}>} */
       const flagValues = [];
@@ -788,20 +808,25 @@ export async function runFlagsStageSync(opts = {}) {
        */
       const decideMove = (stageId, caaOpen) => {
         if (!canMoveStages || !classification.stageId) {
-          return { move: false, untouchable: false, unknown: false };
+          return { move: false, untouchable: false, cleanupProtected: false, unknown: false };
         }
-        if (!stageId) return { move: false, untouchable: false, unknown: true };
+        if (cleanupProtected) {
+          return { move: false, untouchable: true, cleanupProtected: true, unknown: false };
+        }
+        if (!stageId) {
+          return { move: false, untouchable: false, cleanupProtected: false, unknown: true };
+        }
         if (isUntouchableStageId(stageId)) {
-          return { move: false, untouchable: true, unknown: false };
+          return { move: false, untouchable: true, cleanupProtected: false, unknown: false };
         }
         // Retenção sem CAA open = manual / outra automação — não mexe.
         if (retencaoStageId && stageId === retencaoStageId && !caaOpen) {
-          return { move: false, untouchable: true, unknown: false };
+          return { move: false, untouchable: true, cleanupProtected: false, unknown: false };
         }
         if (classification.stageId === stageId) {
-          return { move: false, untouchable: false, unknown: false };
+          return { move: false, untouchable: false, cleanupProtected: false, unknown: false };
         }
-        return { move: true, untouchable: false, unknown: false };
+        return { move: true, untouchable: false, cleanupProtected: false, unknown: false };
       };
 
       if (dryRun) {
@@ -811,6 +836,7 @@ export async function runFlagsStageSync(opts = {}) {
         if (semRematSituacaoValues.length) situacaoSemRematWouldUpdate += 1;
         if (!flagValues.length && !fieldValues.length && !semRematSituacaoValues.length && !d.move) skippedUnchanged += 1;
         if (d.move) stagesMoved += 1;
+        else if (d.cleanupProtected) stagesSkippedLimpezaDuplicata += 1;
         else if (d.untouchable) stagesSkippedUntouchable += 1;
         else if (d.unknown) stagesSkippedUnknown += 1;
         if (samples.length < 20) {
@@ -823,6 +849,7 @@ export async function runFlagsStageSync(opts = {}) {
             to: classification.stageName,
             move: d.move,
             untouchable: d.untouchable,
+            cleanup_protected: d.cleanupProtected,
             unknown_stage: d.unknown,
             in_caa_fresh: inCaaFresh,
             in_caa_open: inCaaOpen,
@@ -905,8 +932,9 @@ export async function runFlagsStageSync(opts = {}) {
         needsFieldWrite,
         needsSemRematSituacao,
         needsMove,
-        // Default: confia no cache (1 PUT stage). LIVE_STAGE=1 → getDeal antes.
-        needsLiveStage: Boolean(liveStage && needsMove),
+        // Toda troca de etapa revalida ao vivo: a tag limpeza_duplicata pode
+        // ter sido aplicada depois do último Full Sync e nunca pode ser ignorada.
+        needsLiveStage: Boolean(needsMove),
         fromStageId: currentStageId,
       });
     }
@@ -1172,7 +1200,7 @@ export async function runFlagsStageSync(opts = {}) {
               needsFieldWrite: false,
               needsSemRematSituacao: false,
               needsMove: true,
-              needsLiveStage: false,
+              needsLiveStage: true,
               fromStageId: c.currentStageId,
               isExitRemat: true,
               isExitRematOrphan: true,
@@ -1182,6 +1210,7 @@ export async function runFlagsStageSync(opts = {}) {
           } else {
             item.classification = classification;
             item.needsMove = true;
+            item.needsLiveStage = true;
             item.isExitRemat = true;
             item.isExitRematOrphan = true;
             if (!item.fromStageId) item.fromStageId = c.currentStageId;
@@ -1283,6 +1312,7 @@ export async function runFlagsStageSync(opts = {}) {
           item.needsSemRematSituacao = true;
         }
         item.needsMove = true;
+        item.needsLiveStage = true;
         item.isExitRemat = true;
       }
     }
@@ -1301,21 +1331,26 @@ export async function runFlagsStageSync(opts = {}) {
     let cursor = 0;
     let written = 0;
     const writeStartedAt = Date.now();
-    const decideMoveWork = (stageId, caaOpen, classification) => {
+    const decideMoveWork = (stageId, caaOpen, classification, cleanupProtected = false) => {
       if (!canMoveStages || !classification?.stageId) {
-        return { move: false, untouchable: false, unknown: false };
+        return { move: false, untouchable: false, cleanupProtected: false, unknown: false };
       }
-      if (!stageId) return { move: false, untouchable: false, unknown: true };
+      if (cleanupProtected) {
+        return { move: false, untouchable: true, cleanupProtected: true, unknown: false };
+      }
+      if (!stageId) {
+        return { move: false, untouchable: false, cleanupProtected: false, unknown: true };
+      }
       if (isUntouchableStageId(stageId)) {
-        return { move: false, untouchable: true, unknown: false };
+        return { move: false, untouchable: true, cleanupProtected: false, unknown: false };
       }
       if (retencaoStageId && stageId === retencaoStageId && !caaOpen) {
-        return { move: false, untouchable: true, unknown: false };
+        return { move: false, untouchable: true, cleanupProtected: false, unknown: false };
       }
       if (classification.stageId === stageId) {
-        return { move: false, untouchable: false, unknown: false };
+        return { move: false, untouchable: false, cleanupProtected: false, unknown: false };
       }
-      return { move: true, untouchable: false, unknown: false };
+      return { move: true, untouchable: false, cleanupProtected: false, unknown: false };
     };
 
     const worker = async () => {
@@ -1339,10 +1374,12 @@ export async function runFlagsStageSync(opts = {}) {
           }
 
           let stageId = item.fromStageId;
+          let cleanupProtected = false;
           if (item.needsLiveStage) {
             try {
               const live = await getDeal(item.dealId);
               stageId = String(live?.stageId || live?.stage?.id || '').trim() || null;
+              cleanupProtected = hasLimpezaDuplicataTag(live);
             } catch (err) {
               if (isDealMissingError(err)) {
                 noteMissing(item.dealId, item.cpf);
@@ -1357,12 +1394,19 @@ export async function runFlagsStageSync(opts = {}) {
           }
 
           if (item.needsMove || item.needsLiveStage) {
-            const d = decideMoveWork(stageId, item.inCaaOpen, item.classification);
+            const d = decideMoveWork(
+              stageId,
+              item.inCaaOpen,
+              item.classification,
+              cleanupProtected
+            );
             if (d.move) {
               await updateDeal(item.dealId, { stageId: item.classification.stageId });
               stagesMoved += 1;
               if (item.isExitRematOrphan) stagesExitRematOrphan += 1;
               else if (item.isExitRemat) stagesExitRemat += 1;
+            } else if (d.cleanupProtected) {
+              stagesSkippedLimpezaDuplicata += 1;
             } else if (d.untouchable) {
               stagesSkippedUntouchable += 1;
             } else if (d.unknown) {
@@ -1377,6 +1421,7 @@ export async function runFlagsStageSync(opts = {}) {
                 to: item.classification.stageName,
                 moved: d.move,
                 untouchable: d.untouchable,
+                cleanup_protected: d.cleanupProtected,
                 unknown_stage: d.unknown,
                 in_caa_fresh: item.inCaaFresh,
                 in_caa_open: item.inCaaOpen,
@@ -1438,6 +1483,7 @@ export async function runFlagsStageSync(opts = {}) {
     stages_exit_remat: stagesExitRemat,
     stages_exit_remat_orphan: stagesExitRematOrphan,
     stages_skipped_untouchable: stagesSkippedUntouchable,
+    stages_skipped_limpeza_duplicata: stagesSkippedLimpezaDuplicata,
     stages_skipped_unknown: stagesSkippedUnknown,
     exit_skipped_sanity: exitSkippedSanity,
     skipped_no_match: skippedNoMatch,
@@ -1514,6 +1560,7 @@ export async function runFlagsStageSync(opts = {}) {
         stages_exit_remat: stagesExitRemat,
         stages_exit_remat_orphan: stagesExitRematOrphan,
         stages_skipped_untouchable: stagesSkippedUntouchable,
+        stages_skipped_limpeza_duplicata: stagesSkippedLimpezaDuplicata,
         exit_skipped_sanity: exitSkippedSanity,
         skipped_unchanged: skippedUnchanged,
         write_queue: workQueue.length,

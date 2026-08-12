@@ -89,6 +89,9 @@ export function mapApiSnapshot(contact, dealSummaries = [], dealDetailsById = ne
       createdAt: toIso(d.createdAt),
       updatedAt: toIso(d.updatedAt),
       customFields,
+      // Listagem não traz tags; o GET do deal primário traz. Persistir no
+      // espelho permite ao dry-run reconhecer a quarentena do dedupe.
+      tags: Array.isArray(detail?.tags) ? detail.tags : [],
       stageId: d.stageId || detail?.stageId || null,
       stageName: d.stage?.name || detail?.stage?.name || null,
     };
