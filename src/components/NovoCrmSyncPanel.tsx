@@ -106,7 +106,7 @@ export function NovoCrmSyncPanel() {
   const [dedupeApplied, setDedupeApplied] = useState(false);
   const [dedupeStopping, setDedupeStopping] = useState(false);
   /** incompletos (CPF/RGM) primeiro — default seguro / mais rápido que both. */
-  const [dedupeScope, setDedupeScope] = useState<'incomplete' | 'duplicates' | 'orphans' | 'both'>(
+  const [dedupeScope, setDedupeScope] = useState<'incomplete' | 'duplicates' | 'both'>(
     'incomplete'
   );
 
@@ -635,7 +635,7 @@ export function NovoCrmSyncPanel() {
           <div>
             <h2 className="text-base font-semibold text-gray-900">Sync Novo CRM</h2>
             <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-              Espelho ≠ att campos ≠ etapas. Dedupe cobre órfãos/duplicados (sem criar leads em massa).
+              Espelho ≠ att campos ≠ etapas. Dedupe preenche incompletos e trata duplicados; não cria negócios.
             </p>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl text-xs text-gray-600">
               <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
@@ -660,7 +660,7 @@ export function NovoCrmSyncPanel() {
                     <strong>Att de etapas</strong> — flags + move etapa
                   </li>
                   <li>
-                    <strong>Dedupe</strong> — órfãos / incompletos / duplicados
+                    <strong>Dedupe</strong> — incompletos / duplicados
                   </li>
                 </ul>
               </div>
@@ -809,10 +809,10 @@ export function NovoCrmSyncPanel() {
 
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-violet-900">
-              3. Dedupe órfãos/incompletos/duplicados
+              3. Dedupe incompletos/duplicados
             </p>
             <p className="text-[11px] text-violet-800/80 flex-1">
-              Rode por etapa (recomendado): incompletos → duplicados → órfãos. Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. Órfãos: cria deal local se realmente não houver no CRM ao vivo. “Tudo” é lento e junta as três fases.
+              Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. A criação de negócios está desativada também no backend.
             </p>
             <label className="flex flex-col gap-0.5 text-[11px] text-violet-900">
               <span className="font-medium">Escopo</span>
@@ -820,14 +820,13 @@ export function NovoCrmSyncPanel() {
                 value={dedupeScope}
                 disabled={dedupeBusy || dedupeRunning}
                 onChange={(e) =>
-                  setDedupeScope(e.target.value as 'incomplete' | 'duplicates' | 'orphans' | 'both')
+                  setDedupeScope(e.target.value as 'incomplete' | 'duplicates' | 'both')
                 }
                 className="rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-xs text-violet-950 disabled:opacity-50"
               >
                 <option value="incomplete">Incompletos (CPF/RGM) — default</option>
                 <option value="duplicates">Duplicados → Perdido</option>
-                <option value="orphans">Órfãos (criar deal se faltar)</option>
-                <option value="both">Tudo (lento)</option>
+                <option value="both">Tudo (incompletos + duplicados)</option>
               </select>
             </label>
             <div className="flex flex-wrap gap-2">
@@ -880,10 +879,7 @@ export function NovoCrmSyncPanel() {
                   </p>
                 )}
                 <p className="tabular-nums font-semibold">
-                  Órfãos: {Number(lastDedupe.orphans_total || 0).toLocaleString('pt-BR')}
-                  {' · '}a criar:{' '}
-                  {Number(lastDedupe.would_create || 0).toLocaleString('pt-BR')}
-                  {' · '}incompletos enriq.:{' '}
+                  Incompletos enriq.:{' '}
                   {Number(lastDedupe.incomplete_enriched || 0).toLocaleString('pt-BR')}
                   {' · '}dups Perdido:{' '}
                   {Number(
@@ -892,9 +888,6 @@ export function NovoCrmSyncPanel() {
                       lastDedupe.dup_to_perdido ??
                       0
                   ).toLocaleString('pt-BR')}
-                  {!lastDedupe.dry_run
-                    ? ` · criados ${Number(lastDedupe.created_deals || 0).toLocaleString('pt-BR')}`
-                    : ''}
                   {lastDedupe.errors
                     ? ` · ${Number(lastDedupe.errors).toLocaleString('pt-BR')} erros`
                     : ''}
@@ -912,9 +905,7 @@ export function NovoCrmSyncPanel() {
                   {dedupePreview.warmed_cache ? ` (${dedupePreview.warmed_cache.toLocaleString('pt-BR')} corrigidos no espelho)` : ''}
                 </p>
                 <p>
-                  Negócios a criar de verdade:{' '}
-                  <strong>{(dedupePreview.deals_would_create_on_orphan + dedupePreview.deals_would_create_on_sibling).toLocaleString('pt-BR')}</strong>{' '}
-                  · sem match no SIAA: {dedupePreview.orphan_no_match.toLocaleString('pt-BR')} · já cobertos por outro cadastro: {dedupePreview.dup_skip_no_deal.toLocaleString('pt-BR')}
+                  Criação de negócios pelo dedupe: <strong>desativada</strong>
                 </p>
                 <p>
                   Com negócio mas sem CPF/RGM:{' '}
@@ -954,7 +945,7 @@ export function NovoCrmSyncPanel() {
                 </p>
                 {dedupeApplied ? (
                   <p className="pt-1 font-semibold text-violet-900">
-                    Aplicado: {dedupePreview.created_deals.toLocaleString('pt-BR')} negócios criados ·{' '}
+                    Aplicado:{' '}
                     {(
                       (dedupePreview.deals_moved_perdido ?? 0) +
                       (dedupePreview.dup_deals_moved_perdido ?? 0)
@@ -1119,12 +1110,7 @@ export function NovoCrmSyncPanel() {
                   : `${Number(dj?.processed || 0).toLocaleString('pt-BR')} processados…`}
               </p>
               <p className="text-[13px] font-medium text-violet-950 dark:text-[#e6edf6]">
-                Órfãos: {Number(dj?.orphans_processed ?? 0).toLocaleString('pt-BR')}
-                {dj?.orphans_total != null && dj.orphans_total > 0
-                  ? `/${Number(dj.orphans_total).toLocaleString('pt-BR')}`
-                  : ''}
-                {' · '}já tinham negócio: {Number(dj?.already_has_deal ?? 0).toLocaleString('pt-BR')}
-                {' · '}a criar: {Number(dj?.would_create ?? 0).toLocaleString('pt-BR')}
+                Criação de negócios: desativada
               </p>
               <p className="text-[12px] font-medium text-violet-900/90 dark:text-slate-200">
                 Incompletos: {Number(dj?.incomplete_processed ?? 0).toLocaleString('pt-BR')}

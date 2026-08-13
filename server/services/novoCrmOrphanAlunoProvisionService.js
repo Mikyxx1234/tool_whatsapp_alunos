@@ -4,9 +4,8 @@
  * Match matriculados: e-mail **ou telefone** (além de cpf/rgm no sibling).
  *
  * Órfão (sem deal):
- *   - Sem sibling → cria 1 deal por RGM no próprio órfão.
- *   - Sibling falta RGM → cria no sibling.
- *   - Sibling cobre tudo → dup_skip_no_deal (não cria deal Perdido fantasma).
+ *   - Criação desativada por decisão de produto (13/08/2026).
+ *   - O dedupe atua somente em incompletos e duplicados.
  *
  * Incompleto (tem deal, sem CPF e/ou RGM no espelho):
  *   - Sibling “bom” → move deal(s) do contact ruim para Perdido.
@@ -58,6 +57,11 @@ import {
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
 import { warmContactFromLive } from './novoCrmCacheWarmService.js';
+
+// Decisão de produto (13/08/2026): dedupe não provisiona negócios.
+// Mantido como constante fechada também no backend para proteger callers
+// antigos que ainda enviem scope=orphans|both.
+const CREATE_ORPHAN_DEALS_ENABLED = false;
 
 /**
  * Guard live leve: 1 GET deals?contactId=. Se já existe deal, pula (órfão
@@ -796,7 +800,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const scope = ['orphans', 'incomplete', 'duplicates', 'both'].includes(scopeRaw)
     ? scopeRaw
     : 'orphans';
-  const doOrphans = scope === 'orphans' || scope === 'both';
+  const doOrphans =
+    CREATE_ORPHAN_DEALS_ENABLED && (scope === 'orphans' || scope === 'both');
   const doIncomplete = scope === 'incomplete' || scope === 'both';
   const doDuplicates = scope === 'duplicates' || scope === 'both';
 
@@ -1141,6 +1146,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
   }
 
   async function createOneDeal({ contactId, nome, it, classification }) {
+    if (!CREATE_ORPHAN_DEALS_ENABLED) {
+      throw new Error('Criação de negócios pelo dedupe está desativada.');
+    }
     const rgm = it.rgm || '';
     const cpf = it.cpf || normalizeCpf(digits(it.mapped?.cpf));
     if (!claimKey(contactId, rgm, cpf)) {
@@ -2055,6 +2063,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
     cancelled,
     dry_run: dryRun,
     scope,
+    orphan_deal_creation_disabled: !CREATE_ORPHAN_DEALS_ENABLED,
     matriculados_snapshot_id: matSnap.id,
     matriculados_file: matSnap.file_name || null,
     index: { by_email: byEmail.size, by_phone: byPhone.size },

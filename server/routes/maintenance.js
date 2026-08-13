@@ -445,7 +445,7 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
         code: 'PROVISION_NEW_DISABLED',
         error:
           'Criação de leads novos (mode=new) foi desativada. UI do Sync não expõe mais esse botão. ' +
-          'Para deals órfãos use dedupe (provision-orphan-alunos). Backfill massivo exige mode=all + NOVO_CRM_PROVISION_ENABLED=1.',
+          'Dedupe também não cria negócios. Backfill massivo exige mode=all + NOVO_CRM_PROVISION_ENABLED=1.',
       });
     }
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
@@ -750,14 +750,14 @@ router.get('/enrich-novo-crm-status', requireApiKey, async (req, res) => {
 /**
  * POST /api/maintenance/provision-orphan-alunos-novo-crm?dry_run=1|0&async=1&max=&scope=
  *
- * scope=orphans (default): cria deals para contacts sem nenhum deal.
+ * scope=orphans (legado): não cria deals; criação desativada no backend.
  * scope=incomplete: dedupe contacts COM deal mas sem CPF/RGM —
  *   sibling mais completo → move deals do ruim para Perdido;
  *   sem sibling → empty-only fill CPF/RGM.
  * scope=duplicates: mesma pessoa (mesmo RGM) com 2+ cartões em etapa mexível —
  *   mantém 1 por score (dono → campos → e-mail → telefone → conversa → mais
  *   antigo) e move os outros para Perdido.
- * scope=both: os três em sequência.
+ * scope=both: incompletos + duplicados; órfãos são ignorados.
  *
  * Match por e-mail OU telefone. Nunca cria segundo contact.
  * dry_run=1 (default): prévia síncrona.
