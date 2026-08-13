@@ -59,6 +59,8 @@ function phaseLabel(phase: string | null | undefined) {
       return 'Incompletos';
     case 'duplicates':
       return 'Duplicados';
+    case 'apply_plan':
+      return 'Aplicando prévia';
     case 'processing':
       return 'Calculando alterações';
     case 'processing_exit':
@@ -1113,15 +1115,18 @@ export function NovoCrmSyncPanel() {
                 Criação de negócios: desativada
               </p>
               <p className="text-[12px] font-medium text-violet-900/90 dark:text-slate-200">
-                Incompletos: {Number(dj?.incomplete_processed ?? 0).toLocaleString('pt-BR')}
-                {dj?.incomplete_total != null && dj.incomplete_total > 0
-                  ? `/${Number(dj.incomplete_total).toLocaleString('pt-BR')}`
-                  : ''}
-                {' · '}dup grupos: {Number(dj?.dup_groups_processed ?? 0).toLocaleString('pt-BR')}
-                {dj?.dup_groups != null && dj.dup_groups > 0
-                  ? `/${Number(dj.dup_groups).toLocaleString('pt-BR')}`
-                  : ''}
-                {Number(dj?.deal_not_found || 0) > 0
+                {dj?.phase === 'apply_plan'
+                  ? dj.status_message || 'Aplicando ações da prévia…'
+                  : `Incompletos: ${Number(dj?.incomplete_processed ?? 0).toLocaleString('pt-BR')}${
+                      dj?.incomplete_total != null && dj.incomplete_total > 0
+                        ? `/${Number(dj.incomplete_total).toLocaleString('pt-BR')}`
+                        : ''
+                    } · dup grupos: ${Number(dj?.dup_groups_processed ?? 0).toLocaleString('pt-BR')}${
+                      dj?.dup_groups != null && dj.dup_groups > 0
+                        ? `/${Number(dj.dup_groups).toLocaleString('pt-BR')}`
+                        : ''
+                    }`}
+                {dj?.phase !== 'apply_plan' && Number(dj?.deal_not_found || 0) > 0
                   ? ` · not_found ${Number(dj?.deal_not_found).toLocaleString('pt-BR')}`
                   : ''}
                 {Number(dj?.errors || 0) > 0
@@ -1130,7 +1135,7 @@ export function NovoCrmSyncPanel() {
                 {dedupeElapsed ? ` · decorrido ${dedupeElapsed}` : ''}
                 {dedupeEta ? ` · ETA ~${dedupeEta}` : ''}
               </p>
-              {dj?.status_message && (
+              {dj?.status_message && dj.phase !== 'apply_plan' && (
                 <p className="text-xs font-medium text-violet-950/90 dark:text-slate-200/90 truncate">
                   {dj.status_message}
                 </p>

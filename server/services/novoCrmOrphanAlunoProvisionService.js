@@ -62,6 +62,22 @@ import { warmContactFromLive } from './novoCrmCacheWarmService.js';
 // Mantido como constante fechada também no backend para proteger callers
 // antigos que ainda enviem scope=orphans|both.
 const CREATE_ORPHAN_DEALS_ENABLED = false;
+const DEDUPE_PLAN_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.NOVO_CRM_DEDUPE_PLAN_MAX_AGE_MS) || 2 * 60 * 60 * 1000
+);
+
+/** Último plano também fica em memória; o repositório é o fallback após restart. */
+let lastDedupeActionPlan = null;
+
+function cacheGenerationKey(state) {
+  if (!state) return '';
+  return JSON.stringify({
+    cursor_updated_at: state.cursor_updated_at || null,
+    cursor_id: state.cursor_id || null,
+    updated_at: state.updated_at || null,
+  });
+}
 
 /**
  * Guard live leve: 1 GET deals?contactId=. Se já existe deal, pula (órfão
@@ -824,6 +840,7 @@ export async function runOrphanAlunoProvision(opts = {}) {
   _dealNotFoundLogCount = 0;
   let cancelled = false;
   let dealNotFound = 0;
+  let planFallbackReason = null;
   let phaseStartedAt = Date.now();
   let phaseProcessedBase = 0;
 
@@ -840,6 +857,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
     live_ok: 0,
     errors: 0,
   };
+  /** @type {Array<Record<string, unknown>>} */
+  const plannedMoves = [];
+  /** @type {Array<Record<string, unknown>>} */
+  const plannedFills = [];
 
   const patchJob = (p) => {
     if (!jobId) return;
@@ -898,6 +919,305 @@ export async function runOrphanAlunoProvision(opts = {}) {
     });
   };
 
+  /**
+   * Apply rápido: usa somente os writes descobertos pela prévia. Cada alvo e
+   * keeper ainda passa por GET live antes de qualquer mutação.
+   */
+  const tryApplySavedPlan = async () => {
+    if (dryRun) return null;
+    const currentState = await cacheRepo.getSyncState();
+    const currentGeneration = cacheGenerationKey(currentState);
+    let plan = lastDedupeActionPlan;
+    if (!plan) {
+      try {
+        plan = await cacheRepo.getOrphanDedupePlan();
+      } catch (err) {
+        console.warn('[novo-crm-orphan-provision] load action plan failed:', err?.message || err);
+      }
+    }
+
+    const createdAtMs = Date.parse(plan?.created_at || '');
+    const staleReason =
+      !plan
+        ? 'prévia sem plano acionável'
+        : plan.consumed_at
+          ? 'plano da prévia já aplicado'
+          : plan.scope !== scope
+            ? `escopo mudou (${plan.scope || 'n/a'} → ${scope})`
+            : !createdAtMs || Date.now() - createdAtMs > DEDUPE_PLAN_MAX_AGE_MS
+              ? 'prévia expirou (mais de 2h)'
+              : plan.cache_generation !== currentGeneration
+                ? 'cache mudou após a prévia'
+                : null;
+    if (staleReason) {
+      planFallbackReason = staleReason;
+      patchJob({
+        plan_fallback: true,
+        plan_fallback_reason: staleReason,
+        status_message: `Prévia ausente/desatualizada (${staleReason}); recalculando…`,
+      });
+      return null;
+    }
+
+    lastDedupeActionPlan = plan;
+    const moves = Array.isArray(plan.moves) ? plan.moves : [];
+    const fills = Array.isArray(plan.fills) ? plan.fills : [];
+    const total = moves.length + fills.length;
+    const fieldIds = getNovoCrmDealFieldIds();
+    const perdidoStageId = String(getNovoCrmStageIds().Perdido || '').trim();
+    const tagName = String(plan.tag_name || limpezaDuplicataTagName()).trim();
+    let processed = 0;
+    let movesApplied = 0;
+    let incompleteMovesApplied = 0;
+    let duplicateMovesApplied = 0;
+    let fillsApplied = 0;
+    let skipped = 0;
+    let errors = 0;
+    let notFound = 0;
+    const errorSamples = [];
+
+    beginPhase('apply_plan', total, `Aplicando plano da prévia: ${moves.length} Perdido · ${fills.length} fills…`);
+    const report = () => {
+      counters.errors = errors;
+      tickProgress({
+        phase: 'apply_plan',
+        total,
+        processed,
+        sent: movesApplied + fillsApplied,
+        failed: errors,
+        deal_not_found: notFound,
+        plan_moves_total: moves.length,
+        plan_moves_applied: movesApplied,
+        plan_fills_total: fills.length,
+        plan_fills_applied: fillsApplied,
+        status_message:
+          `Aplicando ${movesApplied}/${moves.length} Perdido · ${fillsApplied}/${fills.length} fills` +
+          (skipped ? ` · pulados ${skipped}` : '') +
+          (notFound ? ` · not_found ${notFound}` : ''),
+      });
+    };
+
+    const pairStillValid = (target, keeper, action) => {
+      if (!target?.ok || !keeper?.ok) return false;
+      if (
+        !keeper.stageId ||
+        keeper.stageId === perdidoStageId
+      ) {
+        return false;
+      }
+      const expectedRgm = normalizeRgm(action.expected_rgm);
+      const keeperRgm = normalizeRgm(keeper.rgm);
+      if (expectedRgm && isLiveRgmTrustworthy(keeper.rgm) && keeperRgm !== expectedRgm) {
+        return false;
+      }
+      const expectedCpf = normalizeCpf(action.expected_cpf);
+      const keeperCpf = normalizeCpf(keeper.cpf);
+      if (expectedCpf && isLiveCpfTrustworthy(keeper.cpf) && keeperCpf !== expectedCpf) {
+        return false;
+      }
+      if (action.reason === 'duplicate') {
+        if (target.contactId && target.contactId === keeper.contactId) return true;
+        const targetCpf = normalizeCpf(target.cpf);
+        if (
+          isLiveCpfTrustworthy(target.cpf) &&
+          isLiveCpfTrustworthy(keeper.cpf) &&
+          targetCpf === keeperCpf
+        ) {
+          return true;
+        }
+        return namesPlausiblyMatch(
+          target.contactName || target.title,
+          keeper.contactName || keeper.title
+        );
+      }
+      return namesPlausiblyMatch(
+        target.contactName || target.title || action.target_name,
+        keeper.contactName || keeper.title || action.keeper_name
+      );
+    };
+
+    for (const action of moves) {
+      if (checkCancel()) break;
+      try {
+        const [target, keeper] = await Promise.all([
+          liveDealForDedupe(action.target_deal_id),
+          liveDealForDedupe(action.keeper_deal_id),
+        ]);
+        if (!target.ok || !keeper.ok) {
+          if (target.notFound || keeper.notFound) notFound += 1;
+          skipped += 1;
+        } else if (
+          target.stageId === perdidoStageId ||
+          isUntouchableStageId(target.stageId) ||
+          !pairStillValid(target, keeper, action)
+        ) {
+          skipped += 1;
+        } else {
+          await updateDeal(action.target_deal_id, { stageId: perdidoStageId });
+          movesApplied += 1;
+          if (action.reason === 'duplicate') duplicateMovesApplied += 1;
+          else incompleteMovesApplied += 1;
+          const values = [
+            action.situacao && fieldIds.situacao
+              ? { fieldId: fieldIds.situacao, value: action.situacao }
+              : null,
+            fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
+          ].filter(Boolean);
+          if (values.length) {
+            await updateDealCustomFields(action.target_deal_id, values, { maxRetries: 4 });
+          }
+          try {
+            await addTagToDeal(action.target_deal_id, { tagName });
+          } catch (tagErr) {
+            console.warn(
+              '[novo-crm-orphan-provision] planned tag failed',
+              action.target_deal_id,
+              tagErr?.message || tagErr
+            );
+          }
+          if (DELAY_MS > 0) await sleep(DELAY_MS);
+        }
+      } catch (err) {
+        errors += 1;
+        if (errorSamples.length < 25) {
+          errorSamples.push({
+            type: 'planned_move',
+            deal_id: action.target_deal_id,
+            error: err?.message || String(err),
+          });
+        }
+      }
+      processed += 1;
+      report();
+    }
+
+    for (const action of fills) {
+      if (checkCancel()) break;
+      try {
+        const live = await liveDealIdentity(action.target_deal_id);
+        if (!live.ok) {
+          if (live.notFound) notFound += 1;
+          skipped += 1;
+        } else if (
+          live.stageId === perdidoStageId ||
+          isUntouchableStageId(live.stageId)
+        ) {
+          skipped += 1;
+        } else {
+          const values = (Array.isArray(action.fields) ? action.fields : []).filter((f) => {
+            const current = f.campo === 'cpf' ? live.cpf : live.rgm;
+            return f.campo === 'cpf'
+              ? !isLiveCpfTrustworthy(current)
+              : !isLiveRgmTrustworthy(current);
+          });
+          if (!values.length) {
+            skipped += 1;
+          } else {
+            await updateDealCustomFields(
+              action.target_deal_id,
+              values.map((f) => ({ fieldId: f.field_id, value: f.value })),
+              { maxRetries: 4 }
+            );
+            fillsApplied += 1;
+            if (DELAY_MS > 0) await sleep(DELAY_MS);
+          }
+        }
+      } catch (err) {
+        errors += 1;
+        if (errorSamples.length < 25) {
+          errorSamples.push({
+            type: 'planned_fill',
+            deal_id: action.target_deal_id,
+            error: err?.message || String(err),
+          });
+        }
+      }
+      processed += 1;
+      report();
+    }
+
+    const wasCancelled = cancelled || checkCancel();
+    const result = {
+      ok: !wasCancelled,
+      cancelled: wasCancelled,
+      dry_run: false,
+      scope,
+      applied_from_preview_plan: true,
+      plan_created_at: plan.created_at,
+      matriculados_snapshot_id: plan.matriculados_snapshot_id || null,
+      orphan_deal_creation_disabled: true,
+      orphans_total: 0,
+      orphans_scanned: 0,
+      orphan_aluno: 0,
+      orphan_no_match: 0,
+      matched_email: 0,
+      matched_phone: 0,
+      dup_contact_skip: 0,
+      dup_skip_no_deal: 0,
+      dup_to_perdido: plan.incomplete_moves || 0,
+      deals_moved_perdido: incompleteMovesApplied,
+      incomplete_total: plan.incomplete_total || 0,
+      incomplete_scanned: 0,
+      incomplete_enriched: fillsApplied,
+      dup_deal_groups: plan.dup_deal_groups || 0,
+      dup_deals_moved_perdido: duplicateMovesApplied,
+      created_deals: 0,
+      errors,
+      deal_not_found: notFound,
+      plan_actions_total: total,
+      plan_actions_processed: processed,
+      plan_moves_total: moves.length,
+      plan_moves_applied: movesApplied,
+      plan_fills_total: fills.length,
+      plan_fills_applied: fillsApplied,
+      plan_skipped: skipped,
+      error_samples: errorSamples,
+    };
+    patchJob({
+      phase: 'done',
+      status: wasCancelled ? 'cancelled' : 'completed',
+      finished_at: new Date().toISOString(),
+      result,
+      eta_ms: null,
+      status_message: wasCancelled
+        ? 'Aplicação do plano cancelada'
+        : `Plano aplicado: ${movesApplied}/${moves.length} Perdido · ${fillsApplied}/${fills.length} fills`,
+    });
+    if (!wasCancelled) plan.consumed_at = new Date().toISOString();
+    plan.consumed_result = {
+      moves_applied: movesApplied,
+      fills_applied: fillsApplied,
+      skipped,
+      errors,
+    };
+    lastDedupeActionPlan = plan;
+    try {
+      await Promise.all([
+        cacheRepo.saveOrphanDedupePlan(plan),
+        cacheRepo.saveOrphanDedupeLastRun({
+          finished_at: new Date().toISOString(),
+          ok: !wasCancelled,
+          cancelled: wasCancelled,
+          dry_run: false,
+          status: wasCancelled ? 'cancelled' : 'completed',
+          scope,
+          applied_from_preview_plan: true,
+          incomplete_total: plan.incomplete_total || 0,
+          incomplete_enriched: fillsApplied,
+          dup_to_perdido: plan.incomplete_moves || 0,
+          deals_moved_perdido: incompleteMovesApplied,
+          dup_deal_groups: plan.dup_deal_groups || 0,
+          dup_deals_moved_perdido: duplicateMovesApplied,
+          errors,
+          deal_not_found: notFound,
+        }),
+      ]);
+    } catch (err) {
+      console.warn('[novo-crm-orphan-provision] save planned apply failed:', err?.message || err);
+    }
+    return result;
+  };
+
   if (checkCancel()) {
     patchJob({
       phase: 'done',
@@ -908,7 +1228,17 @@ export async function runOrphanAlunoProvision(opts = {}) {
     return { ok: false, cancelled: true, dry_run: dryRun, scope };
   }
 
-  beginPhase('load_matriculados', 0, 'Indexando matriculados (e-mail + telefone)…');
+  const plannedApplyResult = await tryApplySavedPlan();
+  if (plannedApplyResult) return plannedApplyResult;
+  const scanCacheGeneration = cacheGenerationKey(await cacheRepo.getSyncState());
+
+  beginPhase(
+    'load_matriculados',
+    0,
+    planFallbackReason
+      ? `Prévia ausente/desatualizada (${planFallbackReason}); refazendo varredura completa…`
+      : 'Indexando matriculados (e-mail + telefone)…'
+  );
   const matSnap = await baseUploadRepo.getLatestSnapshot('matriculados');
   if (!matSnap?.id) {
     const err = new Error('Nenhum snapshot de matriculados encontrado. Faça upload em Bases.');
@@ -992,6 +1322,18 @@ export async function runOrphanAlunoProvision(opts = {}) {
     const vals = [{ fieldId: sitFid, value: sit }];
     if (fieldIds?.atualizado) vals.push({ fieldId: fieldIds.atualizado, value: 'Sim' });
     await updateDealCustomFields(dealId, vals, { maxRetries: 4 });
+  }
+
+  function plannedSituacao(id) {
+    const mat =
+      (id.rgm && byRgmMat.get(id.rgm)) || (id.cpf && byCpfMat.get(id.cpf)) || null;
+    if (!mat) return null;
+    const mapped = extractMatriculadosMappedValues(mat);
+    return (
+      resolveSituacaoCrm(mapped.situacao || mat['Situação Matrícula'], {
+        inRematricula: false,
+      }) || null
+    );
   }
 
   /**
@@ -1702,6 +2044,31 @@ export async function runOrphanAlunoProvision(opts = {}) {
             dealStageId = live.stageId || dealStageId;
           }
 
+          if (dryRun) {
+            const siblingDeals = dealsFromCacheRow(siblingRow);
+            const siblingPrimaryId = String(siblingRow.primary_deal_id || '').trim();
+            const keeper =
+              (siblingPrimaryId &&
+                siblingDeals.find((d) => String(d.id) === siblingPrimaryId)) ||
+              (siblingPrimaryId ? { id: siblingPrimaryId } : null) ||
+              siblingDeals[0] ||
+              null;
+            if (keeper?.id) {
+              const expectedRgm = [...rgmsSet][0] || '';
+              const expectedCpf = [...cpfsSet][0] || normalizeCpf(row.cpf_norm);
+              plannedMoves.push({
+                kind: 'move',
+                reason: 'incomplete_sibling',
+                target_deal_id: String(deal.id),
+                keeper_deal_id: String(keeper.id),
+                target_name: row.nome || null,
+                keeper_name: siblingRow.nome || null,
+                expected_rgm: expectedRgm || null,
+                expected_cpf: expectedCpf || null,
+                situacao: plannedSituacao({ rgm: expectedRgm, cpf: expectedCpf }),
+              });
+            }
+          }
           dealsMovedPerdido += 1;
           if (samples.length < 25) {
             samples.push({
@@ -1822,6 +2189,18 @@ export async function runOrphanAlunoProvision(opts = {}) {
         }
 
         incompleteEnriched += 1;
+        if (dryRun) {
+          plannedFills.push({
+            kind: 'fill',
+            target_deal_id: String(primaryDeal.id),
+            target_name: row.nome || null,
+            fields: enrichValues.map((v) => ({
+              field_id: v.fieldId,
+              value: v.value,
+              campo: v.campo,
+            })),
+          });
+        }
         if (samples.length < 25) {
           samples.push({
             type: 'incomplete_enriched',
@@ -2029,6 +2408,22 @@ export async function runOrphanAlunoProvision(opts = {}) {
       for (const d of samePerson) consumedDealIds.add(d.dealId);
 
       if (dryRun) {
+        for (const loser of losers) {
+          plannedMoves.push({
+            kind: 'move',
+            reason: 'duplicate',
+            target_deal_id: String(loser.dealId),
+            keeper_deal_id: String(survivor.dealId),
+            target_name: loser.contactName || loser.title || null,
+            keeper_name: survivor.contactName || survivor.title || null,
+            expected_rgm: groupRgm || normalizeRgm(survivor.rgm) || null,
+            expected_cpf: normalizeCpf(survivor.cpf) || null,
+            situacao: plannedSituacao({
+              rgm: groupRgm || normalizeRgm(loser.rgm),
+              cpf: normalizeCpf(loser.cpf),
+            }),
+          });
+        }
         dupDealsMoved += losers.length;
       } else {
         for (const l of losers) {
@@ -2115,6 +2510,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
     offset,
     concurrency,
     live_check: liveCheck,
+    plan_fallback: Boolean(planFallbackReason),
+    plan_fallback_reason: planFallbackReason,
     skip_fields_all: skipFieldsAll,
     delay_ms: DELAY_MS,
     stopped_at_max: stoppedAtMax,
@@ -2137,6 +2534,35 @@ export async function runOrphanAlunoProvision(opts = {}) {
         ? 'Prévia pronta'
         : 'Provisionamento concluído',
   });
+
+  if (dryRun && !cancelled) {
+    const actionPlan = {
+      version: 1,
+      created_at: new Date().toISOString(),
+      scope,
+      cache_generation: scanCacheGeneration,
+      matriculados_snapshot_id: matSnap.id,
+      tag_name: limpezaDupTagName,
+      incomplete_total: incompletes.length,
+      incomplete_moves: plannedMoves.filter((a) => a.reason === 'incomplete_sibling').length,
+      dup_deal_groups: dupGroups,
+      moves: plannedMoves,
+      fills: plannedFills,
+    };
+    lastDedupeActionPlan = actionPlan;
+    try {
+      await cacheRepo.saveOrphanDedupePlan(actionPlan);
+      result.action_plan = {
+        created_at: actionPlan.created_at,
+        moves: plannedMoves.length,
+        fills: plannedFills.length,
+        max_age_ms: DEDUPE_PLAN_MAX_AGE_MS,
+      };
+      patchJob({ result: { ...result, cancelled, deal_not_found: dealNotFound } });
+    } catch (err) {
+      console.warn('[novo-crm-orphan-provision] save action plan failed:', err?.message || err);
+    }
+  }
 
   // Persist last preview/apply so the panel keeps a summary after progress clears.
   try {
@@ -2168,6 +2594,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
       errors: dryRun ? 0 : errors,
       deal_not_found: dealNotFound,
       warmed_cache: warmedCache,
+      action_plan_moves: dryRun && !cancelled ? plannedMoves.length : undefined,
+      action_plan_fills: dryRun && !cancelled ? plannedFills.length : undefined,
     });
   } catch (err) {
     console.warn('[novo-crm-orphan-provision] save last run failed:', err?.message || err);

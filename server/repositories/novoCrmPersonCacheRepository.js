@@ -142,6 +142,7 @@ export async function updateSyncState({ cursorUpdatedAt, cursorId = null }) {
 
 const FLAGS_STAGE_LAST_KEY = 'flags_stage_last';
 const ORPHAN_DEDUPE_LAST_KEY = 'orphan_dedupe_last';
+const ORPHAN_DEDUPE_PLAN_KEY = 'orphan_dedupe_plan';
 
 /**
  * Persistência genérica de resumo em `novo_crm_cache_sync_state.cursor_id` (JSON).
@@ -208,6 +209,20 @@ export async function saveOrphanDedupeLastRun(summary) {
 /** @returns {Promise<object|null>} */
 export async function getOrphanDedupeLastRun() {
   return getJsonSyncState(ORPHAN_DEDUPE_LAST_KEY);
+}
+
+/**
+ * Plano acionável produzido pela última prévia de dedupe.
+ * Usa a mesma tabela de state para sobreviver a restart entre Prévia e Aplicar.
+ * @param {object} plan
+ */
+export async function saveOrphanDedupePlan(plan) {
+  await saveJsonSyncState(ORPHAN_DEDUPE_PLAN_KEY, plan);
+}
+
+/** @returns {Promise<object|null>} */
+export async function getOrphanDedupePlan() {
+  return getJsonSyncState(ORPHAN_DEDUPE_PLAN_KEY);
 }
 
 async function loadExisting(contactId) {
