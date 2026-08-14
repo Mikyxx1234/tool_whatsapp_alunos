@@ -3,6 +3,8 @@
  * Só preenche quando o campo no CRM está vazio.
  */
 
+import { toIsoDate } from './dateParser.js';
+
 export const MAPPED_DEAL_FIELD_NAMES = Object.freeze([
   'cpf',
   'rgm',
@@ -85,6 +87,68 @@ export function normalizePoloCrm(raw) {
     .join(' ');
 }
 
+/** Partículas PT que ficam minúsculas no meio do nome do curso. */
+const CURSO_SMALL_WORDS = new Set([
+  'a',
+  'as',
+  'o',
+  'os',
+  'e',
+  'em',
+  'de',
+  'da',
+  'do',
+  'das',
+  'dos',
+  'na',
+  'no',
+  'nas',
+  'nos',
+  'para',
+  'com',
+]);
+
+function titleCaseCursoPart(part, forceCapital, allowAcronym) {
+  if (!part) return part;
+  if (allowAcronym && part.length <= 3 && /^[a-z]+$/.test(part) && !CURSO_SMALL_WORDS.has(part)) {
+    return part.toLocaleUpperCase('pt-BR');
+  }
+  if (!forceCapital && CURSO_SMALL_WORDS.has(part)) return part;
+  return part.charAt(0).toLocaleUpperCase('pt-BR') + part.slice(1);
+}
+
+/**
+ * SIAA "PEDAGOGIA (LICENCIATURA)" / "BIOMEDICINA (BACHARELADO) (4.0)"
+ * → "Pedagogia" / "Biomedicina". Tira parênteses e aplica title-case PT.
+ */
+export function normalizeCursoCrm(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  s = s.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return s
+    .toLocaleLowerCase('pt-BR')
+    .split(' ')
+    .map((word, i) => {
+      if (!word) return word;
+      const hyphenated = word.includes('-');
+      return word
+        .split('-')
+        .map((part, j) => titleCaseCursoPart(part, i === 0 && j === 0, !hyphenated))
+        .join('-');
+    })
+    .join(' ');
+}
+
+/**
+ * Data de Matrícula no deal (custom field DATE `data_de_matricula`).
+ * Aceita serial Excel / ISO / DD-MM-YYYY / DD/MM/YYYY; grava ISO `YYYY-MM-DD`
+ * (o picker do CRM exibe dia-mês-ano).
+ */
+export function formatDataMatriculaCrm(raw) {
+  return toIsoDate(raw) || '';
+}
+
 /**
  * SIAA Negócio → opções SELECT do CRM ("Graduação" | "Pós-Graduação").
  * POS antes de GRAD (senão "PÓS-GRADUAÇÃO" virava Graduação).
@@ -131,7 +195,16 @@ export function extractMatriculadosMappedValues(row) {
     ),
     ciclo: normalizeCicloCrm(pick(row, ['Ciclo'])),
     primeiro_nome: primeiro,
-    curso: pick(row, ['Curso', 'DES_CURS']),
+    curso: normalizeCursoCrm(pick(row, ['Curso', 'DES_CURS'])),
+    data_matricula: formatDataMatriculaCrm(
+      pick(row, [
+        'Data Matrícula',
+        'Data Matricula',
+        'Data da Matricula',
+        'Data de Matrícula',
+        'Data Mat',
+      ])
+    ),
     telefone_comercial: foneCel || foneCom,
     e_mail_ad: pick(row, ['Email acadêmico', 'Email academico', 'Email Acadêmico', 'Email acad']),
     /** extras para match / contact nativo */

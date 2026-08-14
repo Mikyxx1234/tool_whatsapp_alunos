@@ -154,6 +154,7 @@ for (const row of deals.rows) {
   const dealId = row.id;
   const pairs = [
     [F.NOVO_CRM_FIELD_CURSO, mapped.curso],
+    [F.NOVO_CRM_FIELD_DATA_MATRICULA, mapped.data_matricula],
     [F.NOVO_CRM_FIELD_POLO, titleCasePolo(mapped.polo) || mapped.polo],
     [
       F.NOVO_CRM_FIELD_SITUACAO,

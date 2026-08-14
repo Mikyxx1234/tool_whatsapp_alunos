@@ -408,6 +408,9 @@ export async function runMatriculadosProvision(opts = {}) {
       { fieldId: fieldIds.cpf, value: digits(mapped.cpf) },
       digits(mapped.rgm) ? { fieldId: fieldIds.rgm, value: digits(mapped.rgm) } : null,
       mapped.curso ? { fieldId: fieldIds.curso, value: mapped.curso } : null,
+      mapped.data_matricula && fieldIds.data_matricula
+        ? { fieldId: fieldIds.data_matricula, value: mapped.data_matricula }
+        : null,
       mapped.polo
         ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
         : null,

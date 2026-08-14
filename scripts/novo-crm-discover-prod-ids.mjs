@@ -105,6 +105,9 @@ const EXACT_FIELD = {
   cpf: 'NOVO_CRM_FIELD_CPF',
   rgm: 'NOVO_CRM_FIELD_RGM',
   curso: 'NOVO_CRM_FIELD_CURSO',
+  data_de_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
+  datadematricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
+  data_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   polo: 'NOVO_CRM_FIELD_POLO',
   situacao: 'NOVO_CRM_FIELD_SITUACAO',
   situacaomatricula: 'NOVO_CRM_FIELD_SITUACAO',
@@ -213,6 +216,7 @@ if (stageEnvMap.has('NOVO_CRM_STAGE_LEAD_ENTRADA')) {
 for (const k of [
   ...requiredFields,
   'NOVO_CRM_FIELD_CURSO',
+  'NOVO_CRM_FIELD_DATA_MATRICULA',
   'NOVO_CRM_FIELD_POLO',
   'NOVO_CRM_FIELD_SITUACAO',
   'NOVO_CRM_FIELD_NIVEL',

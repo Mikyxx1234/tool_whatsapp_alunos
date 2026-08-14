@@ -120,6 +120,7 @@ const SIAA_ATUALIZADO_FIELD_KEYS = [
   'email',
   'email_ad',
   'nasc',
+  'data_matricula',
 ];
 
 /**
@@ -743,6 +744,12 @@ export async function runFlagsStageSync(opts = {}) {
         }
         if (mapped.curso && fieldIds.curso) {
           fieldValues.push({ fieldId: fieldIds.curso, value: mapped.curso });
+        }
+        if (mapped.data_matricula && fieldIds.data_matricula) {
+          fieldValues.push({
+            fieldId: fieldIds.data_matricula,
+            value: mapped.data_matricula,
+          });
         }
         if (mapped.polo && fieldIds.polo) {
           fieldValues.push({

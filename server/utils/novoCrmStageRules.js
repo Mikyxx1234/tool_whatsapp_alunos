@@ -142,6 +142,8 @@ export function getNovoCrmDealFieldIds() {
     email: envId('NOVO_CRM_FIELD_EMAIL', 'cmr9f27vg02wtp701sry87ds4'),
     email_ad: envId('NOVO_CRM_FIELD_EMAIL_AD', 'cmr9f2iq302wxp701573yz5w7'),
     nasc: envId('NOVO_CRM_FIELD_NASC', 'cmq579tb1003bvemcck96lhwx'),
+    // PROD: DATE `data_de_matricula` / label "Data de Matrícula".
+    data_matricula: envId('NOVO_CRM_FIELD_DATA_MATRICULA', ''),
     acessoblack: envId('NOVO_CRM_FIELD_ACESSO_BLACK', 'cmrtjzsqx008hua48qsgaeppd'),
     doc_pendentes: envId('NOVO_CRM_FIELD_DOC_PENDENTES', 'cmrtjumbj007nua48rqjbzzj8'),
     // PROD: situacaofinanceira ("Financeira") = inadimplentes-vencidos (não a base Financeiro).
