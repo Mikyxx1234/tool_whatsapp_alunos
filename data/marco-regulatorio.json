@@ -5,7 +5,7 @@
     "pos": "Pós"
   },
   "retornoForcesPre": false,
-  "dateBasedTipos": ["novos", "recompra"],
+  "dateBasedTipos": ["novos", "recompra", "rematricula", "regresso"],
   "rematricula": {
     "posMaxSerie": 2,
     "preMinSerie": 4,

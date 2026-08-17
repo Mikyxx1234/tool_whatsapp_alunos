@@ -8,8 +8,8 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 ### 2026-08-17 — Marco regulatório: id PROD + fields noturno grava Pré/Pós
 - **Modelo usado:** Composer.
 - **Campo CRM (PROD live):** label **Marco Regulatorio**, internal name **`marco_regulatorio_2`**, type **SELECT** (opções **Pré** / **Pós**), id **`cmst97c9q01a7mp019n6671ji`** → `NOVO_CRM_FIELD_MARCO` / `getNovoCrmDealFieldIds().marco`. Valor escrito **exatamente** `Pré` / `Pós`.
-- **Decisão:** o `mode=fields` da madrugada (`NOVO_CRM_FIELDS_SYNC_ENABLED=1`, ~05:00 BRT) já chamava `marcoFieldPair`; faltava o id. Com o JSON PROD preenchido, o job noturno marca quem tem match SIAA. Sem classificação (tipo indefinido / sem data / sem série) **não grava** (deixa vazio).
-- **Regras:** `data/marco-regulatorio.json` + `server/utils/marcoRegulatorio.js`. Nova/Recompra → Data Matrícula vs 2025-09-15. Rematrícula/Retorno → série (≤2 Pós, ≥4 Pré, série 3 Pré). Docker **deve** `COPY data/marco-regulatorio.json` (defaults no código cobrem se o arquivo faltar).
+- **Decisão:** o `mode=fields` da madrugada (`NOVO_CRM_FIELDS_SYNC_ENABLED=1`, ~05:00 BRT) já chamava `marcoFieldPair`; faltava o id. Com o JSON PROD preenchido, o job noturno marca quem tem match SIAA. Sem classificação (tipo indefinido / sem data) **não grava** (deixa vazio).
+- **Regras:** `data/marco-regulatorio.json` + `server/utils/marcoRegulatorio.js`. **Todos** os tipos com data (Nova, Recompra, Rematrícula, Retorno): Data Matrícula **antes de 2025-09-15** → Pré; **15/09 ou depois** → Pós. Série deixou de ser critério (pedido 17/08 tarde). Docker **deve** `COPY data/marco-regulatorio.json`.
 - **Ops:** merge `main` + rebuild **antes** do fields das 05:00. Não setar `NOVO_CRM_FIELD_MARCO=-` no Easypanel. Att manual `flags_stage` **não** grava este campo (`doFields=false`); é o fields noturno (ou `mode=both`).
 - **Não mudou:** cron de provisionamento continua OFF.
 

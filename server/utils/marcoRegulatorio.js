@@ -1,13 +1,9 @@
 /**
  * Marco regulatório (grade curricular) a partir da linha do snapshot SIAA diário.
  *
- * O arquivo diário não traz código de curso (1 vs 493). Data Matrícula na
- * REMATRICULA é a remat do ciclo, não o ingresso — não serve de corte.
- *
  * Regras (data/marco-regulatorio.json):
- *   NOVA MATRICULA / RECOMPRA → Data Matrícula < cutoff → Pré; senão Pós
- *   REMATRICULA / RETORNO → série ≤ 2 Pós; série ≥ 4 Pré; série 3 = Pré
- *     (RGM da série 3 é era antiga; 2025/2 não tem código no diário)
+ *   Nova / Recompra / Rematrícula / Retorno → Data Matrícula < 2025-09-15 → Pré;
+ *   na data do marco ou depois → Pós. Sem data → não grava.
  */
 
 import fs from 'node:fs';
@@ -31,7 +27,7 @@ const DEFAULTS = {
   cutoff: '2025-09-15',
   labels: { pre: 'Pré', pos: 'Pós' },
   retornoForcesPre: false,
-  dateBasedTipos: ['novos', 'recompra'],
+  dateBasedTipos: ['novos', 'recompra', 'rematricula', 'regresso'],
   rematricula: { posMaxSerie: 2, preMinSerie: 4, serie3: 'pre' },
 };
 
