@@ -5,6 +5,14 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-17 — Marco regulatório: id PROD + fields noturno grava Pré/Pós
+- **Modelo usado:** Composer.
+- **Campo CRM (PROD live):** label **Marco Regulatorio**, internal name **`marco_regulatorio_2`**, type **SELECT** (opções **Pré** / **Pós**), id **`cmst97c9q01a7mp019n6671ji`** → `NOVO_CRM_FIELD_MARCO` / `getNovoCrmDealFieldIds().marco`. Valor escrito **exatamente** `Pré` / `Pós`.
+- **Decisão:** o `mode=fields` da madrugada (`NOVO_CRM_FIELDS_SYNC_ENABLED=1`, ~05:00 BRT) já chamava `marcoFieldPair`; faltava o id. Com o JSON PROD preenchido, o job noturno marca quem tem match SIAA. Sem classificação (tipo indefinido / sem data / sem série) **não grava** (deixa vazio).
+- **Regras:** `data/marco-regulatorio.json` + `server/utils/marcoRegulatorio.js`. Nova/Recompra → Data Matrícula vs 2025-09-15. Rematrícula/Retorno → série (≤2 Pós, ≥4 Pré, série 3 Pré). Docker **deve** `COPY data/marco-regulatorio.json` (defaults no código cobrem se o arquivo faltar).
+- **Ops:** merge `main` + rebuild **antes** do fields das 05:00. Não setar `NOVO_CRM_FIELD_MARCO=-` no Easypanel. Att manual `flags_stage` **não** grava este campo (`doFields=false`); é o fields noturno (ou `mode=both`).
+- **Não mudou:** cron de provisionamento continua OFF.
+
 ### 2026-08-17 — Criação de leads novos (`mode=new`) de volta no Sync
 - **Modelo usado:** Composer.
 - **Motivo:** ~1.2k RGMs na Relação de matriculados do dia sem negócio no CRM (criação off desde 06/08). Att/fields não cria cartão.
@@ -13,7 +21,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   2. Seleção = snapshot atual ausente do espelho (CPF **ou** RGM) + live check. **Sem** filtro delta vs snapshot anterior — o buraco já estava no SIAA ontem.
   3. Cron noturno continua **OFF** (`NOVO_CRM_PROVISION_ENABLED≠1`). `mode=all` ainda exige essa env. Escrita PROD continua no gate `NOVO_CRM_PROVISION_ALLOW_PROD=1`.
 - **Ops:** Disparador → Sync → Prévia leads novos → Criar. Rode Full Sync depois para o espelho acompanhar.
-- **Não mudou:** Dedupe órfãos (anti-spam / sibling); campo Marco regulatório ainda sem id PROD.
+- **Não mudou:** Dedupe órfãos (anti-spam / sibling). Marco regulatório: id PROD mapeado no mesmo dia (ver entrada acima).
 
 ### 2026-08-12 — Dedupe em quarentena: Att/fields nunca move tag `limpeza_duplicata_*`
 - **Incidente:** os ~2.329 perdedores enviados a **Perdido** em 11/08 não foram apagados naquele dia. O `fields` noturno (05:00 BRT) também alinha etapas desde 03/08; como Perdido não era intocável, a classificação SIAA/rematrícula recolocou cards em Graduação/Sem Rematrícula. Escritas perto de 06:44 são compatíveis com a fila iniciada às 05:00. A Att manual posterior de 12/08 concluiu 13:01 BRT com `stages_moved=2937` e podia repetir o mesmo caminho.

@@ -30,7 +30,8 @@
     "NOVO_CRM_FIELD_NIVEL": "cmrmexul518t9nm01j7qd6gqx",
     "NOVO_CRM_FIELD_POLO": "cmrmexun518tbnm0187ow3aso",
     "NOVO_CRM_FIELD_RGM": "cmrmexurt18tfnm01e6krzug6",
-    "NOVO_CRM_FIELD_SITUACAO": "cmrmexuw818tjnm01igvkevn1"
+    "NOVO_CRM_FIELD_SITUACAO": "cmrmexuw818tjnm01igvkevn1",
+    "NOVO_CRM_FIELD_MARCO": "cmst97c9q01a7mp019n6671ji"
   },
   "stagesByName": {
     "Lead de Entrada": "cmrwd95sx01mfpd01axkzjhm8",

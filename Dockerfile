@@ -38,6 +38,8 @@ COPY --chown=node:node --from=builder /app/server ./server
 COPY --chown=node:node --from=builder /app/dist ./dist
 # PROD field/stage IDs (envId → getNovoCrmDealFieldIds); path: /app/data/novo-crm-prod-ids.json
 COPY --chown=node:node --from=builder /app/data/novo-crm-prod-ids.json ./data/novo-crm-prod-ids.json
+# Regras Pré/Pós (cutoff 2025-09-15). Sem o arquivo, marcoRegulatorio.js usa os defaults iguais.
+COPY --chown=node:node --from=builder /app/data/marco-regulatorio.json ./data/marco-regulatorio.json
 
 EXPOSE 3001
 
