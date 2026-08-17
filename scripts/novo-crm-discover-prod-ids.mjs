@@ -108,6 +108,9 @@ const EXACT_FIELD = {
   data_de_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   datadematricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   data_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
+  marco: 'NOVO_CRM_FIELD_MARCO',
+  marco_regulatorio: 'NOVO_CRM_FIELD_MARCO',
+  marcoregulatorio: 'NOVO_CRM_FIELD_MARCO',
   polo: 'NOVO_CRM_FIELD_POLO',
   situacao: 'NOVO_CRM_FIELD_SITUACAO',
   situacaomatricula: 'NOVO_CRM_FIELD_SITUACAO',
@@ -173,6 +176,11 @@ for (const f of fields) {
   ) {
     envKey = 'NOVO_CRM_FIELD_NASC';
   } else if (
+    !fieldEnvMap.has('NOVO_CRM_FIELD_MARCO') &&
+    (n.includes('marco') || l.includes('marco'))
+  ) {
+    envKey = 'NOVO_CRM_FIELD_MARCO';
+  } else if (
     !fieldEnvMap.has('NOVO_CRM_FIELD_DOC_PENDENTES') &&
     (n.includes('doc') || blob.includes('documento'))
   ) {
@@ -217,6 +225,7 @@ for (const k of [
   ...requiredFields,
   'NOVO_CRM_FIELD_CURSO',
   'NOVO_CRM_FIELD_DATA_MATRICULA',
+  'NOVO_CRM_FIELD_MARCO',
   'NOVO_CRM_FIELD_POLO',
   'NOVO_CRM_FIELD_SITUACAO',
   'NOVO_CRM_FIELD_NIVEL',

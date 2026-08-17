@@ -44,6 +44,7 @@ import {
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
+import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
   addTagToDeal,
@@ -777,6 +778,7 @@ function buildDealValues(fieldIds, mapped, row, classification) {
     mapped.data_matricula && fieldIds.data_matricula
       ? { fieldId: fieldIds.data_matricula, value: mapped.data_matricula }
       : null,
+    marcoFieldPair(fieldIds, row),
     mapped.polo ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo } : null,
     (() => {
       const situacao = resolveSituacaoCrm(mapped.situacao || row['Situação Matrícula'], {

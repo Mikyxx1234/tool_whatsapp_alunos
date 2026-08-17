@@ -1,0 +1,14 @@
+{
+  "cutoff": "2025-09-15",
+  "labels": {
+    "pre": "Pré",
+    "pos": "Pós"
+  },
+  "retornoForcesPre": false,
+  "dateBasedTipos": ["novos", "recompra"],
+  "rematricula": {
+    "posMaxSerie": 2,
+    "preMinSerie": 4,
+    "serie3": "pre"
+  }
+}

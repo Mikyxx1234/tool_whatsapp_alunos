@@ -80,9 +80,12 @@ export function dataMatriculaDateKey(row) {
   const raw =
     row?.data_mat ??
     row?.['Data Mat'] ??
+    row?.['Data Matrícula'] ??
     row?.['Data matrícula'] ??
     row?.data_matricula ??
     row?.['Data Matricula'] ??
+    row?.['Data da Matricula'] ??
+    row?.['Data de Matrícula'] ??
     '';
   const d = parseFlexibleDate(raw);
   if (!d) return null;

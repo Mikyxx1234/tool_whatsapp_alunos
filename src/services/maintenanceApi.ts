@@ -210,6 +210,19 @@ export interface NovoCrmCacheStatusResponse {
   last_orphan_dedupe?: NovoCrmOrphanDedupeLastRun | null;
   running_flags?: NovoCrmFlagsRunningJob | null;
   running_orphan_dedupe?: NovoCrmOrphanDedupeRunningJob | null;
+  running_provision?: {
+    jobId: string;
+    mode?: string;
+    status: string;
+    dry_run?: boolean;
+    total?: number;
+    processed?: number;
+    sent?: number;
+    failed?: number;
+    phase: string | null;
+    status_message: string | null;
+    started_at: string;
+  } | null;
   state: { cursor_updated_at: string | null } | null;
   open_data_loss_events: number;
 }
@@ -383,6 +396,21 @@ export interface NovoCrmProvisionPreviewResponse {
     action?: 'sync_only' | 'would_create';
     deals?: Array<{ rgm?: string; stage?: string }>;
   }>;
+  /** Dry-run: todas as linhas que seriam criadas (CSV). */
+  to_create?: Array<{
+    nome?: string;
+    cpf?: string;
+    rgm?: string;
+    tipo?: string;
+    curso?: string;
+    polo?: string;
+    ciclo?: string;
+    situacao?: string;
+    etapa?: string;
+    email?: string;
+    telefone?: string;
+  }>;
+  to_create_count?: number;
   error_samples: Array<{ cpf?: string; error: string }>;
 }
 

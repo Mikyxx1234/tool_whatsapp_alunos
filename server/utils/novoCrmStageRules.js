@@ -144,6 +144,8 @@ export function getNovoCrmDealFieldIds() {
     nasc: envId('NOVO_CRM_FIELD_NASC', 'cmq579tb1003bvemcck96lhwx'),
     // PROD: DATE `data_de_matricula` / label "Data de Matrícula".
     data_matricula: envId('NOVO_CRM_FIELD_DATA_MATRICULA', ''),
+    // SELECT Pré/Pós — criar no CRM e mapear id (env ou JSON). Vazio = não grava.
+    marco: envId('NOVO_CRM_FIELD_MARCO', ''),
     acessoblack: envId('NOVO_CRM_FIELD_ACESSO_BLACK', 'cmrtjzsqx008hua48qsgaeppd'),
     doc_pendentes: envId('NOVO_CRM_FIELD_DOC_PENDENTES', 'cmrtjumbj007nua48rqjbzzj8'),
     // PROD: situacaofinanceira ("Financeira") = inadimplentes-vencidos (não a base Financeiro).

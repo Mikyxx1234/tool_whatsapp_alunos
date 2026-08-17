@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import * as baseUploadRepo from '../server/repositories/baseUploadRepository.js';
 import { extractMatriculadosMappedValues, resolveSituacaoCrm } from '../server/utils/novoCrmFieldMapping.js';
 import { classifyMatriculado, titleCasePolo } from '../server/utils/novoCrmStageRules.js';
+import { classifyMarcoRegulatorio } from '../server/utils/marcoRegulatorio.js';
 import { applyNovoCrmProdIdsFromFile } from './_applyNovoCrmProdIds.mjs';
 
 const apply = process.argv.includes('--apply');
@@ -155,6 +156,7 @@ for (const row of deals.rows) {
   const pairs = [
     [F.NOVO_CRM_FIELD_CURSO, mapped.curso],
     [F.NOVO_CRM_FIELD_DATA_MATRICULA, mapped.data_matricula],
+    [F.NOVO_CRM_FIELD_MARCO, classifyMarcoRegulatorio(matRow).label],
     [F.NOVO_CRM_FIELD_POLO, titleCasePolo(mapped.polo) || mapped.polo],
     [
       F.NOVO_CRM_FIELD_SITUACAO,

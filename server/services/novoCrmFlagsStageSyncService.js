@@ -78,6 +78,7 @@ import {
   updateDealCustomFields,
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
+import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -121,6 +122,7 @@ const SIAA_ATUALIZADO_FIELD_KEYS = [
   'email_ad',
   'nasc',
   'data_matricula',
+  'marco',
 ];
 
 /**
@@ -750,6 +752,10 @@ export async function runFlagsStageSync(opts = {}) {
             fieldId: fieldIds.data_matricula,
             value: mapped.data_matricula,
           });
+        }
+        {
+          const marco = marcoFieldPair(fieldIds, matRow);
+          if (marco) fieldValues.push(marco);
         }
         if (mapped.polo && fieldIds.polo) {
           fieldValues.push({

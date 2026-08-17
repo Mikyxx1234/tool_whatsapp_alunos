@@ -4,9 +4,10 @@
  * PROD: NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita (também libera fields/flags writers).
  *
  * Modes:
- *   new (default UI) — só CPFs do snapshot atual ausentes do cache local
- *     (e, se houver snapshot anterior, preferir delta vs anterior). Cap ~200/dia.
- *   all — backlog completo (backfill; não usar de noite).
+ *   new (default UI) — snapshot atual ausente do espelho (CPF/RGM) + live
+ *     check. Não exige delta vs snapshot anterior. Cap default 200; UI passa
+ *     até 1500 para o buraco de quem nunca foi criado.
+ *   all — backlog completo (backfill; exige PROVISION_ENABLED).
  *
  * Cron noturno: OFF por padrão (NOVO_CRM_PROVISION_ENABLED≠1). Criação diária
  * é via botão «Criação de leads novos» no Disparador.
@@ -36,6 +37,9 @@ import {
   extractMatriculadosMappedValues,
   resolveSituacaoCrm,
 } from '../utils/novoCrmFieldMapping.js';
+import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
+import { normalizeCpf } from '../utils/novoCrmCacheNormalize.js';
+import { tipoMatriculaFromRow } from '../utils/matriculadosTipoMatricula.js';
 import {
   createContact,
   createDeal,
@@ -195,8 +199,8 @@ function maxPerRun() {
 }
 
 function maxNewPerRun() {
-  // Cap diário de leads novos (~10–150/dia típico; teto 500).
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_NEW_MAX_PER_RUN) || 200, 1), 500);
+  // Teto 2000: cobre o buraco de quem está no SIAA diário sem deal (~1,2k).
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_PROVISION_NEW_MAX_PER_RUN) || 200, 1), 2000);
 }
 
 function normalizeProvisionMode(raw) {
@@ -249,7 +253,7 @@ export async function runMatriculadosProvision(opts = {}) {
   const dryRun = opts.dryRun === true;
   const mode = normalizeProvisionMode(opts.mode);
   const defaultMax = mode === 'new' ? maxNewPerRun() : maxPerRun();
-  const hardCap = mode === 'new' ? 500 : 20000;
+  const hardCap = mode === 'new' ? 2000 : 20000;
   const maxCreates = Math.min(Math.max(Number(opts.maxCreates) || defaultMax, 1), hardCap);
   const concurrency = provisionConcurrency();
   // offset = pula as N primeiras pessoas (grupos por CPF) na ordem determinística.
@@ -278,22 +282,12 @@ export async function runMatriculadosProvision(opts = {}) {
     throw err;
   }
 
-  // mode=new: CPFs do snapshot atual ausentes do cache; se houver snapshot
-  // anterior, restringe ao delta (apareceu agora e não no anterior).
+  // mode=new: snapshot atual ausente do espelho (CPF/RGM). NÃO filtra delta
+  // vs snapshot anterior — quem já estava no SIAA mas nunca ganhou deal
+  // (criação off desde 06/08) precisa entrar.
   /** @type {Set<string>|null} */
-  let priorSnapCpfs = null;
-  let priorSnapId = null;
-  if (mode === 'new') {
-    const snaps = await baseUploadRepo.listSnapshots('matriculados', { limit: 2 });
-    if (snaps.length >= 2 && snaps[1]?.id) {
-      priorSnapId = snaps[1].id;
-      priorSnapCpfs = new Set();
-      await baseUploadRepo.forEachRowDataForSnapshot('matriculados', priorSnapId, (row) => {
-        const cpf = digits(row.CPF || row.cpf || row.Cpf);
-        if (cpf.length >= 11) priorSnapCpfs.add(cpf);
-      });
-    }
-  }
+  const priorSnapCpfs = null;
+  const priorSnapId = null;
 
   console.log(
     `[novo-crm-provision] start dry=${dryRun} mode=${mode} max=${maxCreates} offset=${offset} conc=${concurrency} errorBudget=${errorBudget} snap=${matSnap.id} prior=${priorSnapId || '—'} host=${apiBaseHost()}`
@@ -351,6 +345,9 @@ export async function runMatriculadosProvision(opts = {}) {
   const errorSamples = [];
   /** @type {Array<object>} */
   const createdSamples = [];
+  /** Lista completa (dry-run) para CSV na UI — 1 linha por RGM/negócio. */
+  /** @type {Array<object>} */
+  const toCreate = [];
 
   /** @type {Record<string, unknown>[]} */
   const candidates = [];
@@ -382,8 +379,8 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedDupRgm = 0;
   for (const row of preFiltered) {
     const m = extractMatriculadosMappedValues(row);
-    const cpf = digits(m.cpf);
-    if (cpf.length < 11) {
+    const cpf = normalizeCpf(m.cpf);
+    if (!cpf) {
       skippedNoCpf += 1;
       continue;
     }
@@ -411,6 +408,7 @@ export async function runMatriculadosProvision(opts = {}) {
       mapped.data_matricula && fieldIds.data_matricula
         ? { fieldId: fieldIds.data_matricula, value: mapped.data_matricula }
         : null,
+      marcoFieldPair(fieldIds, row),
       mapped.polo
         ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
         : null,
@@ -448,17 +446,6 @@ export async function runMatriculadosProvision(opts = {}) {
   let warmCacheErrors = 0;
   const matchedBy = { cpf: 0, phone: 0, email: 0 };
   let searchFuzzyRejected = 0;
-
-  // mode=new + snapshot anterior: só quem apareceu agora (delta).
-  // Cache-miss continua obrigatório (processPerson / existingCpfs).
-  if (mode === 'new' && priorSnapCpfs) {
-    for (const cpf of [...groups.keys()]) {
-      if (priorSnapCpfs.has(cpf)) {
-        groups.delete(cpf);
-        skippedNotDelta += 1;
-      }
-    }
-  }
 
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
   // Ordem determinística (mesmo snapshot + sort estável); offset pula as N
@@ -603,6 +590,21 @@ export async function runMatriculadosProvision(opts = {}) {
     if (dryRun) {
       if (!claimSlot()) return;
       createdDeals += classifications.length;
+      for (const c of classifications) {
+        toCreate.push({
+          nome,
+          cpf,
+          rgm: c.rgm || '',
+          tipo: tipoMatriculaFromRow(c.row) || '',
+          curso: c.mapped.curso || '',
+          polo: c.mapped.polo || '',
+          ciclo: c.mapped.ciclo || '',
+          situacao: c.mapped.situacao || '',
+          etapa: c.classification.stageName || '',
+          email: c.mapped._email || '',
+          telefone: c.mapped._phone || c.mapped.telefone_comercial || '',
+        });
+      }
       if (createdSamples.length < 15) {
         createdSamples.push({
           dry_run: true,
@@ -735,10 +737,15 @@ export async function runMatriculadosProvision(opts = {}) {
     prior_snapshot_id: priorSnapId,
     matriculados_snapshot_id: matSnap.id,
     samples: createdSamples,
+    to_create: dryRun ? toCreate : [],
+    to_create_count: dryRun ? toCreate.length : 0,
     error_samples: errorSamples,
     host: apiBaseHost(),
   };
-  console.log('[novo-crm-provision] done', JSON.stringify({ ...result, samples: undefined }));
+  console.log(
+    '[novo-crm-provision] done',
+    JSON.stringify({ ...result, samples: undefined, to_create: undefined })
+  );
   touchProvisionJob(jobId, {
     phase: 'done',
     status_message: aborted

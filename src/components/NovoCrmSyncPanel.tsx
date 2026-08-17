@@ -7,13 +7,17 @@ import {
   FileWarning,
   RefreshCw,
   Square,
+  UserPlus,
   UserRound,
   X,
+  FileDown,
 } from 'lucide-react';
 import {
   maintenanceApi,
   type NovoCrmCacheStatusResponse,
   type NovoCrmFlagsStageJobStatusResponse,
+  type NovoCrmProvisionJobStatusResponse,
+  type NovoCrmProvisionPreviewResponse,
   type NovoCrmRegressionEvent,
   type OrphanDedupeJobStatusResponse,
   type OrphanDedupePreviewResponse,
@@ -39,10 +43,49 @@ function fmtDurationMs(ms: number) {
   return `${h} h ${m % 60} min`;
 }
 
+const PROVISION_CSV_COLS = [
+  'nome',
+  'cpf',
+  'rgm',
+  'tipo',
+  'curso',
+  'polo',
+  'ciclo',
+  'situacao',
+  'etapa',
+  'email',
+  'telefone',
+] as const;
+
+function downloadProvisionCsv(
+  rows: NonNullable<NovoCrmProvisionPreviewResponse['to_create']>,
+  filename: string
+) {
+  const esc = (v: unknown) => {
+    const s = String(v ?? '');
+    if (/[";\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [
+    PROVISION_CSV_COLS.join(';'),
+    ...rows.map((r) => PROVISION_CSV_COLS.map((k) => esc(r[k])).join(';')),
+  ];
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function phaseLabel(phase: string | null | undefined) {
   switch (phase) {
     case 'starting':
       return 'Iniciando';
+    case 'provisioning':
+      return 'Criando leads';
+    case 'loading':
     case 'loading_bases':
     case 'load_bases':
       return 'Carregando bases';
@@ -82,6 +125,8 @@ type AlertsPreview = {
 
 type FlagsJobLive = NonNullable<NovoCrmFlagsStageJobStatusResponse['job']>;
 type DedupeJobLive = NonNullable<OrphanDedupeJobStatusResponse['job']>;
+type ProvisionJobLive = NonNullable<NovoCrmProvisionJobStatusResponse['job']>;
+const PROVISION_NEW_MAX = 1500;
 
 export function NovoCrmSyncPanel() {
   const [status, setStatus] = useState<NovoCrmCacheStatusResponse | null>(null);
@@ -111,6 +156,16 @@ export function NovoCrmSyncPanel() {
   const [dedupeScope, setDedupeScope] = useState<'incomplete' | 'duplicates' | 'both'>(
     'incomplete'
   );
+
+  const [provisionBusy, setProvisionBusy] = useState(false);
+  const [provisionMsg, setProvisionMsg] = useState<string | null>(null);
+  const [provisionPreview, setProvisionPreview] = useState<NovoCrmProvisionPreviewResponse | null>(
+    null
+  );
+  const [provisionJobId, setProvisionJobId] = useState<string | null>(null);
+  const [provisionJob, setProvisionJob] = useState<ProvisionJobLive | null>(null);
+  const [provisionMode, setProvisionMode] = useState<'preview' | 'apply'>('preview');
+  const [provisionApplied, setProvisionApplied] = useState(false);
 
   const pollRef = useRef<number | null>(null);
 
@@ -211,6 +266,29 @@ export function NovoCrmSyncPanel() {
           );
         }
       }
+      if (s.running_provision?.jobId) {
+        const p = s.running_provision;
+        setProvisionJobId((prev) => prev || p.jobId);
+        setProvisionBusy(true);
+        setProvisionMode(p.dry_run === false ? 'apply' : 'preview');
+        setProvisionJob({
+          jobId: p.jobId,
+          mode: p.mode || 'new',
+          status: p.status,
+          dry_run: Boolean(p.dry_run),
+          total: p.total ?? 0,
+          processed: p.processed ?? 0,
+          sent: p.sent ?? 0,
+          failed: p.failed ?? 0,
+          phase: p.phase,
+          status_message: p.status_message,
+          started_at: p.started_at,
+          finished_at: null,
+          error: null,
+          result: null,
+        });
+        setProvisionMsg(p.status_message || phaseLabel(p.phase));
+      }
       return s;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Falha ao carregar status');
@@ -226,7 +304,7 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    const needPoll = Boolean(status?.running || flagsJobId || dedupeJobId);
+    const needPoll = Boolean(status?.running || flagsJobId || dedupeJobId || provisionJobId);
     if (needPoll) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
@@ -315,12 +393,34 @@ export function NovoCrmSyncPanel() {
             })
             .catch(() => {});
         }
+        if (provisionJobId) {
+          void maintenanceApi
+            .getNovoCrmProvisionStatus(provisionJobId)
+            .then((r) => {
+              if (!r.job) return;
+              setProvisionJob(r.job);
+              setProvisionMsg(r.job.status_message || phaseLabel(r.job.phase));
+              if (r.job.status !== 'running') {
+                setProvisionJobId(null);
+                setProvisionBusy(false);
+                if (r.job.status === 'completed' && r.job.result) {
+                  setProvisionPreview(r.job.result);
+                  setProvisionApplied(!r.job.result.dry_run);
+                  setProvisionMsg(null);
+                } else if (r.job.status === 'failed') {
+                  setProvisionMsg(r.job.error || 'Criação de leads falhou');
+                }
+                void loadStatus();
+              }
+            })
+            .catch(() => {});
+        }
       }, 2000) as unknown as number;
     } else {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, flagsJobId, dedupeJobId, dedupeMode, loadStatus, stopPoll]);
+  }, [status?.running, flagsJobId, dedupeJobId, provisionJobId, dedupeMode, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastFlags = status?.last_flags_sync || null;
@@ -528,6 +628,63 @@ export function NovoCrmSyncPanel() {
     setDedupeJob(null);
   };
 
+  const runProvisionPreview = async () => {
+    if (provisionBusy) return;
+    setProvisionBusy(true);
+    setProvisionApplied(false);
+    setProvisionPreview(null);
+    setProvisionMode('preview');
+    setProvisionMsg('Prévia: quem está no SIAA e ainda não tem negócio…');
+    try {
+      const started = await maintenanceApi.startNovoCrmProvisionPreview({
+        mode: 'new',
+        max: PROVISION_NEW_MAX,
+      });
+      setProvisionJobId(started.jobId);
+    } catch (e) {
+      const err = e as Error & { jobId?: string };
+      if (err.jobId || /já em andamento/i.test(err.message || '')) {
+        if (err.jobId) setProvisionJobId(err.jobId);
+        setProvisionMsg('Reanexando job em andamento…');
+        void loadStatus();
+        return;
+      }
+      setProvisionBusy(false);
+      setProvisionMsg(e instanceof Error ? e.message : 'Falha na prévia de leads');
+    }
+  };
+
+  const confirmProvisionApply = async () => {
+    if (provisionBusy) return;
+    setProvisionBusy(true);
+    setProvisionMode('apply');
+    setProvisionMsg('Criando leads no CRM…');
+    try {
+      const started = await maintenanceApi.startNovoCrmProvision({
+        mode: 'new',
+        max: PROVISION_NEW_MAX,
+      });
+      setProvisionJobId(started.jobId);
+    } catch (e) {
+      const err = e as Error & { jobId?: string };
+      if (err.jobId || /já em andamento/i.test(err.message || '')) {
+        if (err.jobId) setProvisionJobId(err.jobId);
+        setProvisionMsg('Reanexando job em andamento…');
+        void loadStatus();
+        return;
+      }
+      setProvisionBusy(false);
+      setProvisionMsg(e instanceof Error ? e.message : 'Falha ao criar leads');
+    }
+  };
+
+  const dismissProvisionPreview = () => {
+    setProvisionPreview(null);
+    setProvisionApplied(false);
+    setProvisionMsg(null);
+    setProvisionJob(null);
+  };
+
   const running = status?.running_sync || null;
   const total = running?.contacts_total ?? null;
   const seen = running?.contacts_seen ?? 0;
@@ -559,6 +716,9 @@ export function NovoCrmSyncPanel() {
     dj?.started_at != null
       ? fmtDurationMs(Date.now() - new Date(dj.started_at).getTime())
       : null;
+
+  const provisionRunning = Boolean(provisionJobId) || Boolean(status?.running_provision);
+  const pj = provisionJob;
 
   const tiles: Array<{
     id: string;
@@ -637,7 +797,7 @@ export function NovoCrmSyncPanel() {
           <div>
             <h2 className="text-base font-semibold text-gray-900">Sync Novo CRM</h2>
             <p className="text-sm text-gray-500 mt-1 max-w-3xl">
-              Espelho ≠ att campos ≠ etapas. Dedupe preenche incompletos e trata duplicados; não cria negócios.
+              Espelho ≠ att campos ≠ etapas. Dedupe preenche incompletos e trata duplicados. Leads novos cria quem está no SIAA diário sem negócio.
             </p>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl text-xs text-gray-600">
               <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
@@ -662,6 +822,9 @@ export function NovoCrmSyncPanel() {
                     <strong>Att de etapas</strong> — flags + move etapa
                   </li>
                   <li>
+                    <strong>Leads novos</strong> — SIAA diário sem negócio no CRM
+                  </li>
+                  <li>
                     <strong>Dedupe</strong> — incompletos / duplicados
                   </li>
                 </ul>
@@ -682,7 +845,7 @@ export function NovoCrmSyncPanel() {
         <p className="mt-5 text-xs font-semibold text-gray-700 uppercase tracking-wide">
           Ações manuais
         </p>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-indigo-900">1. Full Sync</p>
             <p className="text-[11px] text-indigo-800/80 flex-1">
@@ -809,12 +972,114 @@ export function NovoCrmSyncPanel() {
             </div>
           </div>
 
+          <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 flex flex-col gap-2">
+            <p className="text-xs font-semibold text-sky-900">3. Criação de leads novos</p>
+            <p className="text-[11px] text-sky-800/80 flex-1">
+              Quem está na Relação de matriculados e ainda não tem negócio. Prévia confere
+              espelho + CRM ao vivo; você baixa o CSV e só então confirma a criação. Até{' '}
+              {PROVISION_NEW_MAX.toLocaleString('pt-BR')} por vez.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void runProvisionPreview()}
+                disabled={provisionBusy || provisionRunning}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {provisionBusy || provisionRunning ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserPlus className="w-3.5 h-3.5" />
+                )}
+                {provisionRunning
+                  ? provisionMode === 'apply'
+                    ? 'Criando…'
+                    : 'Prévia rodando…'
+                  : 'Prévia leads novos'}
+              </button>
+            </div>
+            {pj && provisionRunning && (
+              <p className="text-[11px] text-sky-900">
+                {phaseLabel(pj.phase)} · {Number(pj.processed || 0).toLocaleString('pt-BR')}
+                {pj.total ? ` / ${Number(pj.total).toLocaleString('pt-BR')}` : ''}
+              </p>
+            )}
+            {provisionMsg && !provisionPreview && (
+              <p className="text-[11px] font-medium text-sky-900">{provisionMsg}</p>
+            )}
+            {provisionPreview && (
+              <div className="mt-1 text-[11px] text-sky-900 space-y-0.5">
+                <p>
+                  Criar:{' '}
+                  <strong>
+                    {Number(
+                      provisionPreview.created_contacts || 0
+                    ).toLocaleString('pt-BR')}
+                  </strong>{' '}
+                  contatos ·{' '}
+                  <strong>
+                    {Number(provisionPreview.created_deals || 0).toLocaleString('pt-BR')}
+                  </strong>{' '}
+                  negócios
+                  {provisionPreview.updated_existing
+                    ? ` · ${Number(provisionPreview.updated_existing).toLocaleString('pt-BR')} já existiam (só sync)`
+                    : ''}
+                </p>
+                <p>
+                  Já no espelho: {Number(provisionPreview.skipped_cache || 0).toLocaleString('pt-BR')} CPF ·{' '}
+                  {Number(provisionPreview.skipped_cache_rgm || 0).toLocaleString('pt-BR')} RGM
+                </p>
+                {provisionPreview.errors ? (
+                  <p className="text-rose-700">
+                    {Number(provisionPreview.errors).toLocaleString('pt-BR')} erros
+                  </p>
+                ) : null}
+                {provisionApplied ? (
+                  <p className="pt-1 font-semibold text-sky-900">Aplicado no CRM.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2 pt-1.5">
+                    {(provisionPreview.to_create?.length || 0) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadProvisionCsv(
+                            provisionPreview.to_create || [],
+                            `leads-novos-previa-${new Date().toISOString().slice(0, 10)}.csv`
+                          )
+                        }
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-sky-900 border border-sky-300 hover:bg-sky-50 rounded-lg"
+                      >
+                        <FileDown className="w-3.5 h-3.5" />
+                        CSV ({Number(provisionPreview.to_create_count || provisionPreview.to_create?.length || 0).toLocaleString('pt-BR')})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void confirmProvisionApply()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      Criar {Number(provisionPreview.created_contacts || 0).toLocaleString('pt-BR')} leads
+                    </button>
+                    <button
+                      type="button"
+                      onClick={dismissProvisionPreview}
+                      className="px-3 py-1.5 text-xs font-medium text-sky-800 border border-sky-300 hover:bg-sky-50 rounded-lg"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-violet-900">
-              3. Dedupe incompletos/duplicados
+              4. Dedupe incompletos/duplicados
             </p>
             <p className="text-[11px] text-violet-800/80 flex-1">
-              Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. A criação de negócios está desativada também no backend.
+              Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. Leads novos ficam no card 3.
             </p>
             <label className="flex flex-col gap-0.5 text-[11px] text-violet-900">
               <span className="font-medium">Escopo</span>

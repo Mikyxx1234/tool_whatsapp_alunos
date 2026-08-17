@@ -5,13 +5,23 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-17 — Criação de leads novos (`mode=new`) de volta no Sync
+- **Modelo usado:** Composer.
+- **Motivo:** ~1.2k RGMs na Relação de matriculados do dia sem negócio no CRM (criação off desde 06/08). Att/fields não cria cartão.
+- **Decisão:**
+  1. API `POST …/provision-matriculados-novo-crm?mode=new` deixa de devolver 410. Botão **«3. Criação de leads novos»** volta no `NovoCrmSyncPanel` (prévia async + confirmação inline + apply). Cap UI **1500**/run (hard cap 2000).
+  2. Seleção = snapshot atual ausente do espelho (CPF **ou** RGM) + live check. **Sem** filtro delta vs snapshot anterior — o buraco já estava no SIAA ontem.
+  3. Cron noturno continua **OFF** (`NOVO_CRM_PROVISION_ENABLED≠1`). `mode=all` ainda exige essa env. Escrita PROD continua no gate `NOVO_CRM_PROVISION_ALLOW_PROD=1`.
+- **Ops:** Disparador → Sync → Prévia leads novos → Criar. Rode Full Sync depois para o espelho acompanhar.
+- **Não mudou:** Dedupe órfãos (anti-spam / sibling); campo Marco regulatório ainda sem id PROD.
+
 ### 2026-08-12 — Dedupe em quarentena: Att/fields nunca move tag `limpeza_duplicata_*`
 - **Incidente:** os ~2.329 perdedores enviados a **Perdido** em 11/08 não foram apagados naquele dia. O `fields` noturno (05:00 BRT) também alinha etapas desde 03/08; como Perdido não era intocável, a classificação SIAA/rematrícula recolocou cards em Graduação/Sem Rematrícula. Escritas perto de 06:44 são compatíveis com a fila iniciada às 05:00. A Att manual posterior de 12/08 concluiu 13:01 BRT com `stages_moved=2937` e podia repetir o mesmo caminho.
 - **Decisão:** qualquer deal com tag cujo nome começa por `limpeza_duplicata_` é **quarentena de etapa**. `fields`, `flags_stage` e `both` podem continuar atualizando campos/flags, mas nunca fazem `updateDeal(stageId)` nesse deal, esteja ele em Perdido ou já fora.
 - **Garantia contra cache stale:** toda troca automática de etapa agora faz `GET /api/deals/:id` antes do PUT e confere a tag ao vivo. Não basta o espelho: a tag pode ter sido aplicada depois do último Full Sync. O espelho API também passa a persistir `detail.tags` para dry-run/diagnóstico.
 - **Observabilidade:** contador `stages_skipped_limpeza_duplicata` no resultado e no `flags_stage_last`.
 - **Operação do incidente:** usuário optou por hard-delete dos deals com tag `limpeza_duplicata_11.08.2026`; **não restaurar para Perdido**. O filtro deve incluir a tag em todas as etapas, inclusive os revividos em Sem Rematrícula/Graduação.
-- **Escopo:** não tornou Perdido globalmente intocável; a trava é por tag para preservar casos futuros em que o produto queira reclassificar um Perdido sem origem no dedupe. O provisionamento de órfãos não recria enquanto existir sibling/deal; hard-delete pode tornar o cadastro órfão, mas o fluxo `mode=new` está 410 e o cron de provisionamento deve permanecer OFF em PROD.
+- **Escopo:** não tornou Perdido globalmente intocável; a trava é por tag para preservar casos futuros em que o produto queira reclassificar um Perdido sem origem no dedupe. O provisionamento de órfãos não recria enquanto existir sibling/deal; hard-delete pode tornar o cadastro órfão. `mode=new` voltou no botão de dia (17/08); o cron de provisionamento deve permanecer OFF em PROD.
 
 ### 2026-08-11 — CRM redondo: apply por scope (incomplete → duplicates → orphans)
 - **Modelo usado:** Composer.
@@ -61,6 +71,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 - **Docker:** runtime **deve** `COPY data/novo-crm-prod-ids.json` → `/app/data/` (lido por `novoCrmStageRules.js` via `server/utils` → `../../data/…`); sem o arquivo, `NOVO_CRM_FIELD_FINANCEIRO` / Dia 10 fica vazio em PROD mesmo com o JSON no repo.
 
 ### 2026-08-06 — Sync: sem "Criação de leads novos"; tag limpeza em Perdido (dedupe)
+- **Status:** criação `mode=new` **reativada em 17/08** (card + API). Cron continua OFF. Tag de limpeza em Perdido permanece.
 - **Modelo usado:** Composer.
 - **UI:** card **«Criação de leads novos»** removido do `NovoCrmSyncPanel` (Disparador → Sync). Fluxo diário = Full Sync + Att + Dedupe. Service `novoCrmMatriculadosProvisionService` **não apagado** (backfill `mode=all` ainda possível).
 - **API:** `POST /api/maintenance/provision-matriculados-novo-crm` com `mode=new` (default) → **410** `PROVISION_NEW_DISABLED` (fecha buraco de mass-create). `mode=all` continua com `NOVO_CRM_PROVISION_ENABLED=1`.

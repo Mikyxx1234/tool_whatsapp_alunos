@@ -213,6 +213,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
     const stats = await novoCrmPersonCacheRepo.getCacheStats();
     const flagsJob = getRunningFlagsStageSyncJob();
     const orphanJob = getRunningOrphanAlunoProvisionJob();
+    const provisionJob = getRunningMatriculadosProvisionJob();
     res.json({
       ok: true,
       cache_total: stats.total,
@@ -269,6 +270,21 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
             live_ok: orphanJob.live_ok ?? 0,
             deal_not_found: orphanJob.deal_not_found ?? 0,
             errors: orphanJob.errors ?? orphanJob.failed ?? 0,
+          }
+        : null,
+      running_provision: provisionJob
+        ? {
+            jobId: provisionJob.jobId,
+            mode: provisionJob.mode,
+            status: provisionJob.status,
+            dry_run: provisionJob.dry_run,
+            total: provisionJob.total ?? 0,
+            processed: provisionJob.processed ?? 0,
+            sent: provisionJob.sent ?? 0,
+            failed: provisionJob.failed ?? 0,
+            phase: provisionJob.phase,
+            status_message: provisionJob.status_message,
+            started_at: provisionJob.started_at,
           }
         : null,
       state: stats.state,
@@ -417,11 +433,11 @@ router.post('/enrich-novo-crm', requireApiKey, async (req, res) => {
  * POST /api/maintenance/provision-matriculados-novo-crm
  * ?dry_run=1|0&mode=new|all&max=200&async=1
  *
- * mode=new: DESATIVADO (06/08/2026) — UI removida; responde 410.
- * mode=all: backlog completo (backfill controlado; exige PROVISION_ENABLED).
+ * mode=new: snapshot atual ausente do espelho (+ live check). Manual no Sync.
+ * mode=all: backlog completo (exige NOVO_CRM_PROVISION_ENABLED=1).
  *
  * Escrita manual: gate de host (ALLOW_PROD). Cron noturno continua exigindo
- * NOVO_CRM_PROVISION_ENABLED=1 (deve ficar OFF em PROD — ver AGENTS.md 28/07).
+ * NOVO_CRM_PROVISION_ENABLED=1 (deve ficar OFF em PROD — ver AGENTS.md).
  */
 router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) => {
   try {
@@ -439,15 +455,6 @@ router.post('/provision-matriculados-novo-crm', requireApiKey, async (req, res) 
     const reallyDry = !forceWrite;
     const modeRaw = String(req.query.mode || req.body?.mode || 'new').trim().toLowerCase();
     const mode = modeRaw === 'all' || modeRaw === 'full' || modeRaw === 'backfill' ? 'all' : 'new';
-    if (mode === 'new') {
-      return res.status(410).json({
-        ok: false,
-        code: 'PROVISION_NEW_DISABLED',
-        error:
-          'Criação de leads novos (mode=new) foi desativada. UI do Sync não expõe mais esse botão. ' +
-          'Dedupe também não cria negócios. Backfill massivo exige mode=all + NOVO_CRM_PROVISION_ENABLED=1.',
-      });
-    }
     const maxCreates = Number(req.query.max || req.body?.max || req.body?.maxCreates) || undefined;
     const asyncMode =
       req.query.async === '1' || req.query.async === 'true' || req.body?.async === true;
