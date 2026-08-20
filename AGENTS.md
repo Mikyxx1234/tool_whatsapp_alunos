@@ -5,11 +5,38 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-19 — Marco: arquivo 25.2 certo (substitui o de 18/08)
+- **Modelo usado:** Grok.
+- **Problema:** o `matriculados_25.2.xlsx` de 18/08 era o relatório errado. SIAA marcava calouro 2026 como VETERANO (data jul/2026; RGM > `46415114`) e o apply gravou **Pré** (~15.671 deals). Ex.: Beatriz #105559 RGM `48654973`.
+- **Fonte certa:** `matriculados_25.2 (1).xlsx`. Mesma regra: **VETERANO** = Pré; **INGRESSANTE** só com Data Matrícula **≤ 2025-09-13**. Gravação **RGM-only** (sem CPF).
+- **Lista nova:** `data/marco-pre-rgms.json` (~21.479 RGMs). Arquivo errado guardado em `data/marco-pre-rgms-errado-20260818.json` (~16.498). Delta: **+9.447** Pré (ingressante ≤ 13/09 que faltavam) · **−4.466** (calouro/falso veterano → Pós). Beatriz/Larissa/Guthielli saem; Mário Germinário (`44792425`, data 02/08/2025) permanece Pré.
+- **Ops:** `scripts/build-marco-pre-rgms.mjs` + realign (Pós nos removidos, Pré nos adicionados). **19/08 ~05:00 e 20/08 ~05:00:** fields no `main` ainda usava **data SIAA** → regravou Pós. Restore 19/08: `scripts/novo-crm-marco-pre-restore.mjs`. **20/08:** lista + classificador RGM-only + `COPY data/marco-pre-rgms.json` no `main` (rebuild Easypanel). Sem isso a madrugada zera de novo.
+- **Supersede:** lista 25.2 de 18/08 (entrada abaixo).
+
+### 2026-08-18 — Marco: lista 2025/2 (veterano + ingressante ≤ 13/09/2025)
+- **Status:** **Arquivo-fonte inválido** — supersedida em 19/08 pela entrada acima. A regra (VETERANO + ingressante ≤ 13/09) permanece; só a planilha estava errada.
+- **Modelo usado:** Grok.
+- **Fonte Pré (errada):** `matriculados_25.2.xlsx` (emissão 14/08/2026). **VETERANO** = todos Pré. **INGRESSANTE** só com Data Matrícula **≤ 2025-09-13**. Quem não está nessa lista → **Pós**.
+- **Persistência:** RGMs/CPFs Pré em `data/marco-pre-rgms.json`. Classificador (`marcoRegulatorio.js`) consulta a lista; não usa data SIAA atual nem teto numérico de RGM. Docker **deve** `COPY data/marco-pre-rgms.json`.
+- **Cruzamento 18/08 vs Relação atual (com arquivo errado):** dos Pré da 25.2, **15.652** RGMs ainda na Relação do dia (~15.589 Em Curso); **15.640** já têm negócio no CRM.
+- **Supersede:** corte por RGM ≤ `46415114` (mesmo dia, entrada abaixo).
+
+### 2026-08-18 — Marco: corte pelo RGM sequencial (não pela data)
+- **Status:** **Supersedida** no mesmo dia pela lista 2025/2 (entrada acima).
+- **Modelo usado:** Grok.
+- **Por quê:** no SIAA, rematrícula **sobrescreve** Data Matrícula com o dia da rematrícula — a Att só-data desta madrugada marcou **0 Pré**. RGM sobe a cada matrícula nova e não muda na remat.
+- **Âncoras (pedido 18/08):** últimos Pré em **13/09/2025** = `46412387`, `46412751`, `46415114`. Primeiros Pós em **15/09/2025** = `46420029`, `46422099`, `46424806`, `46431101`, `46433091`, `46434101`.
+- **Regra:** RGM **≤ `cutoffRgmMaxPre` `46415114`** → **Pré**; RGM **maior** → **Pós**. Vale para Nova / Recompra / Rematrícula / Retorno. Sem RGM → não grava. Data e série fora.
+- **Arquivos:** `data/marco-regulatorio.json`, `server/utils/marcoRegulatorio.js`. Gravação continua no fields noturno.
+
+### 2026-08-18 — Marco: data primeiro; Retorno usa prefixo do RGM
+- **Status:** **Supersedida** no mesmo dia pela entrada do corte por RGM sequencial (acima). Data SIAA não distingue pré/pós após remat; prefixo 46 misturava matrículas de 13/09 (Pré) e 15/09 (Pós).
+
 ### 2026-08-17 — Marco regulatório: id PROD + fields noturno grava Pré/Pós
 - **Modelo usado:** Composer.
 - **Campo CRM (PROD live):** label **Marco Regulatorio**, internal name **`marco_regulatorio_2`**, type **SELECT** (opções **Pré** / **Pós**), id **`cmst97c9q01a7mp019n6671ji`** → `NOVO_CRM_FIELD_MARCO` / `getNovoCrmDealFieldIds().marco`. Valor escrito **exatamente** `Pré` / `Pós`.
 - **Decisão:** o `mode=fields` da madrugada (`NOVO_CRM_FIELDS_SYNC_ENABLED=1`, ~05:00 BRT) já chamava `marcoFieldPair`; faltava o id. Com o JSON PROD preenchido, o job noturno marca quem tem match SIAA. Sem classificação (tipo indefinido / sem data) **não grava** (deixa vazio).
-- **Regras:** `data/marco-regulatorio.json` + `server/utils/marcoRegulatorio.js`. **Todos** os tipos com data (Nova, Recompra, Rematrícula, Retorno): Data Matrícula **antes de 2025-09-15** → Pré; **15/09 ou depois** → Pós. Série deixou de ser critério (pedido 17/08 tarde). Docker **deve** `COPY data/marco-regulatorio.json`.
+- **Regras:** `data/marco-regulatorio.json` + `data/marco-pre-rgms.json` + `server/utils/marcoRegulatorio.js`. **Supersedido 18/08 (noite):** lista 2025/2 (ver entrada do dia). Docker **deve** `COPY` os dois JSON.
 - **Ops:** merge `main` + rebuild **antes** do fields das 05:00. Não setar `NOVO_CRM_FIELD_MARCO=-` no Easypanel. Att manual `flags_stage` **não** grava este campo (`doFields=false`); é o fields noturno (ou `mode=both`).
 - **Não mudou:** cron de provisionamento continua OFF.
 

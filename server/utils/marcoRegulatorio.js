@@ -1,161 +1,112 @@
 /**
- * Marco regulatório (grade curricular) a partir da linha do snapshot SIAA diário.
+ * Marco regulatório (grade curricular) a partir da lista 2025/2.
  *
- * Regras (data/marco-regulatorio.json):
- *   Nova / Recompra / Rematrícula / Retorno → Data Matrícula < 2025-09-15 → Pré;
- *   na data do marco ou depois → Pós. Sem data → não grava.
+ * Pré = RGM da base matriculados_25.2.xlsx:
+ *   - VETERANO: todos
+ *   - INGRESSANTE com Data Matrícula ≤ 2025-09-13
+ * Quem está nessa lista e ainda no SIAA atual → Pré. O resto → Pós.
+ * Sem RGM → não grava. Match só por RGM (Retorno com RGM novo não herda Pré do CPF).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { toIsoDate } from './dateParser.js';
 import {
   classifyTipoMatricula,
   tipoMatriculaFromRow,
 } from './matriculadosTipoMatricula.js';
+import { normalizeRgm } from './novoCrmCacheNormalize.js';
 
-const CONFIG_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  'data',
-  'marco-regulatorio.json'
-);
+const DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'data');
+const CONFIG_PATH = path.join(DATA_DIR, 'marco-regulatorio.json');
 
 const DEFAULTS = {
-  cutoff: '2025-09-15',
+  cutoff: '2025-09-13',
   labels: { pre: 'Pré', pos: 'Pós' },
-  retornoForcesPre: false,
-  dateBasedTipos: ['novos', 'recompra', 'rematricula', 'regresso'],
-  rematricula: { posMaxSerie: 2, preMinSerie: 4, serie3: 'pre' },
+  preListFile: 'marco-pre-rgms.json',
 };
 
-let cached;
+let cachedCfg;
+let cachedList;
 
 export function loadMarcoRegulatorioConfig() {
-  if (cached) return cached;
+  if (cachedCfg) return cachedCfg;
   let file = {};
   try {
     file = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   } catch {
     file = {};
   }
-  const remat = { ...DEFAULTS.rematricula, ...(file.rematricula || {}) };
-  cached = {
+  cachedCfg = {
     ...DEFAULTS,
     ...file,
     labels: { ...DEFAULTS.labels, ...(file.labels || {}) },
-    dateBasedTipos: Array.isArray(file.dateBasedTipos)
-      ? file.dateBasedTipos
-      : DEFAULTS.dateBasedTipos,
-    rematricula: remat,
   };
-  return cached;
+  return cachedCfg;
+}
+
+function loadPreList() {
+  if (cachedList) return cachedList;
+  const cfg = loadMarcoRegulatorioConfig();
+  const listPath = path.join(DATA_DIR, cfg.preListFile || DEFAULTS.preListFile);
+  let file = { rgms: [] };
+  try {
+    file = JSON.parse(fs.readFileSync(listPath, 'utf8'));
+  } catch {
+    file = { rgms: [] };
+  }
+  cachedList = {
+    rgms: new Set((file.rgms || []).map((x) => normalizeRgm(x)).filter(Boolean)),
+  };
+  return cachedList;
 }
 
 /** Só testes / reload após editar o JSON. */
 export function resetMarcoRegulatorioConfigCache() {
-  cached = undefined;
+  cachedCfg = undefined;
+  cachedList = undefined;
 }
 
-export function serieFromRow(row) {
-  if (!row || typeof row !== 'object') return null;
-  const raw =
-    row.serie ??
-    row.Serie ??
-    row.Série ??
-    row['Série'] ??
-    row['Serie'] ??
-    row.SERIE ??
-    row['Série/Período'] ??
-    '';
-  const s = String(raw).trim();
-  if (!s) return null;
-  // Upload SIAA: serial Excel 1..N vira data US "1/3/00" / "1/10/00".
-  const excelLeak = s.match(/^1\/(\d{1,2})\/(?:00|1900)$/);
-  if (excelLeak) {
-    const n = Number(excelLeak[1]);
-    return Number.isInteger(n) && n > 0 ? n : null;
-  }
-  const m = s.match(/(\d+)/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-function dataMatriculaIso(row) {
+function rgmFromRow(row) {
   if (!row || typeof row !== 'object') return '';
-  const raw =
-    row.data_mat ??
-    row['Data Mat'] ??
-    row['Data Matrícula'] ??
-    row['Data matrícula'] ??
-    row.data_matricula ??
-    row['Data Matricula'] ??
-    row['Data da Matricula'] ??
-    row['Data de Matrícula'] ??
-    '';
-  return toIsoDate(raw) || '';
+  return normalizeRgm(
+    row.RGM ??
+      row.rgm ??
+      row.Rgm ??
+      row.RGM_ALUN ??
+      row.RGM_ALUNO ??
+      row['RGM Aluno'] ??
+      row['RGM ALUNO'] ??
+      ''
+  );
 }
 
-function byDate(row, cfg) {
-  const key = dataMatriculaIso(row);
-  if (!key) return { value: null, label: null, reason: 'sem_data' };
-  if (key < cfg.cutoff) {
-    return { value: 'pre', label: cfg.labels.pre, reason: 'data_antes_marco' };
-  }
-  return { value: 'pos', label: cfg.labels.pos, reason: 'data_desde_marco' };
-}
-
-function bySerieRemat(serie, cfg) {
-  const remat = cfg.rematricula;
-  if (serie == null) return { value: null, label: null, reason: 'remat_sem_serie' };
-  if (serie <= remat.posMaxSerie) {
-    return { value: 'pos', label: cfg.labels.pos, reason: 'remat_serie_pos' };
-  }
-  if (serie >= remat.preMinSerie) {
-    return { value: 'pre', label: cfg.labels.pre, reason: 'remat_serie_pre' };
-  }
-  const s3 = String(remat.serie3 || 'indefinido').toLowerCase();
-  if (s3 === 'pre') {
-    return { value: 'pre', label: cfg.labels.pre, reason: 'remat_serie3_pre' };
-  }
-  if (s3 === 'pos' || s3 === 'pós') {
-    return { value: 'pos', label: cfg.labels.pos, reason: 'remat_serie3_pos' };
-  }
-  return { value: null, label: null, reason: 'remat_serie3_indefinido' };
+export function rgmNumericFromRow(row) {
+  const rgm = rgmFromRow(row);
+  if (!rgm) return null;
+  const n = Number(rgm);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 /**
  * @param {Record<string, unknown>} row linha do snapshot matriculados
- * @returns {{ value: 'pre'|'pos'|null, label: string|null, reason: string, tipo: string, serie: number|null }}
+ * @returns {{ value: 'pre'|'pos'|null, label: string|null, reason: string, tipo: string, rgm: number|null }}
  */
 export function classifyMarcoRegulatorio(row) {
   const cfg = loadMarcoRegulatorioConfig();
+  const list = loadPreList();
   const tipo = classifyTipoMatricula(tipoMatriculaFromRow(row));
-  const serie = serieFromRow(row);
-  const base = { tipo, serie };
+  const rgm = rgmNumericFromRow(row);
+  const rgmStr = rgmFromRow(row);
+  const base = { tipo, rgm };
 
-  if (cfg.retornoForcesPre && tipo === 'regresso') {
-    return { ...base, value: 'pre', label: cfg.labels.pre, reason: 'retorno' };
+  if (!rgmStr) {
+    return { ...base, value: null, label: null, reason: 'sem_rgm' };
   }
-  if ((cfg.dateBasedTipos || []).includes(tipo)) {
-    return { ...base, ...byDate(row, cfg) };
+  if (list.rgms.has(rgmStr)) {
+    return { ...base, value: 'pre', label: cfg.labels.pre, reason: 'lista_2025_2' };
   }
-  if (tipo === 'rematricula' || tipo === 'regresso') {
-    if (serie == null && tipo === 'regresso') {
-      const dated = byDate(row, cfg);
-      return { ...base, ...dated, reason: `retorno_${dated.reason}` };
-    }
-    const bySerie = bySerieRemat(serie, cfg);
-    return {
-      ...base,
-      ...bySerie,
-      reason: tipo === 'regresso' ? `retorno_${bySerie.reason}` : bySerie.reason,
-    };
-  }
-  return { ...base, value: null, label: null, reason: 'tipo_indefinido' };
+  return { ...base, value: 'pos', label: cfg.labels.pos, reason: 'fora_lista_2025_2' };
 }
 
 /** Par {fieldId,value} para PUT, ou null se campo ausente / classificação vazia. */
