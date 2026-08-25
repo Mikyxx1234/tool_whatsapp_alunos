@@ -290,6 +290,31 @@ export async function loadOpenCaaIdSet() {
 }
 
 /**
+ * Identidades que **já apareceram** em qualquer upload CAA (`caa_protocols`,
+ * qualquer status). O XLSX do dia é D−1: quem estava ontem não vem hoje —
+ * não dá para usar o snapshot diário como “ainda está / saiu”.
+ * Chaves `cpf:` (11 dígitos) / `rgm:` — mesmo formato de `loadIdSetFromBase`.
+ * @returns {Promise<Set<string>>}
+ */
+export async function loadSeenCaaIdSet() {
+  const { rows } = await query(`
+    select cpf, rgm, data
+      from caa_protocols
+  `);
+  const set = new Set();
+  for (const p of rows) {
+    const data = p?.data && typeof p.data === 'object' ? p.data : {};
+    const cpfRaw = String(p.cpf || data.CPF || data.cpf || '').replace(/\D/g, '');
+    const rgm = String(p.rgm || data.RGM || data.rgm || '').replace(/\D/g, '');
+    const cpf =
+      cpfRaw.length >= 9 && cpfRaw.length <= 11 ? cpfRaw.padStart(11, '0') : cpfRaw;
+    if (cpf.length === 11) set.add(`cpf:${cpf}`);
+    if (rgm) set.add(`rgm:${rgm}`);
+  }
+  return set;
+}
+
+/**
  * @param {Map<string, Date>} t0Map
  * @param {string} cpf
  * @param {string} rgm

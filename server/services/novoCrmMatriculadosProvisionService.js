@@ -27,9 +27,9 @@ import * as caaProtocolsRepo from '../repositories/caaProtocolsRepository.js';
 import * as apiSourceRepo from '../repositories/novoCrmPersonApiSourceRepository.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
+  caaClassifyCtx,
   classifyMatriculado,
   getNovoCrmDealFieldIds,
-  isCaaWithinRetencaoWindow,
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -38,6 +38,7 @@ import {
   resolveSituacaoCrm,
 } from '../utils/novoCrmFieldMapping.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
+import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 import { normalizeCpf } from '../utils/novoCrmCacheNormalize.js';
 import { tipoMatriculaFromRow } from '../utils/matriculadosTipoMatricula.js';
 import {
@@ -297,9 +298,10 @@ export async function runMatriculadosProvision(opts = {}) {
     status_message: `Carregando bases (mode=${mode})…`,
   });
 
-  const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, caaSeen, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
     caaProtocolsRepo.loadOpenCaaT0Map(),
+    caaProtocolsRepo.loadSeenCaaIdSet(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('financeiro'),
@@ -405,9 +407,13 @@ export async function runMatriculadosProvision(opts = {}) {
       { fieldId: fieldIds.cpf, value: digits(mapped.cpf) },
       digits(mapped.rgm) ? { fieldId: fieldIds.rgm, value: digits(mapped.rgm) } : null,
       mapped.curso ? { fieldId: fieldIds.curso, value: mapped.curso } : null,
-      mapped.data_matricula && fieldIds.data_matricula
-        ? { fieldId: fieldIds.data_matricula, value: mapped.data_matricula }
-        : null,
+      ...(() => {
+        const fixa = fixaDateFieldPairs(fieldIds, digits(mapped.rgm));
+        if (fixa.length) return fixa;
+        return mapped.data_matricula && fieldIds.data_matricula
+          ? [{ fieldId: fieldIds.data_matricula, value: mapped.data_matricula }]
+          : [];
+      })(),
       marcoFieldPair(fieldIds, row),
       mapped.polo
         ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo }
@@ -432,6 +438,7 @@ export async function runMatriculadosProvision(opts = {}) {
       fieldIds.financeiro
         ? { fieldId: fieldIds.financeiro, value: simNao(classification.flags.financeiro) }
         : null,
+      fieldIds.caa ? { fieldId: fieldIds.caa, value: simNao(classification.flags.caa) } : null,
       { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
       { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
       fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
@@ -526,9 +533,9 @@ export async function runMatriculadosProvision(opts = {}) {
         rgm,
         classification: classifyMatriculado(r, {
           inRematricula: inSet(remat, cpf, rgm),
-          inCaaFresh: isCaaWithinRetencaoWindow(
-            caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm)
-          ),
+          ...caaClassifyCtx(caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm), {
+            seen: inSet(caaSeen, cpf, rgm),
+          }),
           inDoc: inSet(doc, cpf, rgm),
           inInad: inSet(inad, cpf, rgm),
           inFinanceiro: inSet(fin, cpf, rgm),

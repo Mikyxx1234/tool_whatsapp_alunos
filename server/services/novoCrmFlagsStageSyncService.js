@@ -79,6 +79,7 @@ import {
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
+import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -122,6 +123,7 @@ const SIAA_ATUALIZADO_FIELD_KEYS = [
   'email_ad',
   'nasc',
   'data_matricula',
+  'data_rematricula',
   'marco',
 ];
 
@@ -237,6 +239,19 @@ function identityInIndex(index, identity = {}) {
   if (email && index.email.has(email)) return true;
   if (phone && index.phone.has(phone)) return true;
   return false;
+}
+
+/** Índice satélite a partir do set `cpf:` / `rgm:` (visto em CAA, qualquer status). */
+function identityIndexFromCaaIdSet(idSet) {
+  const index = { cpf: new Set(), rgm: new Set(), email: new Set(), phone: new Set(), nRows: 0 };
+  if (!idSet || typeof idSet.values !== 'function') return index;
+  for (const key of idSet) {
+    const s = String(key);
+    if (s.startsWith('cpf:')) index.cpf.add(s.slice(4));
+    else if (s.startsWith('rgm:')) index.rgm.add(s.slice(4));
+  }
+  index.nRows = Math.max(index.cpf.size, index.rgm.size);
+  return index;
 }
 
 /** Ratio mínimo nRows/simCount pra permitir saída (Sim→Não / sair de Sem Rematricula). */
@@ -522,9 +537,10 @@ export async function runFlagsStageSync(opts = {}) {
   }
 
   const matLookups = { byRgm, byCpf };
-  const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, caaSeenSet, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdentityIndexFromBase('rematricula', matLookups),
     caaProtocolsRepo.loadOpenCaaT0Map(),
+    caaProtocolsRepo.loadSeenCaaIdSet(),
     loadIdentityIndexFromBase('docs-pendentes', matLookups),
     loadIdentityIndexFromBase('inadimplentes-vencidos', matLookups),
     loadIdentityIndexFromBase('financeiro', matLookups),
@@ -532,6 +548,7 @@ export async function runFlagsStageSync(opts = {}) {
     loadIdentityIndexFromBase('provavel-evasao', matLookups),
   ]);
   const caaRetencaoHours = getCaaRetencaoHours();
+  const caaSeen = identityIndexFromCaaIdSet(caaSeenSet);
   const stageIds = getNovoCrmStageIds();
   const retencaoStageId = String(stageIds.Retenção || '').trim();
   const semRematStageId = String(stageIds['Sem Rematricula'] || '').trim();
@@ -676,9 +693,12 @@ export async function runFlagsStageSync(opts = {}) {
       const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
       const inCaaOpen = Boolean(caaT0);
       const inCaaFresh = isCaaWithinRetencaoWindow(caaT0);
+      const inCaaSeen = identityInIndex(caaSeen, identity);
       const classification = classifyMatriculado(matRow, {
         inRematricula: identityInIndex(remat, identity),
+        inCaaOpen,
         inCaaFresh,
+        inCaaSeen,
         inDoc: identityInIndex(doc, identity),
         inInad: identityInIndex(inad, identity),
         inFinanceiro: identityInIndex(fin, identity),
@@ -720,6 +740,11 @@ export async function runFlagsStageSync(opts = {}) {
             ['acessoblack', 'acesso black'],
           ],
           [fieldIds.evasao, simNao(classification.flags.evasao), ['evasao', 'evasão']],
+          [
+            fieldIds.caa,
+            simNao(classification.flags.caa),
+            ['caa', 'processos caa', 'processos-caa'],
+          ],
         ];
         for (const [fieldId, value, names] of flagPairs) {
           if (!fieldId) continue;
@@ -747,7 +772,10 @@ export async function runFlagsStageSync(opts = {}) {
         if (mapped.curso && fieldIds.curso) {
           fieldValues.push({ fieldId: fieldIds.curso, value: mapped.curso });
         }
-        if (mapped.data_matricula && fieldIds.data_matricula) {
+        const fixaDates = fixaDateFieldPairs(fieldIds, digits(mapped.rgm));
+        if (fixaDates.length) {
+          fieldValues.push(...fixaDates);
+        } else if (mapped.data_matricula && fieldIds.data_matricula) {
           fieldValues.push({
             fieldId: fieldIds.data_matricula,
             value: mapped.data_matricula,
@@ -866,6 +894,7 @@ export async function runFlagsStageSync(opts = {}) {
             unknown_stage: d.unknown,
             in_caa_fresh: inCaaFresh,
             in_caa_open: inCaaOpen,
+            in_caa_seen: inCaaSeen,
             flags: classification.flags,
             flags_would_write: flagValues.length,
             situacao_sem_remat_would_write: semRematSituacaoValues.length > 0,
@@ -988,6 +1017,8 @@ export async function runFlagsStageSync(opts = {}) {
             index: bb,
           },
           { key: 'evasao', fieldId: fieldIds.evasao, names: ['evasao', 'evasão'], index: evasao },
+          // CAA NÃO entra no passo inverso: o XLSX é D−1 (quem estava ontem
+          // não está hoje). Sim é sticky em quem já apareceu em caa_protocols.
         ]
       : [];
 
@@ -1253,9 +1284,12 @@ export async function runFlagsStageSync(opts = {}) {
         const caaT0 = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpf, rgm);
         const inCaaOpen = Boolean(caaT0);
         const inCaaFresh = isCaaWithinRetencaoWindow(caaT0);
+        const inCaaSeen = identityInIndex(caaSeen, exitIdentity);
         const classification = classifyMatriculado(c.matRow, {
           inRematricula: false,
+          inCaaOpen,
           inCaaFresh,
+          inCaaSeen,
           inDoc: identityInIndex(doc, exitIdentity),
           inInad: identityInIndex(inad, exitIdentity),
           inFinanceiro: identityInIndex(fin, exitIdentity),
@@ -1509,6 +1543,8 @@ export async function runFlagsStageSync(opts = {}) {
     live_stage: liveStage,
     caa_retencao_hours: caaRetencaoHours,
     caa_open_ids: caaT0Map.size,
+    caa_seen_ids: caaSeenSet.size,
+    caa_seen_people: caaSeen.nRows,
     stages_by_target: stagesByTarget,
     errors,
     aborted,

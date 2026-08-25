@@ -5,6 +5,26 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-24 — Flag CAA (Sim/Não) ≠ etapa Retenção (só 72h)
+- **Modelo usado:** Grok.
+- **Pedido:** botão no deal (como Dia 10 / docs). Quem **já apareceu** em CAA = **Sim** (gruda). **Retenção** só se estiver na janela de **72h** (`NOVO_CRM_CAA_RETENCAO_HOURS`).
+- **Campo CRM (PROD live):** label **CAA**, internal name **`caa`**, type **SELECT**, id **`cmt7ndc0k00nnp801ngjfqf98`** → `NOVO_CRM_FIELD_CAA` / `getNovoCrmDealFieldIds().caa`. Opção na UI hoje **Sim** (igual Dia 10). Att grava **Sim** em quem já apareceu; **não** faz Sim→Não. Sem id = Att **não grava**.
+- **Por que sticky:** o export CAA é **relatório diário D−1** — quem estava ontem **não** está hoje; ausência no arquivo **não** é saída. Não usar o snapshot do dia como índice de exit nem o sanity 70% dele.
+- **Regra:**
+  1. **Flag Sim** = identidade em `caa_protocols` (qualquer status; histórico de uploads). Att **não** faz Sim→Não nesta flag.
+  2. **Etapa Retenção** = `status=open` **e** T0=`first_seen_at` ≤ 72h. Fora da janela segue SIAA. Retenção sem CAA open = keep (manual).
+- **Onde grava:** Att `flags_stage` / `both` (não o fields noturno). Provision `mode=new` e órfãos também, se o id existir.
+- **Não mudou:** Cancel/Tranc SIAA vence CAA. Intocáveis Ganho/Cancelado/Em Atendimento. Cron FLAGS continua OFF.
+
+### 2026-08-24 — Fixa de datas: 1ª aparição = Matrícula; última diferente = Rematrícula
+- **Modelo usado:** Grok.
+- **Problema:** a Relação do dia **sobrescreve** Data Matrícula com a data da rematrícula. O fields noturno gravava essa data no CRM e apagava o histórico (ex. Sueli `41301854`: 1ª matrícula **2024-09-06**, CRM tinha **2025-12-19**).
+- **Campo CRM (PROD live):** label **Data de Rematricula**, internal name **`data_de_rematricula`**, type **TEXT**, id **`cmt7bc5opxal0la01nad5ahj5`** → `NOVO_CRM_FIELD_DATA_REMATRICULA` / `getNovoCrmDealFieldIds().data_rematricula`. Data de Matrícula continua DATE `data_de_matricula`. Valor escrito **ISO `YYYY-MM-DD`** nos dois. Vazio de rematrícula **não** limpa em massa.
+- **Fonte:** Relação histórica 2022.1→2026.1 (Downloads) + Relação 2026.2 do dia (snapshot matriculados). Por **RGM**: 1ª aparição = Data de Matrícula; aparição posterior com data **diferente** = rematriculou; última data = Data Rematrícula. Uma só aparição: preenche matrícula, rematrícula vazia. **Não** reclassifica tipo do card (quem rematriculou permanece Rematrícula mesmo com data antiga recuperada).
+- **Persistência:** `data/fixa-matricula-dates.json` (~89.776 RGMs; ~37k ainda na Relação 2026.2; ~41k rematriculou). Builder `scripts/build-fixa-matricula-dates.mjs`. Loader `server/utils/fixaMatriculaDates.js`. Overlay no fields noturno, provision `mode=new` e órfãos: Fixa vence Relação; sem RGM na Fixa cai no fallback Relação.
+- **Ops:** apply `scripts/novo-crm-fixa-dates-apply.mjs` (RGM no deal, rate 4, conc 2). Docker **deve** `COPY data/fixa-matricula-dates.json`. Merge `main` + rebuild **antes** do fields das 05:00 — senão a Relação do dia volta a stomp Data de Matrícula.
+- **Não mudou:** Marco Pré/Pós (lista RGM-only). Tipo de matrícula no card.
+
 ### 2026-08-19 — Marco: arquivo 25.2 certo (substitui o de 18/08)
 - **Modelo usado:** Grok.
 - **Problema:** o `matriculados_25.2.xlsx` de 18/08 era o relatório errado. SIAA marcava calouro 2026 como VETERANO (data jul/2026; RGM > `46415114`) e o apply gravou **Pré** (~15.671 deals). Ex.: Beatriz #105559 RGM `48654973`.

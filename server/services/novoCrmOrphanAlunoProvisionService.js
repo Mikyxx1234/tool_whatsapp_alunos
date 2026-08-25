@@ -36,15 +36,16 @@ import {
   normalizeRgm,
 } from '../utils/novoCrmCacheNormalize.js';
 import {
+  caaClassifyCtx,
   classifyMatriculado,
   getNovoCrmDealFieldIds,
   getNovoCrmStageIds,
-  isCaaWithinRetencaoWindow,
   isUntouchableStageId,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
+import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
   addTagToDeal,
@@ -775,9 +776,13 @@ function buildDealValues(fieldIds, mapped, row, classification) {
     digits(mapped.cpf) ? { fieldId: fieldIds.cpf, value: digits(mapped.cpf) } : null,
     digits(mapped.rgm) ? { fieldId: fieldIds.rgm, value: digits(mapped.rgm) } : null,
     mapped.curso ? { fieldId: fieldIds.curso, value: mapped.curso } : null,
-    mapped.data_matricula && fieldIds.data_matricula
-      ? { fieldId: fieldIds.data_matricula, value: mapped.data_matricula }
-      : null,
+    ...(() => {
+      const fixa = fixaDateFieldPairs(fieldIds, digits(mapped.rgm));
+      if (fixa.length) return fixa;
+      return mapped.data_matricula && fieldIds.data_matricula
+        ? [{ fieldId: fieldIds.data_matricula, value: mapped.data_matricula }]
+        : [];
+    })(),
     marcoFieldPair(fieldIds, row),
     mapped.polo ? { fieldId: fieldIds.polo, value: titleCasePolo(mapped.polo) || mapped.polo } : null,
     (() => {
@@ -797,6 +802,7 @@ function buildDealValues(fieldIds, mapped, row, classification) {
     fieldIds.financeiro
       ? { fieldId: fieldIds.financeiro, value: simNao(classification.flags.financeiro) }
       : null,
+    fieldIds.caa ? { fieldId: fieldIds.caa, value: simNao(classification.flags.caa) } : null,
     { fieldId: fieldIds.acessoblack, value: simNao(classification.flags.acessoblack) },
     { fieldId: fieldIds.evasao, value: simNao(classification.flags.evasao) },
     fieldIds.atualizado ? { fieldId: fieldIds.atualizado, value: 'Sim' } : null,
@@ -1275,9 +1281,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
   }
 
   beginPhase('load_bases', 0, 'Carregando bases satélite…');
-  const [remat, caaT0Map, doc, inad, fin, bb, evasao] = await Promise.all([
+  const [remat, caaT0Map, caaSeen, doc, inad, fin, bb, evasao] = await Promise.all([
     loadIdSetFromBase('rematricula'),
     caaProtocolsRepo.loadOpenCaaT0Map(),
+    caaProtocolsRepo.loadSeenCaaIdSet(),
     loadIdSetFromBase('docs-pendentes'),
     loadIdSetFromBase('inadimplentes-vencidos'),
     loadIdSetFromBase('financeiro'),
@@ -1738,9 +1745,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
         dealsWouldCreateOnSibling += 1;
         const classification = classifyMatriculado(it.row, {
           inRematricula: inSet(remat, it.cpf, it.rgm),
-          inCaaFresh: isCaaWithinRetencaoWindow(
-            caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm)
-          ),
+          ...caaClassifyCtx(caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm), {
+            seen: inSet(caaSeen, it.cpf, it.rgm),
+          }),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
           inFinanceiro: inSet(fin, it.cpf, it.rgm),
@@ -1815,9 +1822,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
         dealsWouldCreateOnOrphan += 1;
         const classification = classifyMatriculado(it.row, {
           inRematricula: inSet(remat, it.cpf, it.rgm),
-          inCaaFresh: isCaaWithinRetencaoWindow(
-            caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm)
-          ),
+          ...caaClassifyCtx(caaProtocolsRepo.lookupCaaT0(caaT0Map, it.cpf, it.rgm), {
+            seen: inSet(caaSeen, it.cpf, it.rgm),
+          }),
           inDoc: inSet(doc, it.cpf, it.rgm),
           inInad: inSet(inad, it.cpf, it.rgm),
           inFinanceiro: inSet(fin, it.cpf, it.rgm),

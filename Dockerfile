@@ -41,6 +41,8 @@ COPY --chown=node:node --from=builder /app/data/novo-crm-prod-ids.json ./data/no
 # Regras Pré/Pós (lista 2025/2). Sem o arquivo, marcoRegulatorio.js usa defaults.
 COPY --chown=node:node --from=builder /app/data/marco-regulatorio.json ./data/marco-regulatorio.json
 COPY --chown=node:node --from=builder /app/data/marco-pre-rgms.json ./data/marco-pre-rgms.json
+# Fixa datas (1ª aparição = matrícula; última = rematrícula).
+COPY --chown=node:node --from=builder /app/data/fixa-matricula-dates.json ./data/fixa-matricula-dates.json
 
 EXPOSE 3001
 

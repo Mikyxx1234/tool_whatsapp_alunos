@@ -101,6 +101,19 @@ export function isCaaWithinRetencaoWindow(t0, now = new Date()) {
 }
 
 /**
+ * Flag CAA = já apareceu em algum upload (sticky Sim). Etapa Retenção = open ≤72h.
+ * @param {Date|null|undefined} t0
+ * @param {{ now?: Date, seen?: boolean }} [opts]
+ */
+export function caaClassifyCtx(t0, opts = {}) {
+  const now = opts.now || new Date();
+  const inCaaOpen = Boolean(t0 && t0 instanceof Date && !Number.isNaN(t0.getTime()));
+  const inCaaFresh = isCaaWithinRetencaoWindow(t0, now);
+  const inCaaSeen = opts.seen !== undefined ? Boolean(opts.seen) : inCaaOpen;
+  return { inCaaOpen, inCaaFresh, inCaaSeen };
+}
+
+/**
  * Etapas que o job NÃO move (humano/IA). Flags/campos SIAA ainda podem ser atualizados.
  * - Ganho / Cancelado: terminais de negócio
  * - Em Atendimento: fila operacional do consultor (só campos, sem tirar da etapa)
@@ -144,6 +157,8 @@ export function getNovoCrmDealFieldIds() {
     nasc: envId('NOVO_CRM_FIELD_NASC', 'cmq579tb1003bvemcck96lhwx'),
     // PROD: DATE `data_de_matricula` / label "Data de Matrícula".
     data_matricula: envId('NOVO_CRM_FIELD_DATA_MATRICULA', ''),
+    // PROD: TEXT `data_de_rematricula` / label "Data de Rematricula".
+    data_rematricula: envId('NOVO_CRM_FIELD_DATA_REMATRICULA', ''),
     // SELECT Pré/Pós — PROD live 2026-08-17: label "Marco Regulatorio",
     // name `marco_regulatorio_2`, id `cmst97c9q01a7mp019n6671ji`.
     // Vazio (sem env/JSON) = não grava.
@@ -155,6 +170,9 @@ export function getNovoCrmDealFieldIds() {
     // Financeiro (base slug `financeiro`) → PROD custom field label "Dia 10", name `dia` (SELECT Sim/Não).
     // NÃO é um field name `financeiro` — ver NOVO_CRM_FIELD_FINANCEIRO no JSON/env.
     financeiro: envId('NOVO_CRM_FIELD_FINANCEIRO', ''),
+    // CAA open (qualquer idade) → etapa Retenção só ≤72h.
+    // Flag Sim = já apareceu (caa_protocols, sticky — ver inCaaSeen). Sem id = não grava.
+    caa: envId('NOVO_CRM_FIELD_CAA', ''),
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
     // PROD: "Atualizado?" — Sim só com escrita de campos SIAA (não stage/flags-only).
     atualizado: envId('NOVO_CRM_FIELD_ATUALIZADO', ''),
@@ -244,7 +262,9 @@ export function resolveAcolhimentoWindow(matRow, now = new Date()) {
  * @param {{
  *   inRematricula?: boolean,
  *   inCaa?: boolean,
+ *   inCaaOpen?: boolean,
  *   inCaaFresh?: boolean,
+ *   inCaaSeen?: boolean,
  *   inDoc?: boolean,
  *   inInad?: boolean,
  *   inFinanceiro?: boolean,
@@ -277,6 +297,12 @@ export function classifyMatriculado(matRow, ctx) {
   // passam inCaaFresh; inCaa legado só conta se inCaaFresh não veio.
   const inCaaFresh =
     ctx.inCaaFresh !== undefined ? Boolean(ctx.inCaaFresh) : Boolean(ctx.inCaa);
+  const inCaaOpen =
+    ctx.inCaaOpen !== undefined ? Boolean(ctx.inCaaOpen) : Boolean(inCaaFresh);
+  // Flag sticky: já apareceu em qualquer dia. Sem inCaaSeen, cai no open
+  // (callers antigos). Nunca usar o XLSX D−1 como “saiu”.
+  const inCaaSeen =
+    ctx.inCaaSeen !== undefined ? Boolean(ctx.inCaaSeen) : Boolean(inCaaOpen);
 
   const stages = getNovoCrmStageIds();
   /** @type {string} */
@@ -306,6 +332,8 @@ export function classifyMatriculado(matRow, ctx) {
       financeiro: Boolean(ctx.inFinanceiro),
       acessoblack: Boolean(ctx.inBb),
       evasao: Boolean(ctx.inEvasao),
+      // Sim se já apareceu em CAA (qualquer status/idade). Retenção = só inCaaFresh.
+      caa: inCaaSeen,
     },
     meta: {
       situacao,
@@ -318,8 +346,10 @@ export function classifyMatriculado(matRow, ctx) {
       inAcolhimento,
       acolhimentoAte,
       inRematricula: Boolean(ctx.inRematricula),
-      inCaa: inCaaFresh,
+      inCaa: inCaaOpen,
+      inCaaOpen,
       inCaaFresh,
+      inCaaSeen,
       cpf: digits(pick(matRow, ['CPF', 'cpf'])),
       rgm: digits(pick(matRow, ['RGM', 'rgm'])),
     },

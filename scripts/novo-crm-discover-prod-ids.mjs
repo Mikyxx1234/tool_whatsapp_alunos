@@ -105,9 +105,11 @@ const EXACT_FIELD = {
   cpf: 'NOVO_CRM_FIELD_CPF',
   rgm: 'NOVO_CRM_FIELD_RGM',
   curso: 'NOVO_CRM_FIELD_CURSO',
-  data_de_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
+    data_de_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   datadematricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   data_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
+  data_de_rematricula: 'NOVO_CRM_FIELD_DATA_REMATRICULA',
+  datarematricula: 'NOVO_CRM_FIELD_DATA_REMATRICULA',
   marco: 'NOVO_CRM_FIELD_MARCO',
   marco_regulatorio: 'NOVO_CRM_FIELD_MARCO',
   marcoregulatorio: 'NOVO_CRM_FIELD_MARCO',
@@ -134,6 +136,8 @@ const EXACT_FIELD = {
   'dia_10': 'NOVO_CRM_FIELD_FINANCEIRO',
   financeiro: 'NOVO_CRM_FIELD_FINANCEIRO',
   evasao: 'NOVO_CRM_FIELD_EVASAO',
+  caa: 'NOVO_CRM_FIELD_CAA',
+  processos_caa: 'NOVO_CRM_FIELD_CAA',
 };
 
 /** @type {Map<string, string>} */
@@ -168,6 +172,11 @@ for (const f of fields) {
       n === 'financ')
   ) {
     envKey = 'NOVO_CRM_FIELD_FINANCEIRO';
+  } else if (
+    !fieldEnvMap.has('NOVO_CRM_FIELD_CAA') &&
+    (n === 'caa' || l === 'caa' || n === 'processos_caa' || l === 'processos caa')
+  ) {
+    envKey = 'NOVO_CRM_FIELD_CAA';
   } else if (!fieldEnvMap.has('NOVO_CRM_FIELD_EMAIL') && n === 'email') {
     envKey = 'NOVO_CRM_FIELD_EMAIL';
   } else if (
@@ -206,6 +215,7 @@ const flagFields = [
   'NOVO_CRM_FIELD_FINANCEIRO',
   'NOVO_CRM_FIELD_ACESSO_BLACK',
   'NOVO_CRM_FIELD_EVASAO',
+  'NOVO_CRM_FIELD_CAA',
 ];
 
 const missingStages = requiredStages.filter((k) => !stageEnvMap.has(k));
