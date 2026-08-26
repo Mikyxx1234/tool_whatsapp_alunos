@@ -298,6 +298,54 @@ async function liveDealForDedupe(dealId) {
 }
 
 /**
+ * Mesmo shape de `liveDealForDedupe`, lido do espelho (`novo_crm_person_cache`).
+ * Prévia (dry_run) usa isto — não satura a API. Conversas/notes não vêm no
+ * snapshot; o score ainda decide por dono + campos SIAA + e-mail/telefone.
+ */
+function cacheDealForDedupe(deal, row) {
+  const fields = deal?.customFields || deal?.dealPanelFields || [];
+  let filled = 0;
+  for (const f of fields) {
+    const name = String(f?.name || f?.label || '').trim().toLowerCase();
+    if (!DEDUPE_PANEL_FIELDS.includes(name)) continue;
+    if (f?.value != null && String(f.value).trim() !== '') filled += 1;
+  }
+  const contact = row?.raw_data?.contact || {};
+  return {
+    ok: true,
+    notFound: false,
+    dealId: String(deal.id),
+    number: deal.number ?? null,
+    title: deal.title || null,
+    stageId: String(deal?.stageId || deal?.stage?.id || '').trim(),
+    stageName: deal?.stageName || deal?.stage?.name || null,
+    rgm: dealCustomValue(deal, ['rgm']),
+    cpf: dealCustomValue(deal, ['cpf', 'documento', 'taxid']),
+    ownerId: deal.ownerId || deal.owner?.id || null,
+    filledFields: filled,
+    notes: 0,
+    createdAt: deal.createdAt || null,
+    contactId: String(row.contact_id || contact.id || ''),
+    contactName: row.nome || contact.name || null,
+    contactEmailOk: isPlausibleEmail(row.email_norm || contact.email),
+    contactPhoneOk: isPlausibleBrPhone(row.phone_norm || contact.phone),
+    conversations: 0,
+  };
+}
+
+function indexCacheDealsById(cacheRows) {
+  /** @type {Map<string, { deal: object, row: object }>} */
+  const map = new Map();
+  for (const row of cacheRows || []) {
+    for (const deal of dealsFromCacheRow(row)) {
+      const id = String(deal?.id || '').trim();
+      if (id) map.set(id, { deal, row });
+    }
+  }
+  return map;
+}
+
+/**
  * Score de sobrevivência de um card duplicado (maior vence).
  * Ordem acordada: dono → campos SIAA preenchidos → e-mail → telefone →
  * conversa (desempate) → mais antigo (fora do score, no sort).
@@ -2264,10 +2312,17 @@ export async function runOrphanAlunoProvision(opts = {}) {
     const groups = [...dealGroups.entries()];
     dupGroups = groups.length;
     counters.dup_groups = groups.length;
+    const cacheDealById = indexCacheDealsById(cacheRows);
+    const dupViaCache = Boolean(dryRun);
     beginPhase(
       'duplicates',
       groups.length,
-      `Conferindo ${groups.length} pessoas com 2+ cartões…`
+      dupViaCache
+        ? `Conferindo ${groups.length} pessoas no espelho…`
+        : `Conferindo ${groups.length} pessoas ao vivo…`
+    );
+    console.info(
+      `[novo-crm-orphan-provision] duplicates via=${dupViaCache ? 'cache' : 'live'} groups=${groups.length}`
     );
 
     /** Deals já “consumidos” como survivor/loser — evita reprocessar no mesmo run. */
@@ -2306,17 +2361,24 @@ export async function runOrphanAlunoProvision(opts = {}) {
       const groupRgm = isRgmGroup ? groupKey.slice(4) : '';
       const matchType = groupKey.slice(0, groupKey.indexOf(':'));
 
-      // Conferência ao vivo: espelho não decide sozinho quem morre.
+      // Prévia: só o espelho (Postgres). Apply: GET live — quem morre não
+      // pode sair de um snapshot stale.
       const live = [];
       let unknown = false;
       for (const c of pendingCands) {
-        const d = await liveDealForDedupe(c.dealId);
+        let d;
+        if (dupViaCache) {
+          const hit = cacheDealById.get(String(c.dealId));
+          d = hit ? cacheDealForDedupe(hit.deal, hit.row) : { ok: false, notFound: true };
+        } else {
+          d = await liveDealForDedupe(c.dealId);
+        }
         if (!d.ok) {
           if (d.notFound) dealNotFound += 1;
           unknown = true;
           break;
         }
-        if (DELAY_MS > 0) await sleep(DELAY_MS);
+        if (!dupViaCache && DELAY_MS > 0) await sleep(DELAY_MS);
         const liveRgm = normalizeRgm(d.rgm);
         // RGM vazio no live ainda entra (irmão sem fields no cache — herdou o grupo).
         // RGM diferente = outro curso, fora.

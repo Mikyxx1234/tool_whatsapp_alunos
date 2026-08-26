@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-26 — Prévia de duplicados lê o espelho, não a API
+- **Modelo usado:** Grok.
+- **Problema:** dry `scope=duplicates` fazia `GET /api/deals/:id` em todo cartão do grupo (~7,7k grupos × 2+ = ~15k req). Com rate 2 rps a prévia levava ~1–2 h. Os deals já estão em `novo_crm_person_cache`.
+- **Decisão:** **prévia (dry_run)** classifica survivor/loser pelo snapshot local (etapa, RGM/CPF, dono, campos, nome, e-mail, telefone). Conversas/notes não estão no espelho — peso menor no score. **Apply** continua GET live antes de mover para Perdido.
+- **Ops:** Parar a prévia live em andamento; merge `main` + rebuild. Próxima prévia deve fechar em segundos/minutos (CPU no Postgres), não horas na API.
+- **Não mudou:** apply ainda confirma ao vivo; intocáveis / Perdido / multi-RGM.
+
 ### 2026-08-25 — Att/sync mais lenta: não saturar o CRM
 - **Modelo usado:** Grok.
 - **Incidente:** Att `flags_stage` 25/08 ~11:03 BRT (backfill CAA Sim, fila 5509) com 5 workers + ~4 rps deixou o CRM EduIT lento/travado. Progresso congelou em 4300/5509 (fetch sem timeout). Cancel cooperativo às 11:41: `flags_updated=3707` · `stages_moved=76` · `cancelled=true`. ~1.8k restantes — próxima Att retoma (Sim já gravado não reescreve).
