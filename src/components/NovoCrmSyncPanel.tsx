@@ -1158,6 +1158,12 @@ export function NovoCrmSyncPanel() {
                   {lastDedupe.errors
                     ? ` · ${Number(lastDedupe.errors).toLocaleString('pt-BR')} erros`
                     : ''}
+                  {lastDedupe.tag_name ? ` · tag ${lastDedupe.tag_name}` : ''}
+                  {Number(lastDedupe.tags_failed || 0) > 0
+                    ? ` · ${Number(lastDedupe.tags_failed).toLocaleString('pt-BR')} sem tag`
+                    : lastDedupe.tags_applied
+                      ? ` · ${Number(lastDedupe.tags_applied).toLocaleString('pt-BR')} tags`
+                      : ''}
                 </p>
               </div>
             )}
@@ -1221,6 +1227,10 @@ export function NovoCrmSyncPanel() {
                     {dedupePreview.incomplete_enriched.toLocaleString('pt-BR')} campos preenchidos
                     {dedupePreview.errors
                       ? ` · ${dedupePreview.errors.toLocaleString('pt-BR')} falhas`
+                      : ''}
+                    {dedupePreview.tag_name ? ` · ${dedupePreview.tag_name}` : ''}
+                    {Number(dedupePreview.tags_failed || 0) > 0
+                      ? ` · ${Number(dedupePreview.tags_failed).toLocaleString('pt-BR')} sem tag`
                       : ''}
                   </p>
                 ) : (

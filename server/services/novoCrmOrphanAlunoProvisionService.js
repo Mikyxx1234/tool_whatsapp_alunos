@@ -50,6 +50,7 @@ import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
   addTagToDeal,
   createDeal,
+  ensureTagByName,
   findDealForContact,
   getDeal,
   isNovoCrmApiConfigured,
@@ -1025,6 +1026,42 @@ export async function runOrphanAlunoProvision(opts = {}) {
     const fieldIds = getNovoCrmDealFieldIds();
     const perdidoStageId = String(getNovoCrmStageIds().Perdido || '').trim();
     const tagName = String(plan.tag_name || limpezaDuplicataTagName()).trim();
+    let tagId = '';
+    try {
+      const ensured = await ensureTagByName(tagName);
+      tagId = ensured.tagId;
+    } catch (tagErr) {
+      const msg = tagErr?.message || String(tagErr);
+      const failed = {
+        ok: false,
+        cancelled: false,
+        dry_run: false,
+        status: 'failed',
+        error: msg,
+        scope,
+        tag_name: tagName,
+        tags_applied: 0,
+        tags_failed: 0,
+        errors: 1,
+        error_samples: [{ type: 'tag_create', error: msg }],
+      };
+      patchJob({
+        phase: 'done',
+        status: 'failed',
+        finished_at: new Date().toISOString(),
+        result: failed,
+        status_message: msg,
+      });
+      try {
+        await cacheRepo.saveOrphanDedupeLastRun({
+          ...failed,
+          finished_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn('[novo-crm-orphan-provision] save tag-fail apply failed:', err?.message || err);
+      }
+      return failed;
+    }
     let processed = 0;
     let movesApplied = 0;
     let incompleteMovesApplied = 0;
@@ -1033,6 +1070,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
     let skipped = 0;
     let errors = 0;
     let notFound = 0;
+    let tagsApplied = 0;
+    let tagsFailed = 0;
     const errorSamples = [];
 
     beginPhase('apply_plan', total, `Aplicando plano da prévia: ${moves.length} Perdido · ${fills.length} fills…`);
@@ -1126,13 +1165,22 @@ export async function runOrphanAlunoProvision(opts = {}) {
             await updateDealCustomFields(action.target_deal_id, values, { maxRetries: 4 });
           }
           try {
-            await addTagToDeal(action.target_deal_id, { tagName });
+            await addTagToDeal(action.target_deal_id, { tagId, tagName });
+            tagsApplied += 1;
           } catch (tagErr) {
+            tagsFailed += 1;
             console.warn(
               '[novo-crm-orphan-provision] planned tag failed',
               action.target_deal_id,
               tagErr?.message || tagErr
             );
+            if (errorSamples.length < 25) {
+              errorSamples.push({
+                type: 'tag',
+                deal_id: action.target_deal_id,
+                error: tagErr?.message || String(tagErr),
+              });
+            }
           }
           if (DELAY_MS > 0) await sleep(DELAY_MS);
         }
@@ -1230,6 +1278,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
       plan_fills_total: fills.length,
       plan_fills_applied: fillsApplied,
       plan_skipped: skipped,
+      tag_name: tagName,
+      tags_applied: tagsApplied,
+      tags_failed: tagsFailed,
       error_samples: errorSamples,
     };
     patchJob({
@@ -1269,6 +1320,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
           dup_deals_moved_perdido: duplicateMovesApplied,
           errors,
           deal_not_found: notFound,
+          tag_name: tagName,
+          tags_applied: tagsApplied,
+          tags_failed: tagsFailed,
         }),
       ]);
     } catch (err) {
@@ -1357,8 +1411,46 @@ export async function runOrphanAlunoProvision(opts = {}) {
   const liveCheck =
     opts.liveCheck != null ? Boolean(opts.liveCheck) : liveCheckEnv !== '0' && liveCheckEnv !== 'false';
   const concurrency = dryRun ? 1 : orphanConcurrency();
-  /** Tag de auditoria no deal movido a Perdido por limpeza (create-or-attach via tagName). BRT. */
+  /** Tag de auditoria no deal movido a Perdido por limpeza. BRT. */
   const limpezaDupTagName = limpezaDuplicataTagName();
+  let limpezaDupTagId = '';
+  if (!dryRun) {
+    try {
+      const ensured = await ensureTagByName(limpezaDupTagName);
+      limpezaDupTagId = ensured.tagId;
+    } catch (tagErr) {
+      const msg = tagErr?.message || String(tagErr);
+      const failed = {
+        ok: false,
+        cancelled: false,
+        dry_run: false,
+        status: 'failed',
+        error: msg,
+        scope,
+        tag_name: limpezaDupTagName,
+        tags_applied: 0,
+        tags_failed: 0,
+        errors: 1,
+        error_samples: [{ type: 'tag_create', error: msg }],
+      };
+      patchJob({
+        phase: 'done',
+        status: 'failed',
+        finished_at: new Date().toISOString(),
+        result: failed,
+        status_message: msg,
+      });
+      try {
+        await cacheRepo.saveOrphanDedupeLastRun({
+          ...failed,
+          finished_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn('[novo-crm-orphan-provision] save tag-fail apply failed:', err?.message || err);
+      }
+      return failed;
+    }
+  }
 
   /**
    * Card forçado pra Perdido (duplicata) não é fila de rematrícula: grava Situação
@@ -1397,15 +1489,20 @@ export async function runOrphanAlunoProvision(opts = {}) {
   }
 
   /**
-   * Best-effort: etapa Perdido já aplicada; falha de tag só loga.
+   * Best-effort: etapa Perdido já aplicada; falha de tag só loga + conta.
    * @param {string} dealId
    */
   async function tagLimpezaDuplicataBestEffort(dealId) {
     const id = String(dealId || '').trim();
     if (!id) return;
     try {
-      await addTagToDeal(id, { tagName: limpezaDupTagName });
+      await addTagToDeal(id, {
+        tagId: limpezaDupTagId || undefined,
+        tagName: limpezaDupTagName,
+      });
+      tagsApplied += 1;
     } catch (err) {
+      tagsFailed += 1;
       console.warn(
         '[novo-crm-orphan-provision] tag limpeza_duplicata failed',
         id,
@@ -1447,6 +1544,8 @@ export async function runOrphanAlunoProvision(opts = {}) {
   let dealsWouldCreateOnSibling = 0;
   let createdDeals = 0;
   let errors = 0;
+  let tagsApplied = 0;
+  let tagsFailed = 0;
   let skippedAlreadyHasDeal = 0;
   let skippedDuplicateRgm = 0;
   let skippedCpfCapacity = 0;
@@ -2575,6 +2674,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
       : { dup_deals_moved_perdido: dupDealsMoved }),
     created_deals: dryRun ? 0 : createdDeals,
     errors: dryRun ? 0 : errors,
+    tag_name: limpezaDupTagName,
+    tags_applied: dryRun ? 0 : tagsApplied,
+    tags_failed: dryRun ? 0 : tagsFailed,
     skipped_already_has_deal_live: skippedAlreadyHasDeal,
     warmed_cache: warmedCache,
     warm_cache_errors: warmCacheErrors,
@@ -2666,6 +2768,9 @@ export async function runOrphanAlunoProvision(opts = {}) {
       created_deals: dryRun ? 0 : createdDeals,
       orphan_no_match: orphanNoMatch,
       errors: dryRun ? 0 : errors,
+      tag_name: limpezaDupTagName,
+      tags_applied: dryRun ? 0 : tagsApplied,
+      tags_failed: dryRun ? 0 : tagsFailed,
       deal_not_found: dealNotFound,
       warmed_cache: warmedCache,
       action_plan_moves: dryRun && !cancelled ? plannedMoves.length : undefined,

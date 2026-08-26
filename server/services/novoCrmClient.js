@@ -272,7 +272,9 @@ export async function resolveContactAndDealForActivationItem(item) {
 /** Lista tags da org autenticada. @returns {Promise<Array<{id:string,name:string,color?:string}>>} */
 export async function listTags() {
   const raw = await request('/api/tags');
-  return Array.isArray(raw) ? raw : [];
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.items)) return raw.items;
+  return [];
 }
 
 /**
@@ -286,6 +288,59 @@ export async function resolveTagIdByName(tagName) {
   const tags = await listTags();
   const hit = tags.find((t) => String(t?.name || '') === name);
   return hit?.id ? String(hit.id) : null;
+}
+
+/**
+ * Cria tag no catálogo da org.
+ * @param {{ name: string, color?: string }} payload
+ */
+export async function createTag(payload) {
+  const name = String(payload?.name || '').trim();
+  if (!name) {
+    const err = new Error('name obrigatório para criar tag');
+    err.status = 400;
+    throw err;
+  }
+  const color = String(payload?.color || '#6366f1').trim() || '#6366f1';
+  return request('/api/tags', { method: 'POST', body: { name, color } });
+}
+
+/**
+ * Garante que a tag existe no catálogo e devolve o id.
+ * POST /api/deals/:id/tags com tagName nova dispara create no CRM; se a
+ * sequência `org_number_counters` estiver quebrada, isso 500 e o card
+ * fica sem etiqueta. Por isso o apply precisa do id *antes* de mover.
+ * @param {string} tagName
+ * @param {{ color?: string }} [opts]
+ * @returns {Promise<{ tagId: string, created: boolean, name: string }>}
+ */
+export async function ensureTagByName(tagName, opts = {}) {
+  const name = String(tagName || '').trim();
+  if (!name) {
+    const err = new Error('tagName obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  const existing = await resolveTagIdByName(name);
+  if (existing) return { tagId: existing, created: false, name };
+  try {
+    const created = await createTag({ name, color: opts.color });
+    const tagId = String(created?.id || '').trim() || (await resolveTagIdByName(name));
+    if (tagId) return { tagId, created: true, name };
+  } catch (err) {
+    const wrap = new Error(
+      `CRM não criou a tag "${name}" (${err?.message || err}). ` +
+        'Crie essa tag no CRM (mesmo nome, filtro Tags) e rode de novo. ' +
+        'Erro org_number_counters = sequência de tags quebrada no EduIT.'
+    );
+    wrap.status = err?.status || 500;
+    wrap.code = 'TAG_CREATE_FAILED';
+    wrap.cause = err;
+    throw wrap;
+  }
+  const err = new Error(`CRM não devolveu id da tag "${name}"`);
+  err.code = 'TAG_CREATE_FAILED';
+  throw err;
 }
 
 /**

@@ -150,6 +150,9 @@ export interface NovoCrmOrphanDedupeLastRun {
   deal_not_found?: number;
   warmed_cache?: number;
   error?: string | null;
+  tag_name?: string;
+  tags_applied?: number;
+  tags_failed?: number;
 }
 
 export interface NovoCrmFlagsRunningJob {
@@ -500,6 +503,9 @@ export interface OrphanDedupePreviewResponse {
   dup_deals_moved_perdido?: number;
   created_deals: number;
   errors: number;
+  tag_name?: string;
+  tags_applied?: number;
+  tags_failed?: number;
   skipped_already_has_deal_live?: number;
   warmed_cache?: number;
   warm_cache_errors?: number;

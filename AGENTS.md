@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-26 — Dedupe: tag no catálogo antes de mover para Perdido
+- **Modelo usado:** Grok.
+- **Incidente:** apply 26/08 ~15:41 BRT moveu 25 duplicados para Perdido, mas `limpeza_duplicata_26.08.2026` (e a de 25/08) **não existiam** no catálogo. `POST /api/deals/:id/tags { tagName }` tenta criar a tag; o CRM 500 (`org_number_counters` / "Erro ao criar tag."). A etapa mesmo assim muda — falha de tag só logava. Filtro por tag no Kanban fica vazio.
+- **Decisão:** apply **aborta** se a tag do dia não estiver no catálogo (`ensureTagByName` → cria ou falha visível). Só então move. Attach usa `tagId`. Contadores `tags_applied` / `tags_failed`. Plano da prévia **não é consumido** se a tag falhar.
+- **Ops:** se o CRM não criar tag nova, criar `limpeza_duplicata_DD.MM.YYYY` na UI Tags (mesmo nome) e reaplicar / carimbar. EduIT precisa da tabela/sequência `org_number_counters`.
+- **Não mudou:** Att; cron FLAGS off.
+
 ### 2026-08-26 — Prévia de duplicados lê o espelho, não a API
 - **Modelo usado:** Grok.
 - **Problema:** dry `scope=duplicates` fazia `GET /api/deals/:id` em todo cartão do grupo (~7,7k grupos × 2+ = ~15k req). Com rate 2 rps a prévia levava ~1–2 h. Os deals já estão em `novo_crm_person_cache`.
