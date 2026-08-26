@@ -39,9 +39,13 @@ function apiToken() {
   return String(process.env.NOVO_CRM_API_TOKEN || '').trim();
 }
 
-/** Teto global de req/s para toda a API Novo CRM (sync, enrich, tags). Default 4; PROD overnight: 2. */
+/** Teto global de req/s para toda a API Novo CRM (sync, enrich, tags). Default 2; teto 3 (não estoura o CRM). */
 function apiRatePerSecond() {
-  return Math.max(1, Math.min(30, Number(process.env.NOVO_CRM_API_RATE_PER_SECOND) || 4));
+  return Math.max(1, Math.min(3, Number(process.env.NOVO_CRM_API_RATE_PER_SECOND) || 2));
+}
+
+function apiTimeoutMs() {
+  return Math.max(5000, Math.min(60_000, Number(process.env.NOVO_CRM_API_TIMEOUT_MS) || 15_000));
 }
 
 const apiLimiter = createRateLimiter(apiRatePerSecond(), 1000);
@@ -116,6 +120,7 @@ async function request(path, opts = {}) {
             : {}),
         },
         body: opts.body != null ? JSON.stringify(opts.body) : undefined,
+        signal: AbortSignal.timeout(apiTimeoutMs()),
       });
     } catch (netErr) {
       // Falha de rede (fetch failed / ECONNRESET / timeout) → retry com backoff.

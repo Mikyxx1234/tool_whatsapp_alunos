@@ -5,6 +5,17 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-25 — Att/sync mais lenta: não saturar o CRM
+- **Modelo usado:** Grok.
+- **Incidente:** Att `flags_stage` 25/08 ~11:03 BRT (backfill CAA Sim, fila 5509) com 5 workers + ~4 rps deixou o CRM EduIT lento/travado. Progresso congelou em 4300/5509 (fetch sem timeout). Cancel cooperativo às 11:41: `flags_updated=3707` · `stages_moved=76` · `cancelled=true`. ~1.8k restantes — próxima Att retoma (Sim já gravado não reescreve).
+- **Decisão:**
+  1. `NOVO_CRM_API_RATE_PER_SECOND` default **2**, teto **3** (env 8+ não passa).
+  2. Att concurrency default **2**, teto **4** (era 5/24).
+  3. Dedupe/órfão concurrency default **2**, teto **4**.
+  4. `fetch` com `AbortSignal.timeout` **15s** (`NOVO_CRM_API_TIMEOUT_MS`) — worker não fica preso; Parar consegue encerrar.
+- **Ops:** merge `main` + rebuild. No Easypanel, se `NOVO_CRM_API_RATE_PER_SECOND` ou `FLAGS_SYNC_CONCURRENCY` estiverem altos, baixar ou remover (o teto do código segura). Não disparar Att até o CRM normalizar.
+- **Não mudou:** cron FLAGS off; provision noturno off.
+
 ### 2026-08-24 — Flag CAA (Sim/Não) ≠ etapa Retenção (só 72h)
 - **Modelo usado:** Grok.
 - **Pedido:** botão no deal (como Dia 10 / docs). Quem **já apareceu** em CAA = **Sim** (gruda). **Retenção** só se estiver na janela de **72h** (`NOVO_CRM_CAA_RETENCAO_HOURS`).

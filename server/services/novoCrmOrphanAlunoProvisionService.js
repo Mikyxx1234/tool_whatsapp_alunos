@@ -394,7 +394,7 @@ export function limpezaDuplicataTagName(d = new Date()) {
 }
 
 function orphanConcurrency() {
-  return Math.min(Math.max(Number(process.env.NOVO_CRM_ORPHAN_PROVISION_CONCURRENCY) || 3, 1), 8);
+  return Math.min(Math.max(Number(process.env.NOVO_CRM_ORPHAN_PROVISION_CONCURRENCY) || 2, 1), 4);
 }
 
 function digits(v) {
