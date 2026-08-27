@@ -30,6 +30,7 @@ import {
   caaClassifyCtx,
   classifyMatriculado,
   getNovoCrmDealFieldIds,
+  isProdCrmHost,
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -165,7 +166,7 @@ function apiBaseHost() {
 /**
  * Gate de escrita CRM (provision + fields sync + flags/etapa).
  * DEV hosts na allowlist; PROD só com NOVO_CRM_PROVISION_ALLOW_PROD=1 e
- * NOVO_CRM_API_BASE_URL explícita (ex. https://crm.eduit.com.br).
+ * NOVO_CRM_API_BASE_URL explícita (ex. https://cruzeiro-ead.bwipo.com).
  */
 export function isProvisionAllowedOnThisHost() {
   if (String(process.env.NOVO_CRM_PROVISION_ALLOW_PROD || '').trim() === '1') {
@@ -176,8 +177,8 @@ export function isProvisionAllowedOnThisHost() {
   }
   const h = apiBaseHost();
   if (!h) return false;
-  // Nunca liberar crm.eduit.com.br / produção sem ALLOW_PROD explícito.
-  if (h === 'crm.eduit.com.br' || h.endsWith('.crm.eduit.com.br')) return false;
+  // Nunca liberar CRM PROD sem ALLOW_PROD explícito.
+  if (isProdCrmHost(h)) return false;
   // Allowlist estrita (não substring frouxa).
   if (h === 'crm-dev-frontend.ca31ey.easypanel.host') return true;
   if (h === 'localhost' || h === '127.0.0.1') return true;

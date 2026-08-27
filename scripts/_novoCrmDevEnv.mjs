@@ -35,7 +35,11 @@ export function forceNovoCrmDevEnv(opts = {}) {
   } catch {
     host = base.toLowerCase();
   }
-  if (host.includes('crm.eduit.com.br') || host === 'crm.eduit.com.br') {
+  if (
+    host === 'crm.eduit.com.br' ||
+    host.endsWith('.crm.eduit.com.br') ||
+    host === 'cruzeiro-ead.bwipo.com'
+  ) {
     console.error('[novo-crm-dev] ABORTADO: base aponta pra PRODUÇÃO. DEV-only.');
     process.exit(2);
   }

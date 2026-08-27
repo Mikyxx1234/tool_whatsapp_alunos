@@ -2,7 +2,7 @@
  * Cliente HTTP do CRM EduIT (Novo CRM).
  *
  * Env:
- *   NOVO_CRM_API_BASE_URL=https://crm.eduit.com.br
+ *   NOVO_CRM_API_BASE_URL=https://cruzeiro-ead.bwipo.com
  *   NOVO_CRM_API_TOKEN=eduit_...
  *   NOVO_CRM_ENABLED=1
  */

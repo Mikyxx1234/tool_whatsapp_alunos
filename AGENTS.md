@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-27 — CRM PROD mudou de domínio (EduIT → Bwipo)
+- **Modelo usado:** Grok.
+- **Fato:** UI/API passaram de `crm.eduit.com.br` (503) para `https://cruzeiro-ead.bwipo.com`. Mesma org (`cmrmbn2lh0uz2nm016beqgbwb`); o token atual autentica em `/api/tags`.
+- **Ops Easypanel:** `NOVO_CRM_API_BASE_URL=https://cruzeiro-ead.bwipo.com` (sem path `/pipeline`). Manter `NOVO_CRM_API_TOKEN` e `NOVO_CRM_PROVISION_ALLOW_PROD=1`. `NOVO_CRM_DATABASE_URL` é outro Postgres — só muda se o banco também migrou.
+- **Código:** `isProdCrmHost()` aceita o host novo **e** o antigo, para carregar `data/novo-crm-prod-ids.json` (sem isso a Att cairia nos IDs de DEV). Gate de escrita PROD sem ALLOW_PROD continua bloqueado.
+- **Não mudou:** IDs de etapa/campo; cron FLAGS off; rate 2 rps.
+
 ### 2026-08-26 — Dedupe: tag no catálogo antes de mover para Perdido
 - **Modelo usado:** Grok.
 - **Incidente:** apply 26/08 ~15:41 BRT moveu 25 duplicados para Perdido, mas `limpeza_duplicata_26.08.2026` (e a de 25/08) **não existiam** no catálogo. `POST /api/deals/:id/tags { tagName }` tenta criar a tag; o CRM 500 (`org_number_counters` / "Erro ao criar tag."). A etapa mesmo assim muda — falha de tag só logava. Filtro por tag no Kanban fica vazio.

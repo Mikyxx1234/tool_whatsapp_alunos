@@ -3,8 +3,9 @@
  * IDs default = CRM DEV; sobrescreva via env NOVO_CRM_STAGE_* / NOVO_CRM_FIELD_*.
  *
  * Guard PROD (28/07/2026, bugfix): quando NOVO_CRM_API_BASE_URL aponta pra
- * crm.eduit.com.br (host PROD) e não há env var explícita, os IDs são lidos
- * de data/novo-crm-prod-ids.json em vez do fallback DEV hard-coded. Sem isso,
+ * host PROD (crm.eduit.com.br ou cruzeiro-ead.bwipo.com) e não há env var
+ * explícita, os IDs são lidos de data/novo-crm-prod-ids.json em vez do
+ * fallback DEV hard-coded. Sem isso,
  * qualquer chamador que esqueça de setar NOVO_CRM_STAGE_* / NOVO_CRM_FIELD_* (ex.:
  * scripts/novo-crm-apply-fast.mjs) manda stageId/fieldId de DEV pra PROD e a
  * API rejeita createDeal com "Referência inválida (estágio, contato ou
@@ -44,9 +45,13 @@ function apiBaseHost() {
   }
 }
 
-function isProdCrmHost() {
-  const h = apiBaseHost();
-  return h === 'crm.eduit.com.br' || h.endsWith('.crm.eduit.com.br');
+/** Hosts do CRM acadêmico PROD (UI/API). Token e IDs são os mesmos da org. */
+export function isProdCrmHost(host = apiBaseHost()) {
+  const h = String(host || '').trim().toLowerCase();
+  if (!h) return false;
+  if (h === 'crm.eduit.com.br' || h.endsWith('.crm.eduit.com.br')) return true;
+  if (h === 'cruzeiro-ead.bwipo.com') return true;
+  return false;
 }
 
 function prodIdsMap() {

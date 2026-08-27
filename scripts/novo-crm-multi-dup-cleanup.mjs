@@ -63,8 +63,8 @@ if (!API || !TOKEN) {
   console.error('Missing NOVO_CRM_API_BASE_URL / NOVO_CRM_API_TOKEN');
   process.exit(1);
 }
-if (APPLY && !/crm\.eduit\.com\.br/i.test(API)) {
-  console.error('Refusing apply: API host is not PROD crm.eduit.com.br →', API);
+if (APPLY && !/crm\.eduit\.com\.br|cruzeiro-ead\.bwipo\.com/i.test(API)) {
+  console.error('Refusing apply: API host is not PROD →', API);
   process.exit(1);
 }
 

@@ -1,5 +1,6 @@
 import { isNovoCrmDbConfigured } from '../db/novoCrmClient.js';
 import { isNovoCrmApiConfigured } from './novoCrmClient.js';
+import { isProdCrmHost } from '../utils/novoCrmStageRules.js';
 import * as cacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import * as sourceRepo from '../repositories/novoCrmPersonSourceRepository.js';
 import * as apiSource from '../repositories/novoCrmPersonApiSourceRepository.js';
@@ -667,12 +668,12 @@ export function startNovoCrmCacheSyncCron() {
   let crmHost = '(n/d)';
   try {
     crmHost = new URL(
-      String(process.env.NOVO_CRM_API_BASE_URL || 'https://crm.eduit.com.br')
+      String(process.env.NOVO_CRM_API_BASE_URL || '')
     ).host;
   } catch {
     crmHost = String(process.env.NOVO_CRM_API_BASE_URL || '(vazio)');
   }
-  const isProdHost = crmHost.includes('crm.eduit.com.br');
+  const isProdHost = isProdCrmHost(crmHost);
 
   console.log(
     `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}; CRM_HOST=${crmHost} (${isProdHost ? 'PRODUÇÃO' : 'DEV/outro'})`

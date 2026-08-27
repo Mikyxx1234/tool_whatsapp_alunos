@@ -38,8 +38,8 @@ if (!DRY_JSON || !fs.existsSync(DRY_JSON)) {
   console.error('DRY_JSON missing or not found:', DRY_JSON);
   process.exit(1);
 }
-if (!/crm\.eduit\.com\.br/i.test(API)) {
-  console.error('Refusing apply: API host is not PROD crm.eduit.com.br →', API);
+if (!/crm\.eduit\.com\.br|cruzeiro-ead\.bwipo\.com/i.test(API)) {
+  console.error('Refusing apply: API host is not PROD →', API);
   process.exit(1);
 }
 
