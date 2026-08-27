@@ -5,6 +5,21 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-27 — Full #54 incompleto marcou 25k como apagados
+- **Modelo usado:** Grok.
+- **Fato:** Full 27/08 13:50 BRT (`id=54`) `contacts_total=42715` · `contacts_seen=17000` · `status=ok` · `contacts_deleted=25811`. Parou cedo (página curta) e o `markDeleted` rodou. KPI: 18k ativos, 16k sem CPF/RGM, 340k alertas (FETCH=0 apagando customFields no upsert).
+- **Limpeza (Postgres, sem tocar CRM):** undelete `is_deleted` → **42.817 ativos**; ack dos `novo_crm_data_loss_events` abertos. Residual ~16.8k sem CPF/RGM = os 17k que o #54 sobrescreveu (FETCH=0). Os ~24k restaurados mantêm CPF/RGM.
+- **Código:** `markDeleted` só se `seen ≥ 95%` do total; full incompleto grava `status=error`. `upsertSnapshot` preserva CPF/RGM/customFields se o incoming vier vazio. Não loga data-loss nesse caso.
+- **Ops:** merge `raphael` + rebuild **antes** do Full das 02:00 — senão o #54 se repete. `FETCH_DEAL_FIELDS=0` ok com o preserve.
+- **Não mudou:** cron FLAGS/provision off; fields 05:00.
+
+### 2026-08-27 — Prévia de leads novos filtra o espelho (e-mail/telefone) antes da API
+- **Modelo usado:** Grok.
+- **Problema:** Full Sync com `FETCH_DEAL_FIELDS=0` não preenche `cpf_norm`/`rgm_norm`. A prévia de leads novos só pulava por CPF/RGM → live-check 1 a 1 em ~36k da Relação (`GET /contacts?search=`). Com rate 2 rps, horas.
+- **Decisão:** `loadExistingCpfRgmSets` também lê `email_norm`/`phone_norm` do contact. Antes do loop ao vivo, filtra quem já está no espelho por CPF **ou** RGM **ou** e-mail (pessoal/AD) **ou** telefone (DDD+8). Só o gap vai à API. Contadores `skipped_cache_email` / `skipped_cache_phone`. Apply continua conferindo o gap ao vivo. Botão **Parar** na prévia/criação (cancel cooperativo).
+- **Ops:** a prévia 36k em andamento **não** pega o filtro — rebuild (ou restart do processo) para matar o job. Depois: Prévia de novo; deve fechar em segundos/minutos.
+- **Não mudou:** cap 1500/run; cron provision off; live check do residual.
+
 ### 2026-08-27 — CRM PROD mudou de domínio (EduIT → Bwipo)
 - **Modelo usado:** Grok.
 - **Fato:** UI/API passaram de `crm.eduit.com.br` (503) para `https://cruzeiro-ead.bwipo.com`. Mesma org (`cmrmbn2lh0uz2nm016beqgbwb`); o token atual autentica em `/api/tags`.

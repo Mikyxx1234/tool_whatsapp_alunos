@@ -95,7 +95,7 @@ export async function recordSyncFinish(
       skipped,
       deleted,
       dataLossEvents,
-      status,
+      status === 'cancelled' ? 'error' : status,
       errorMessage,
     ]
   );
@@ -308,24 +308,65 @@ export async function markPrimaryDealId(contactId, dealId) {
   );
 }
 
+function incomingLacksDealCustomFields(rawData) {
+  const deals = rawData?.dealsById;
+  if (!deals || typeof deals !== 'object') return true;
+  for (const deal of Object.values(deals)) {
+    const fields = deal?.customFields;
+    if (Array.isArray(fields) && fields.length > 0) return false;
+  }
+  return true;
+}
+
+function mergePreserveIdentity(snapshot, existing) {
+  if (!existing) return snapshot;
+  const cpfNorm = snapshot.cpfNorm || existing.cpf_norm || null;
+  const rgmNorm = snapshot.rgmNorm || existing.rgm_norm || null;
+  const rawData = snapshot.rawData && typeof snapshot.rawData === 'object' ? { ...snapshot.rawData } : {};
+  if (incomingLacksDealCustomFields(rawData) && existing.raw_data?.dealsById) {
+    const nextDeals = { ...(rawData.dealsById || {}) };
+    for (const [id, oldDeal] of Object.entries(existing.raw_data.dealsById)) {
+      const incoming = nextDeals[id];
+      const oldFields = oldDeal?.customFields;
+      if (!Array.isArray(oldFields) || oldFields.length === 0) continue;
+      if (!incoming) {
+        nextDeals[id] = oldDeal;
+        continue;
+      }
+      const newFields = incoming.customFields;
+      if (!Array.isArray(newFields) || newFields.length === 0) {
+        nextDeals[id] = {
+          ...incoming,
+          customFields: oldFields,
+          tags: Array.isArray(incoming.tags) && incoming.tags.length ? incoming.tags : oldDeal.tags,
+        };
+      }
+    }
+    rawData.dealsById = nextDeals;
+  }
+  return { ...snapshot, cpfNorm, rgmNorm, rawData };
+}
+
 export async function upsertSnapshot(snapshot, { syncLogId = null, fullSeenAt = null } = {}) {
   const existing = await loadExisting(snapshot.contactId);
+  const merged = mergePreserveIdentity(snapshot, existing);
   let dataLossInserted = 0;
-  if (existing?.raw_data) {
-    const diff = diffRemovedFields(existing.raw_data, snapshot.rawData);
+  const skipFalseLoss = incomingLacksDealCustomFields(snapshot.rawData);
+  if (existing?.raw_data && !skipFalseLoss) {
+    const diff = diffRemovedFields(existing.raw_data, merged.rawData);
     if (diff.removed.length) {
-      dataLossInserted = (await recordDataLossEvent({ snapshot, existing, diff, syncLogId })) ? 1 : 0;
+      dataLossInserted = (await recordDataLossEvent({ snapshot: merged, existing, diff, syncLogId })) ? 1 : 0;
     }
   }
 
-  if (existing?.content_hash === snapshot.contentHash && existing?.is_deleted === false) {
+  if (existing?.content_hash === merged.contentHash && existing?.is_deleted === false) {
     await query(
       `update novo_crm_person_cache
           set last_synced_at = now(),
               last_full_seen_at = coalesce($2, last_full_seen_at),
               source_updated_at = coalesce($3, source_updated_at)
         where contact_id = $1`,
-      [snapshot.contactId, fullSeenAt, snapshot.sourceUpdatedAt]
+      [merged.contactId, fullSeenAt, merged.sourceUpdatedAt]
     );
     return { upserted: 0, skipped: 1, dataLossInserted };
   }
@@ -352,18 +393,18 @@ export async function upsertSnapshot(snapshot, { syncLogId = null, fullSeenAt = 
        last_full_seen_at = coalesce(excluded.last_full_seen_at, novo_crm_person_cache.last_full_seen_at),
        is_deleted = false`,
     [
-      snapshot.contactId,
-      snapshot.primaryDealId,
-      snapshot.contactNumber,
-      snapshot.nome,
-      snapshot.phoneNorm,
-      snapshot.emailNorm,
-      snapshot.cpfNorm,
-      snapshot.rgmNorm,
-      JSON.stringify(snapshot.rawData),
-      snapshot.filledFieldCount,
-      snapshot.contentHash,
-      snapshot.sourceUpdatedAt,
+      merged.contactId,
+      merged.primaryDealId,
+      merged.contactNumber,
+      merged.nome,
+      merged.phoneNorm,
+      merged.emailNorm,
+      merged.cpfNorm,
+      merged.rgmNorm,
+      JSON.stringify(merged.rawData),
+      merged.filledFieldCount,
+      merged.contentHash,
+      merged.sourceUpdatedAt,
       fullSeenAt,
     ]
   );
@@ -388,25 +429,31 @@ export async function markDeletedNotSeenSince(fullSeenAt) {
 }
 
 /**
- * CPFs e RGMs já presentes no cache (contatos ativos). Usado pela
- * idempotência do provisionamento — evita recriar quem já existe no CRM.
- * @returns {Promise<{ cpfs: Set<string>, rgms: Set<string> }>}
+ * CPFs, RGMs, e-mails e telefones já presentes no cache (contatos ativos).
+ * Usado pela idempotência do provisionamento — evita recriar quem já existe.
+ * @returns {Promise<{ cpfs: Set<string>, rgms: Set<string>, emails: Set<string>, phones: Set<string> }>}
  */
 export async function loadExistingCpfRgmSets() {
   const { rows } = await query(
-    `select cpf_norm, rgm_norm
+    `select cpf_norm, rgm_norm, email_norm, phone_norm
        from novo_crm_person_cache
       where is_deleted = false`
   );
   const cpfs = new Set();
   const rgms = new Set();
+  const emails = new Set();
+  const phones = new Set();
   for (const r of rows) {
     const c = String(r.cpf_norm || '').replace(/\D/g, '');
     const g = String(r.rgm_norm || '').replace(/\D/g, '');
+    const e = String(r.email_norm || '').trim().toLowerCase();
+    const p = String(r.phone_norm || '').replace(/\D/g, '');
     if (c.length >= 11) cpfs.add(c);
     if (g) rgms.add(g);
+    if (e.includes('@')) emails.add(e);
+    if (p.length >= 10) phones.add(p);
   }
-  return { cpfs, rgms };
+  return { cpfs, rgms, emails, phones };
 }
 
 export async function getCacheStats() {

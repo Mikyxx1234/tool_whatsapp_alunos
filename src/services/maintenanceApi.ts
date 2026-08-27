@@ -199,6 +199,33 @@ export interface NovoCrmOrphanDedupeRunningJob {
   errors?: number;
 }
 
+export interface NovoCrmCacheLiveJob {
+  phase?: string | null;
+  status_message?: string | null;
+  contacts_total?: number | null;
+  contacts_seen?: number;
+  cache_upserted?: number;
+  deals_page?: number;
+  deals_total_pages?: number | null;
+  deals_seen?: number;
+  deals_total?: number;
+  started_at?: string;
+}
+
+export interface NovoCrmNightCronStatus {
+  cache_enabled: boolean;
+  cache_source: string;
+  cache_full_hour_utc: number;
+  cache_next_ms: number | null;
+  fetch_deal_fields: boolean;
+  fields_enabled: boolean;
+  fields_hour_utc: number;
+  fields_next_ms: number | null;
+  flags_enabled: boolean;
+  provision_enabled: boolean;
+  api_configured: boolean;
+}
+
 export interface NovoCrmCacheStatusResponse {
   ok: boolean;
   cache_total: number;
@@ -208,6 +235,8 @@ export interface NovoCrmCacheStatusResponse {
   incomplete_fields: number;
   running: boolean;
   running_sync: NovoCrmCacheRunningSync | null;
+  running_cache?: NovoCrmCacheLiveJob | null;
+  night_cron?: NovoCrmNightCronStatus | null;
   last_sync: NovoCrmCacheLastSync | null;
   last_flags_sync?: NovoCrmFlagsLastSync | null;
   last_orphan_dedupe?: NovoCrmOrphanDedupeLastRun | null;
@@ -225,6 +254,7 @@ export interface NovoCrmCacheStatusResponse {
     phase: string | null;
     status_message: string | null;
     started_at: string;
+    cancel_requested?: boolean;
   } | null;
   state: { cursor_updated_at: string | null } | null;
   open_data_loss_events: number;
@@ -378,6 +408,9 @@ export interface NovoCrmProvisionPreviewResponse {
   skipped_cache: number;
   /** Pulados porque o RGM já existe no espelho (CPF do espelho pode estar corrompido). */
   skipped_cache_rgm?: number;
+  skipped_cache_email?: number;
+  skipped_cache_phone?: number;
+  cancelled?: boolean;
   skipped_not_delta?: number;
   skipped_no_cpf: number;
   skipped_bad_name?: number;
@@ -442,6 +475,7 @@ export interface NovoCrmProvisionJobStatusResponse {
     status_message: string | null;
     started_at: string;
     finished_at: string | null;
+    cancel_requested?: boolean;
     error: string | null;
     result: NovoCrmProvisionPreviewResponse | null;
   } | null;
@@ -783,6 +817,15 @@ export const maintenanceApi = {
     const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
     return jsonFetch<NovoCrmProvisionJobStatusResponse>(
       `/api/maintenance/provision-matriculados-novo-crm-status${qs}`
+    );
+  },
+
+  /** Pede cancel da prévia/criação de leads em andamento. */
+  stopNovoCrmProvision(jobId?: string) {
+    const qs = jobId ? `?jobId=${encodeURIComponent(jobId)}` : '';
+    return jsonFetch<{ ok: boolean; status: string; jobId?: string }>(
+      `/api/maintenance/provision-matriculados-novo-crm-stop${qs}`,
+      { method: 'POST', body: '{}' }
     );
   },
 

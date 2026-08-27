@@ -192,6 +192,7 @@ export async function loadAllDealsByContactId(opts = {}) {
   let seen = 0;
 
   while (page <= maxPages) {
+    if (typeof opts.shouldCancel === 'function' && opts.shouldCancel()) break;
     const res = await listDealsPage({ page, perPage: 100 });
     total = res.total;
     totalPages = res.totalPages || Math.ceil(total / 100) || null;
@@ -267,8 +268,10 @@ export async function fetchDealDetailsByIds(dealIds, opts = {}) {
 }
 
 export function shouldFetchDealFields() {
-  const v = String(process.env.NOVO_CRM_CACHE_FETCH_DEAL_FIELDS || '1').trim();
-  return v !== '0' && v.toLowerCase() !== 'false';
+  // Default 0: GET /deals/:id por contato trava o Full Sync (~40k req).
+  // CPF/RGM vêm no fields noturno / Att. Opt-in com NOVO_CRM_CACHE_FETCH_DEAL_FIELDS=1.
+  const v = String(process.env.NOVO_CRM_CACHE_FETCH_DEAL_FIELDS || '0').trim();
+  return v === '1' || v.toLowerCase() === 'true';
 }
 
 /**

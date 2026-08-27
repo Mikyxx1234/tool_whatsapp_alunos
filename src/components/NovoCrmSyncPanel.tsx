@@ -101,6 +101,8 @@ function phaseLabel(phase: string | null | undefined) {
       return 'Iniciando';
     case 'provisioning':
       return 'Criando leads';
+    case 'live_check':
+      return 'Verificando no CRM';
     case 'loading':
     case 'loading_bases':
     case 'load_bases':
@@ -182,6 +184,7 @@ export function NovoCrmSyncPanel() {
   const [provisionJob, setProvisionJob] = useState<ProvisionJobLive | null>(null);
   const [provisionMode, setProvisionMode] = useState<'preview' | 'apply'>('preview');
   const [provisionApplied, setProvisionApplied] = useState(false);
+  const [provisionStopping, setProvisionStopping] = useState(false);
 
   const [queueOrder, setQueueOrder] = useState<NovoCrmSyncKind[]>([]);
   const [queueRunning, setQueueRunning] = useState(false);
@@ -204,6 +207,9 @@ export function NovoCrmSyncPanel() {
       const s = await maintenanceApi.getNovoCrmCacheStatus();
       setStatus(s);
       setError(null);
+      if (!s.running) {
+        setSyncMsg((prev) => (prev && /em andamento/i.test(prev) ? null : prev));
+      }
       // Reanexa Att em andamento (refresh / outra aba).
       if (s.running_flags?.jobId) {
         setFlagsJobId((prev) => prev || s.running_flags!.jobId);
@@ -307,6 +313,7 @@ export function NovoCrmSyncPanel() {
           status_message: p.status_message,
           started_at: p.started_at,
           finished_at: null,
+          cancel_requested: Boolean(p.cancel_requested),
           error: null,
           result: null,
         });
@@ -432,8 +439,17 @@ export function NovoCrmSyncPanel() {
                   setProvisionPreview(r.job.result);
                   setProvisionApplied(!r.job.result.dry_run);
                   setProvisionMsg(null);
+                  setProvisionStopping(false);
+                } else if (r.job.status === 'cancelled') {
+                  if (r.job.result) {
+                    setProvisionPreview(r.job.result);
+                    setProvisionApplied(false);
+                  }
+                  setProvisionMsg('Prévia/criação interrompida.');
+                  setProvisionStopping(false);
                 } else if (r.job.status === 'failed') {
                   setProvisionMsg(r.job.error || 'Criação de leads falhou');
+                  setProvisionStopping(false);
                 }
                 void loadStatus();
               }
@@ -709,6 +725,18 @@ export function NovoCrmSyncPanel() {
     setProvisionJob(null);
   };
 
+  const stopProvision = async () => {
+    if (provisionStopping) return;
+    setProvisionStopping(true);
+    try {
+      await maintenanceApi.stopNovoCrmProvision(provisionJobId || undefined);
+      setProvisionMsg('Cancelando… (para no próximo da fila)');
+    } catch (e) {
+      setProvisionMsg(e instanceof Error ? e.message : 'Falha ao pedir cancelamento');
+      setProvisionStopping(false);
+    }
+  };
+
   const queueKindRef = useRef<NovoCrmSyncKind | null>(null);
 
   const waitFullSyncDone = async (): Promise<'ok' | 'cancelled' | 'failed'> => {
@@ -842,6 +870,7 @@ export function NovoCrmSyncPanel() {
       if (kind === 'full') await maintenanceApi.stopNovoCrmCacheSync();
       else if (kind === 'flags') await maintenanceApi.stopNovoCrmFlagsStage(flagsJobId || undefined);
       else if (kind === 'dedupe') await maintenanceApi.stopOrphanDedupe(dedupeJobId || undefined);
+      else if (kind === 'provision') await maintenanceApi.stopNovoCrmProvision(provisionJobId || undefined);
     } catch {
       /* o wait loop encerra mesmo se o stop HTTP falhar */
     }
@@ -883,8 +912,14 @@ export function NovoCrmSyncPanel() {
   };
 
   const running = status?.running_sync || null;
-  const total = running?.contacts_total ?? null;
-  const seen = running?.contacts_seen ?? 0;
+  const live = status?.running_cache || null;
+  const indexingDeals = live?.phase === 'index_deals';
+  const total = indexingDeals
+    ? live?.deals_total || null
+    : running?.contacts_total ?? live?.contacts_total ?? null;
+  const seen = indexingDeals
+    ? live?.deals_seen ?? 0
+    : running?.contacts_seen ?? live?.contacts_seen ?? 0;
   const pct =
     total && total > 0 ? Math.min(100, Math.round((seen / total) * 100)) : null;
 
@@ -1002,11 +1037,35 @@ export function NovoCrmSyncPanel() {
                 <ul className="mt-1 space-y-0.5 list-disc list-inside">
                   <li>
                     <strong>Espelho</strong> — Full Sync copia CRM → Postgres local
+                    {status?.night_cron
+                      ? status.night_cron.cache_enabled
+                        ? ` · ${String(status.night_cron.cache_full_hour_utc).padStart(2, '0')}:00 UTC${
+                            status.night_cron.cache_next_ms != null
+                              ? ` (em ${fmtDurationMs(status.night_cron.cache_next_ms)})`
+                              : ''
+                          }`
+                        : ' · OFF'
+                      : ''}
                   </li>
                   <li>
                     <strong>Att campos</strong> — matriculados D−1 preenche curso/polo/etc. em
-                    quem já está no funil (sem botão aqui)
+                    quem já está no funil
+                    {status?.night_cron
+                      ? status.night_cron.fields_enabled
+                        ? ` · ${String(status.night_cron.fields_hour_utc).padStart(2, '0')}:00 UTC`
+                        : ' · OFF (NOVO_CRM_FIELDS_SYNC_ENABLED≠1)'
+                      : ''}
                   </li>
+                  {status?.night_cron?.fetch_deal_fields ? (
+                    <li className="text-amber-700">
+                      GET por deal ligado (FETCH_DEAL_FIELDS=1) — Full noturno fica horas. Preferir 0.
+                    </li>
+                  ) : null}
+                  {status?.night_cron && !status.night_cron.api_configured ? (
+                    <li className="text-rose-700">API do CRM não configurada — cron de espelho não sobe</li>
+                  ) : null}
+                </ul>
+              </div>
                 </ul>
               </div>
               <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2">
@@ -1202,8 +1261,8 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
             <p className="text-xs font-semibold text-gray-900">3. Criação de leads novos</p>
             <p className="text-[11px] text-gray-500 flex-1">
-              Quem está na Relação de matriculados e ainda não tem negócio. Prévia confere
-              espelho + CRM ao vivo; você baixa o CSV e só então confirma a criação. Até{' '}
+              Quem está na Relação de matriculados e ainda não tem negócio. A prévia filtra o
+              espelho (CPF, RGM, e-mail, telefone) e só consulta o CRM no que falta. Até{' '}
               {PROVISION_NEW_MAX.toLocaleString('pt-BR')} por vez.
             </p>
             <div className="flex flex-wrap gap-2 mt-auto">
@@ -1224,6 +1283,17 @@ export function NovoCrmSyncPanel() {
                     : 'Prévia rodando…'
                   : 'Prévia leads novos'}
               </button>
+              {provisionRunning && (
+                <button
+                  type="button"
+                  onClick={() => void stopProvision()}
+                  disabled={provisionStopping || Boolean(pj?.cancel_requested)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-700 bg-white border border-rose-300 hover:bg-rose-50 rounded-lg disabled:opacity-50"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  {provisionStopping || pj?.cancel_requested ? 'Parando…' : 'Parar'}
+                </button>
+              )}
             </div>
             {pj && provisionRunning && (
               <p className="text-[11px] text-gray-600">
@@ -1255,6 +1325,10 @@ export function NovoCrmSyncPanel() {
                 <p>
                   Já no espelho: {Number(provisionPreview.skipped_cache || 0).toLocaleString('pt-BR')} CPF ·{' '}
                   {Number(provisionPreview.skipped_cache_rgm || 0).toLocaleString('pt-BR')} RGM
+                  {Number(provisionPreview.skipped_cache_email || 0) ||
+                  Number(provisionPreview.skipped_cache_phone || 0)
+                    ? ` · ${Number(provisionPreview.skipped_cache_email || 0).toLocaleString('pt-BR')} e-mail · ${Number(provisionPreview.skipped_cache_phone || 0).toLocaleString('pt-BR')} tel`
+                    : ''}
                 </p>
                 {provisionPreview.errors ? (
                   <p className="text-rose-700">
@@ -1485,7 +1559,7 @@ export function NovoCrmSyncPanel() {
         </div>
 
         {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
-        {syncMsg && !status?.running && (
+        {syncMsg && !status?.running && !/em andamento/i.test(syncMsg) && (
           <p className="mt-3 text-sm text-indigo-700 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {syncMsg}
@@ -1502,7 +1576,8 @@ export function NovoCrmSyncPanel() {
           <div className="mt-4 max-w-xl rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
             <div className="flex items-center justify-between gap-2 mb-1">
               <p className="text-xs font-medium text-indigo-900">
-                Full Sync ({running?.mode || 'full'}) em andamento
+                Full Sync ({running?.mode || 'full'})
+                {indexingDeals ? ' · indexando negócios' : live?.phase === 'contacts' ? ' · copiando contatos' : ' em andamento'}
               </p>
               <button
                 type="button"
@@ -1523,10 +1598,12 @@ export function NovoCrmSyncPanel() {
               />
             </div>
             <p className="mt-1.5 text-[11px] text-gray-600 tabular-nums">
-              {pct != null
-                ? `${pct}% · ${seen.toLocaleString('pt-BR')} de ${(total ?? 0).toLocaleString('pt-BR')} contatos`
-                : `${seen.toLocaleString('pt-BR')} processados…`}
-              {running?.cache_upserted != null
+              {live?.status_message
+                ? live.status_message
+                : pct != null
+                  ? `${pct}% · ${seen.toLocaleString('pt-BR')} de ${(total ?? 0).toLocaleString('pt-BR')} ${indexingDeals ? 'negócios' : 'contatos'}`
+                  : `${seen.toLocaleString('pt-BR')} processados…`}
+              {!live?.status_message && running?.cache_upserted != null
                 ? ` · ${Number(running.cache_upserted).toLocaleString('pt-BR')} upserts`
                 : ''}
             </p>

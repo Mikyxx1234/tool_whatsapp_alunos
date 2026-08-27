@@ -82,6 +82,28 @@ function emailMatchKey(v) {
 }
 
 /**
+ * Quem já está no espelho (mesmo sem CPF/RGM no deal — Full Sync com
+ * FETCH_DEAL_FIELDS=0). Evita GET /contacts?search= na Relação inteira.
+ * @returns {'cpf'|'rgm'|'email'|'phone'|null}
+ */
+function cacheCoverageKind(cpf, personRows, sets) {
+  if (cpf && sets.cpfs.has(cpf)) return 'cpf';
+  for (const r of personRows) {
+    const m = extractMatriculadosMappedValues(r);
+    const rgm = digits(m.rgm);
+    if (rgm && sets.rgms.has(rgm)) return 'rgm';
+    for (const em of [emailMatchKey(m._email), emailMatchKey(m.e_mail_ad)]) {
+      if (em && sets.emails.has(em)) return 'email';
+    }
+    for (const raw of [m._phone, m.telefone_comercial]) {
+      const ph = phoneMatchKey(raw);
+      if (ph && sets.phones.has(ph)) return 'phone';
+    }
+  }
+  return null;
+}
+
+/**
  * Acha contact existente no CRM por CPF → e-mail → telefone.
  * O CPF vive no campo do deal, então `searchContacts(cpf)` quase nunca acha —
  * e-mail/telefone são os termos que a busca de contact realmente indexa.
@@ -322,13 +344,20 @@ export async function runMatriculadosProvision(opts = {}) {
     String(process.env.NOVO_CRM_PROVISION_USE_CACHE_DEDUP || '1').trim() !== '0';
   let existingCpfs = new Set();
   let existingRgms = new Set();
+  let existingEmails = new Set();
+  let existingPhones = new Set();
   if (useCacheDedup) {
     try {
       const sets = await cacheRepo.loadExistingCpfRgmSets();
       existingCpfs = sets.cpfs;
       existingRgms = sets.rgms;
+      existingEmails = sets.emails || new Set();
+      for (const p of sets.phones || []) {
+        const k = phoneMatchKey(p);
+        if (k) existingPhones.add(k);
+      }
       console.log(
-        `[novo-crm-provision] cache dedup: ${existingCpfs.size} CPFs · ${existingRgms.size} RGMs já no cache`
+        `[novo-crm-provision] cache dedup: ${existingCpfs.size} CPFs · ${existingRgms.size} RGMs · ${existingEmails.size} e-mails · ${existingPhones.size} telefones já no cache`
       );
     } catch (err) {
       console.warn('[novo-crm-provision] cache dedup indisponível:', err?.message || err);
@@ -448,6 +477,8 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedBadName = 0;
   let skippedCache = 0;
   let skippedCacheRgm = 0;
+  let skippedCacheEmail = 0;
+  let skippedCachePhone = 0;
   let skippedNotDelta = 0;
   let updatedExisting = 0;
   let warmedCache = 0;
@@ -458,12 +489,42 @@ export async function runMatriculadosProvision(opts = {}) {
   // maxCreates = teto de PESSOAS (contatos). Deals podem exceder (2+ RGMs).
   // Ordem determinística (mesmo snapshot + sort estável); offset pula as N
   // primeiras pessoas p/ continuar de onde a run anterior parou.
-  const personList = [...groups.entries()].slice(offset);
+  const cacheSets = {
+    cpfs: existingCpfs,
+    rgms: existingRgms,
+    emails: existingEmails,
+    phones: existingPhones,
+  };
+  const bumpCacheSkip = (kind) => {
+    if (kind === 'cpf') skippedCache += 1;
+    else if (kind === 'rgm') skippedCacheRgm += 1;
+    else if (kind === 'email') skippedCacheEmail += 1;
+    else if (kind === 'phone') skippedCachePhone += 1;
+  };
+
+  // Filtra no Postgres/espelho ANTES do loop ao vivo. Sem CPF/RGM no cache
+  // (Full Sync com FETCH_DEAL_FIELDS=0) ainda dá para pular por e-mail/telefone
+  // do contact — senão a prévia GET /contacts?search= em ~36k pessoas.
+  const gap = [];
+  for (const [cpf, personRows] of groups.entries()) {
+    const kind = cacheCoverageKind(cpf, personRows, cacheSets);
+    if (kind) {
+      bumpCacheSkip(kind);
+      continue;
+    }
+    gap.push([cpf, personRows]);
+  }
+
+  const personList = gap.slice(offset);
+  console.log(
+    `[novo-crm-provision] após espelho: gap=${gap.length} (pula offset=${offset} → ${personList.length} ao vivo)`
+  );
+  const cacheSkipped = skippedCache + skippedCacheRgm + skippedCacheEmail + skippedCachePhone;
   touchProvisionJob(jobId, {
-    phase: 'provisioning',
+    phase: dryRun ? 'live_check' : 'provisioning',
     status_message:
       mode === 'new'
-        ? `Verificando ${personList.length} candidatos ao vivo no CRM…`
+        ? `Espelho filtrou ${cacheSkipped.toLocaleString('pt-BR')}. Verificando ${personList.length} ao vivo no CRM…`
         : `Provisionando (${personList.length} candidatos, mode=${mode})…`,
     total: personList.length,
   });
@@ -478,9 +539,18 @@ export async function runMatriculadosProvision(opts = {}) {
     }
   };
 
+  const markCancelledByOperator = () => {
+    if (aborted || !jobId) return;
+    const j = provisionJobs.get(jobId);
+    if (!j?.cancel_requested) return;
+    aborted = true;
+    abortReason = 'cancelado pelo operador';
+  };
+
   // Processa UMA pessoa (1 contato + N deals). Counters são compartilhados —
   // seguro porque JS é single-thread (sem corrida entre awaits).
   const processPerson = async ([cpf, personRows]) => {
+    markCancelledByOperator();
     if (aborted) return;
 
     // Reserva slot ANTES de qualquer await de create — evita overshoot do maxCreates.
@@ -495,20 +565,11 @@ export async function runMatriculadosProvision(opts = {}) {
 
     scanned += 1;
 
-    // Idempotência via cache: já existe no CRM → pula sem gastar API.
-    if (existingCpfs.has(cpf)) {
-      skippedCache += 1;
+    // Idempotência via cache (rede de segurança — a fila já veio filtrada).
+    const cacheKind = cacheCoverageKind(cpf, personRows, cacheSets);
+    if (cacheKind) {
+      bumpCacheSkip(cacheKind);
       return;
-    }
-    if (existingRgms.size) {
-      const rgmHit = personRows.some((r) => {
-        const rgm = digits(extractMatriculadosMappedValues(r).rgm);
-        return rgm && existingRgms.has(rgm);
-      });
-      if (rgmHit) {
-        skippedCacheRgm += 1;
-        return;
-      }
     }
 
     const firstMapped = extractMatriculadosMappedValues(personRows[0]);
@@ -706,6 +767,7 @@ export async function runMatriculadosProvision(opts = {}) {
   let nextIndex = 0;
   const worker = async () => {
     while (true) {
+      markCancelledByOperator();
       if (aborted || createdContacts >= maxCreates) return;
       const idx = nextIndex++;
       if (idx >= personList.length) return;
@@ -726,6 +788,8 @@ export async function runMatriculadosProvision(opts = {}) {
     skipped_existing: skippedExisting,
     skipped_cache: skippedCache,
     skipped_cache_rgm: skippedCacheRgm,
+    skipped_cache_email: skippedCacheEmail,
+    skipped_cache_phone: skippedCachePhone,
     skipped_not_delta: skippedNotDelta,
     skipped_no_cpf: skippedNoCpf,
     skipped_duplicate_rgm: skippedDupRgm,
@@ -737,6 +801,7 @@ export async function runMatriculadosProvision(opts = {}) {
     warmed_cache: warmedCache,
     warm_cache_errors: warmCacheErrors,
     errors,
+    cancelled: abortReason === 'cancelado pelo operador',
     aborted,
     abort_reason: abortReason,
     max_creates: maxCreates,
@@ -835,6 +900,7 @@ export function startMatriculadosProvisionApplyBackground(opts = {}) {
     processed: 0,
     sent: 0,
     failed: 0,
+    cancel_requested: false,
     phase: 'starting',
     status_message: dryRun ? 'Iniciando verificação ao vivo…' : 'Iniciando criação…',
     started_at: new Date().toISOString(),
@@ -853,7 +919,8 @@ export function startMatriculadosProvisionApplyBackground(opts = {}) {
     jobId,
   })
     .then((result) => {
-      entry.status = 'completed';
+      entry.status =
+        entry.cancel_requested || result?.cancelled ? 'cancelled' : 'completed';
       entry.result = result;
       entry.finished_at = new Date().toISOString();
       return result;
@@ -881,6 +948,17 @@ export function getRunningMatriculadosProvisionJob() {
   if (!runningProvisionJobId) return null;
   const j = provisionJobs.get(runningProvisionJobId);
   return j?.status === 'running' ? j : null;
+}
+
+export function requestCancelMatriculadosProvision(jobId) {
+  const j = jobId
+    ? provisionJobs.get(String(jobId))
+    : getRunningMatriculadosProvisionJob();
+  if (!j || j.status !== 'running') {
+    return { ok: false, error: 'Nenhuma criação/prévia em andamento' };
+  }
+  j.cancel_requested = true;
+  return { ok: true, jobId: j.jobId, status: 'cancelling' };
 }
 
 function msUntilHourUtc(hourUtc) {

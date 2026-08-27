@@ -44,12 +44,60 @@ function fullHourUtc() {
   return Math.max(0, Math.min(23, Math.floor(Number(process.env.NOVO_CRM_CACHE_FULL_HOUR_UTC) || 5)));
 }
 
+function msUntilHourUtc(hourUtc) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCHours(hourUtc, 0, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Cancel cooperativo do Full/Incremental espelho (operador no painel). */
 let cacheSyncCancelRequested = false;
+
+/** Progresso em memória — a fase index_deals não grava contacts_seen no log. */
+let cacheSyncLive = null;
+
+function setCacheSyncLive(patch) {
+  cacheSyncLive = cacheSyncLive ? { ...cacheSyncLive, ...patch } : { ...patch };
+}
+
+export function getRunningNovoCrmCacheSyncJob() {
+  return cacheSyncLive;
+}
+
+export function isNovoCrmCacheSyncRunning() {
+  return Boolean(activeSyncPromise);
+}
+
+export function getNovoCrmNightCronStatus() {
+  const cacheOn = String(process.env.NOVO_CRM_CACHE_ENABLED ?? '1') !== '0';
+  const fieldsOn = String(process.env.NOVO_CRM_FIELDS_SYNC_ENABLED || '').trim() === '1';
+  const flagsOn = String(process.env.NOVO_CRM_FLAGS_SYNC_ENABLED || '').trim() === '1';
+  const provisionOn = String(process.env.NOVO_CRM_PROVISION_ENABLED || '').trim() === '1';
+  const fieldsHour = Math.max(
+    0,
+    Math.min(23, Math.floor(Number(process.env.NOVO_CRM_FIELDS_SYNC_HOUR_UTC) || 8))
+  );
+  const cacheHour = fullHourUtc();
+  return {
+    cache_enabled: cacheOn,
+    cache_source: resolveCacheSource(),
+    cache_full_hour_utc: cacheHour,
+    cache_next_ms: cacheOn ? msUntilHourUtc(cacheHour) : null,
+    fetch_deal_fields: apiSource.shouldFetchDealFields(),
+    fields_enabled: fieldsOn,
+    fields_hour_utc: fieldsHour,
+    fields_next_ms: fieldsOn ? msUntilHourUtc(fieldsHour) : null,
+    flags_enabled: flagsOn,
+    provision_enabled: provisionOn,
+    api_configured: isNovoCrmApiConfigured(),
+  };
+}
 
 export async function requestCancelNovoCrmCacheSync() {
   if (activeSyncPromise) {
@@ -145,6 +193,15 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
     const contactCap = resolveContactCap(contactsTotal, { maxContacts, samplePct });
     const truncated = contactCap != null;
     logId = await cacheRepo.recordSyncStart({ mode: 'full', contactsTotal });
+    setCacheSyncLive({
+      phase: truncated ? 'contacts' : 'index_deals',
+      status_message: truncated
+        ? `Amostra de ${contactCap} contatos…`
+        : `Indexando negócios (antes dos ${contactsTotal.toLocaleString('pt-BR')} contatos)…`,
+      contacts_total: contactsTotal,
+      contacts_seen: 0,
+      cache_upserted: 0,
+    });
     console.log(
       `[novo-crm-cache-sync] full via API: ${contactsTotal} contacts${
         truncated ? ` — AMOSTRA max=${contactCap} (sem markDeleted)` : ' — indexando deals…'
@@ -156,7 +213,28 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
     if (!truncated) {
       dealsByContact = await apiSource.loadAllDealsByContactId({
         delayMs: batchDelayMs(),
+        shouldCancel: () => cacheSyncCancelRequested,
         onProgress: (p) => {
+          setCacheSyncLive({
+            phase: 'index_deals',
+            status_message: `Indexando negócios ${p.page}/${p.totalPages ?? '?'} · ${Number(p.seen || 0).toLocaleString('pt-BR')} de ${Number(p.total || 0).toLocaleString('pt-BR')}`,
+            deals_page: p.page,
+            deals_total_pages: p.totalPages,
+            deals_seen: p.seen,
+            deals_total: p.total,
+            contacts_total: contactsTotal,
+          });
+          if (p.page === 1 || p.page % 5 === 0) {
+            cacheRepo
+              .recordSyncProgress(logId, {
+                batches: p.page,
+                contactsSeen: 0,
+                upserted: 0,
+                skipped: 0,
+                dataLossEvents: 0,
+              })
+              .catch(() => {});
+          }
           if (p.page % 20 === 0 || p.page === 1) {
             console.log(
               `[novo-crm-cache-sync] deals page ${p.page}/${p.totalPages ?? '?'} seen=${p.seen}/${p.total}`
@@ -169,9 +247,40 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       );
     }
 
+    if (cacheSyncCancelRequested) {
+      const durationMs = Date.now() - startMs;
+      await cacheRepo.recordSyncFinish(logId, {
+        status: 'cancelled',
+        batches,
+        contactsSeen: 0,
+        upserted: 0,
+        skipped: 0,
+        deleted: 0,
+        dataLossEvents: 0,
+        errorMessage: 'cancelado pelo operador (durante índice de negócios)',
+      });
+      return {
+        ok: false,
+        mode: 'full',
+        source: 'api',
+        logId,
+        cancelled: true,
+        contacts_total: contactsTotal,
+        durationMs,
+      };
+    }
+
     let page = 1;
     let totalPages = Math.ceil(contactsTotal / contactPerPage) || 1;
     const fetchFields = apiSource.shouldFetchDealFields();
+    setCacheSyncLive({
+      phase: 'contacts',
+      status_message: fetchFields
+        ? 'Copiando contatos (com GET de campos por deal)…'
+        : 'Copiando contatos para o espelho…',
+      contacts_total: contactsTotal,
+      contacts_seen: 0,
+    });
 
     while (page <= totalPages) {
       if (cacheSyncCancelRequested) break;
@@ -269,6 +378,13 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
           })
           .catch(() => {});
       }
+      setCacheSyncLive({
+        phase: 'contacts',
+        contacts_total: contactsTotal,
+        contacts_seen: contactsSeen,
+        cache_upserted: upserted,
+        status_message: `Contatos ${contactsSeen.toLocaleString('pt-BR')} / ${contactsTotal.toLocaleString('pt-BR')} · ${upserted.toLocaleString('pt-BR')} upserts`,
+      });
 
       console.log(
         `[novo-crm-cache-sync] contacts page ${page}/${totalPages} seen=${contactsSeen}${
@@ -284,17 +400,19 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
     }
 
     const cancelled = cacheSyncCancelRequested;
+    const completeEnough =
+      Number(contactsTotal) > 0 && contactsSeen >= Math.floor(Number(contactsTotal) * 0.95);
     if (!dryRun) {
-      // Amostra NÃO pode markDeleted — apagaria os ~90% fora do sample.
-      // Cancel no meio também não markDeleted (evita apagar quem ainda não varreu).
-      if (!truncated && !cancelled) {
+      // Amostra / cancel / full incompleto NÃO podem markDeleted — o #54
+      // (27/08) viu 17k/42k, status ok, e marcou 25k como apagados.
+      if (!truncated && !cancelled && completeEnough) {
         deleted = await cacheRepo.markDeletedNotSeenSince(fullSeenAt);
       } else {
         console.log(
-          `[novo-crm-cache-sync] markDeleted pulado (truncated=${truncated} cancelled=${cancelled} seen=${contactsSeen}/${contactsTotal})`
+          `[novo-crm-cache-sync] markDeleted pulado (truncated=${truncated} cancelled=${cancelled} complete=${completeEnough} seen=${contactsSeen}/${contactsTotal})`
         );
       }
-      if (maxSourceUpdatedAt && !cancelled) {
+      if (maxSourceUpdatedAt && !cancelled && completeEnough) {
         await cacheRepo.updateSyncState({
           cursorUpdatedAt: maxSourceUpdatedAt,
           cursorId: null,
@@ -303,8 +421,12 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
     }
 
     const durationMs = Date.now() - startMs;
+    const incompleteMsg =
+      !cancelled && !completeEnough
+        ? `incompleto: seen=${contactsSeen}/${contactsTotal} (markDeleted pulado)`
+        : null;
     await cacheRepo.recordSyncFinish(logId, {
-      status: cancelled ? 'cancelled' : 'ok',
+      status: cancelled || incompleteMsg ? 'error' : 'ok',
       cursorFinishedAt: maxSourceUpdatedAt,
       batches,
       contactsSeen,
@@ -312,13 +434,13 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       skipped,
       deleted,
       dataLossEvents,
-      errorMessage: cancelled ? 'cancelado pelo operador' : null,
+      errorMessage: cancelled ? 'cancelado pelo operador' : incompleteMsg,
     });
     console.log(
-      `[novo-crm-cache-sync] full API ${cancelled ? 'cancelled' : 'ok'} batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} deals_recuperados=${dealsRecovered}/${emptyDealsVerified} ${durationMs}ms`
+      `[novo-crm-cache-sync] full API ${cancelled ? 'cancelled' : incompleteMsg ? 'incomplete' : 'ok'} batches=${batches} seen=${contactsSeen} upserted=${upserted} deleted=${deleted} truncated=${truncated} deals_recuperados=${dealsRecovered}/${emptyDealsVerified} ${durationMs}ms`
     );
     return {
-      ok: !cancelled,
+      ok: !cancelled && !incompleteMsg,
       mode: 'full',
       source: 'api',
       logId,
@@ -337,6 +459,7 @@ async function runFullSyncViaApi({ dryRun = false, maxContacts = null, samplePct
       empty_deals_verify_errors: emptyDealsVerifyErrors,
       deals_recovered: dealsRecovered,
       cancelled,
+      incomplete: Boolean(incompleteMsg),
     };
   } catch (err) {
     if (logId) {
@@ -624,10 +747,6 @@ async function runIncrementalSyncInternal({ dryRun = false, maxBatches = null } 
 
 let activeSyncPromise = null;
 
-export function isNovoCrmCacheSyncRunning() {
-  return activeSyncPromise != null;
-}
-
 export async function runNovoCrmCacheSync({
   mode = 'incremental',
   dryRun = false,
@@ -641,26 +760,34 @@ export async function runNovoCrmCacheSync({
 }
 
 export function startNovoCrmCacheSyncBackground(opts = {}) {
-  if (activeSyncPromise) return false;
+  if (activeSyncPromise) {
+    console.log('[novo-crm-cache-sync] já em andamento — start ignorado');
+    return false;
+  }
   clearCacheSyncCancel();
+  cacheSyncLive = {
+    phase: 'starting',
+    status_message: 'Iniciando Full Sync…',
+    contacts_total: null,
+    contacts_seen: 0,
+    cache_upserted: 0,
+    deals_page: 0,
+    deals_total_pages: null,
+    deals_seen: 0,
+    deals_total: 0,
+    started_at: new Date().toISOString(),
+  };
   activeSyncPromise = runNovoCrmCacheSync(opts)
     .catch((err) => {
-      console.error('[novo-crm-cache-sync] background FAIL:', err?.message || String(err));
+      console.error('[novo-crm-cache-sync] background FAIL:', err?.message || err);
       return null;
     })
     .finally(() => {
       activeSyncPromise = null;
+      cacheSyncLive = null;
       clearCacheSyncCancel();
     });
   return true;
-}
-
-function msUntilHourUtc(hourUtc) {
-  const now = new Date();
-  const next = new Date(now);
-  next.setUTCHours(hourUtc, 0, 0, 0);
-  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
-  return next.getTime() - now.getTime();
 }
 
 export function startNovoCrmCacheSyncCron() {
@@ -685,7 +812,7 @@ export function startNovoCrmCacheSyncCron() {
   const isProdHost = isProdCrmHost(crmHost);
 
   console.log(
-    `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}; CRM_HOST=${crmHost} (${isProdHost ? 'PRODUÇÃO' : 'DEV/outro'})`
+    `[novo-crm-cache-sync] boot: CACHE_SOURCE=${sourceRaw || '(vazio)'} → ${source}; ENABLED=${enabled ? 1 : 0}; token=${hasToken ? 'sim' : 'não'}; CRM_HOST=${crmHost} (${isProdHost ? 'PRODUÇÃO' : 'DEV/outro'}); FETCH_DEAL_FIELDS=${apiSource.shouldFetchDealFields() ? '1' : '0'}`
   );
 
   if (source === 'api') {

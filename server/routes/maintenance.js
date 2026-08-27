@@ -14,6 +14,8 @@ import {
   runNovoCrmCacheSync,
   startNovoCrmCacheSyncBackground,
   requestCancelNovoCrmCacheSync,
+  getRunningNovoCrmCacheSyncJob,
+  getNovoCrmNightCronStatus,
 } from '../services/novoCrmPersonCacheSyncService.js';
 import * as novoCrmPersonCacheRepo from '../repositories/novoCrmPersonCacheRepository.js';
 import {
@@ -36,6 +38,7 @@ import {
   isMatriculadosProvisionRunning,
   getMatriculadosProvisionJob,
   getRunningMatriculadosProvisionJob,
+  requestCancelMatriculadosProvision,
   isProvisionAllowedOnThisHost,
   isNovoCrmWriteAllowedOnThisHost,
 } from '../services/novoCrmMatriculadosProvisionService.js';
@@ -221,8 +224,10 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       missing_cpf: stats.missing_cpf ?? 0,
       missing_rgm: stats.missing_rgm ?? 0,
       incomplete_fields: stats.incomplete_fields ?? 0,
-      running: Boolean(stats.running),
+      running: Boolean(stats.running) || Boolean(getRunningNovoCrmCacheSyncJob()),
       running_sync: stats.running,
+      running_cache: getRunningNovoCrmCacheSyncJob(),
+      night_cron: getNovoCrmNightCronStatus(),
       last_sync: stats.last_sync,
       last_flags_sync: stats.last_flags_sync || null,
       last_orphan_dedupe: stats.last_orphan_dedupe || null,
@@ -285,6 +290,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
             phase: provisionJob.phase,
             status_message: provisionJob.status_message,
             started_at: provisionJob.started_at,
+            cancel_requested: Boolean(provisionJob.cancel_requested),
           }
         : null,
       state: stats.state,
@@ -566,11 +572,29 @@ router.get('/provision-matriculados-novo-crm-status', requireApiKey, async (req,
         status_message: job.status_message,
         started_at: job.started_at,
         finished_at: job.finished_at,
+        cancel_requested: Boolean(job.cancel_requested),
         error: job.error,
         result: job.result,
       },
     });
   } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/maintenance/provision-matriculados-novo-crm-stop?jobId=
+ */
+router.post('/provision-matriculados-novo-crm-stop', requireApiKey, async (req, res) => {
+  try {
+    const jobId = req.query.jobId ? String(req.query.jobId) : undefined;
+    const r = requestCancelMatriculadosProvision(jobId);
+    if (!r.ok) {
+      return res.status(404).json({ error: r.error || 'Nenhuma criação/prévia em andamento' });
+    }
+    res.json({ ok: true, status: r.status, jobId: r.jobId });
+  } catch (err) {
+    console.error('[provision-matriculados-novo-crm-stop]', err);
     res.status(500).json({ error: err?.message || String(err) });
   }
 });

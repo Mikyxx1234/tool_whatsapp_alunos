@@ -78,6 +78,7 @@ import {
   updateDealCustomFields,
 } from './novoCrmClient.js';
 import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionService.js';
+import { isNovoCrmCacheSyncRunning } from './novoCrmPersonCacheSyncService.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 
@@ -1812,8 +1813,20 @@ export function startExistingFieldsSyncCron() {
   );
 
   const first = setTimeout(() => {
-    startFlagsStageSyncBackground({ dryRun: false, mode: 'fields' });
+    if (isNovoCrmCacheSyncRunning()) {
+      console.warn(
+        '[novo-crm-fields-sync] pulando esta rodada — Full Sync ainda em andamento'
+      );
+    } else {
+      startFlagsStageSyncBackground({ dryRun: false, mode: 'fields' });
+    }
     const daily = setInterval(() => {
+      if (isNovoCrmCacheSyncRunning()) {
+        console.warn(
+          '[novo-crm-fields-sync] pulando esta rodada — Full Sync ainda em andamento'
+        );
+        return;
+      }
       startFlagsStageSyncBackground({ dryRun: false, mode: 'fields' });
     }, 24 * 60 * 60 * 1000);
     if (typeof daily?.unref === 'function') daily.unref();
