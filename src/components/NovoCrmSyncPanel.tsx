@@ -1073,12 +1073,12 @@ export function NovoCrmSyncPanel() {
           />
         </div>
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-          <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-indigo-900">1. Full Sync</p>
-            <p className="text-[11px] text-indigo-800/80 flex-1">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
+            <p className="text-xs font-semibold text-gray-900">1. Full Sync</p>
+            <p className="text-[11px] text-gray-500 flex-1">
               Reespelha o CRM no cache local. Use quando o painel estiver desatualizado.
             </p>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 mt-auto">
               <button
                 type="button"
                 onClick={() => void runFullSync()}
@@ -1106,16 +1106,16 @@ export function NovoCrmSyncPanel() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-emerald-900">2. Att de etapas</p>
-            <p className="text-[11px] text-emerald-800/80 flex-1">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
+            <p className="text-xs font-semibold text-gray-900">2. Att de etapas</p>
+            <p className="text-[11px] text-gray-500 flex-1">
               Flags (Doc, Financeiro, Situação Financeira/inad vencidos, BB, Evasão) + etapa. CAA→Retenção
               só ≤72h; depois SIAA/Perdido. Não toca Ganho/Cancelado nem Retenção manual (sem CAA open).
               Preenche flag vazia só quando a base pede Sim.
             </p>
             {lastFlags?.finished_at ? (
-              <div className="text-[12px] space-y-0.5 rounded-md border border-emerald-400/60 dark:border-emerald-400/50 bg-emerald-100/90 dark:bg-emerald-950/70 px-2.5 py-2 text-emerald-950 dark:text-[#e6edf6]">
-                <p className="font-semibold text-emerald-950 dark:text-emerald-200">
+              <div className="text-[12px] space-y-0.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2 text-gray-800">
+                <p className="font-semibold text-gray-900">
                   Última Att (resultado real)
                   {lastFlags.cancelled
                     ? ' · cancelada (parcial)'
@@ -1167,11 +1167,11 @@ export function NovoCrmSyncPanel() {
                   )}
               </div>
             ) : (
-              <p className="text-[11px] text-emerald-900/70 dark:text-emerald-200/60">
+              <p className="text-[11px] text-gray-400">
                 Sem Att registrada neste ambiente.
               </p>
             )}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 mt-auto">
               <button
                 type="button"
                 onClick={() => void runFlagsStageSync()}
@@ -1199,14 +1199,14 @@ export function NovoCrmSyncPanel() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-sky-100 bg-sky-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-sky-900">3. Criação de leads novos</p>
-            <p className="text-[11px] text-sky-800/80 flex-1">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
+            <p className="text-xs font-semibold text-gray-900">3. Criação de leads novos</p>
+            <p className="text-[11px] text-gray-500 flex-1">
               Quem está na Relação de matriculados e ainda não tem negócio. Prévia confere
               espelho + CRM ao vivo; você baixa o CSV e só então confirma a criação. Até{' '}
               {PROVISION_NEW_MAX.toLocaleString('pt-BR')} por vez.
             </p>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 mt-auto">
               <button
                 type="button"
                 onClick={() => void runProvisionPreview()}
@@ -1226,16 +1226,16 @@ export function NovoCrmSyncPanel() {
               </button>
             </div>
             {pj && provisionRunning && (
-              <p className="text-[11px] text-sky-900">
+              <p className="text-[11px] text-gray-600">
                 {phaseLabel(pj.phase)} · {Number(pj.processed || 0).toLocaleString('pt-BR')}
                 {pj.total ? ` / ${Number(pj.total).toLocaleString('pt-BR')}` : ''}
               </p>
             )}
             {provisionMsg && !provisionPreview && (
-              <p className="text-[11px] font-medium text-sky-900">{provisionMsg}</p>
+              <p className="text-[11px] font-medium text-gray-700">{provisionMsg}</p>
             )}
             {provisionPreview && (
-              <div className="mt-1 text-[11px] text-sky-900 space-y-0.5">
+              <div className="mt-1 text-[11px] text-gray-700 space-y-0.5">
                 <p>
                   Criar:{' '}
                   <strong>
@@ -1262,7 +1262,7 @@ export function NovoCrmSyncPanel() {
                   </p>
                 ) : null}
                 {provisionApplied ? (
-                  <p className="pt-1 font-semibold text-sky-900">Aplicado no CRM.</p>
+                  <p className="pt-1 font-semibold text-gray-900">Aplicado no CRM.</p>
                 ) : (
                   <div className="flex flex-wrap gap-2 pt-1.5">
                     {(provisionPreview.to_create?.length || 0) > 0 && (
@@ -1274,7 +1274,7 @@ export function NovoCrmSyncPanel() {
                             `leads-novos-previa-${new Date().toISOString().slice(0, 10)}.csv`
                           )
                         }
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-sky-900 border border-sky-300 hover:bg-sky-50 rounded-lg"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-200 hover:bg-gray-50 rounded-lg"
                       >
                         <FileDown className="w-3.5 h-3.5" />
                         CSV ({Number(provisionPreview.to_create_count || provisionPreview.to_create?.length || 0).toLocaleString('pt-BR')})
@@ -1291,7 +1291,7 @@ export function NovoCrmSyncPanel() {
                     <button
                       type="button"
                       onClick={dismissProvisionPreview}
-                      className="px-3 py-1.5 text-xs font-medium text-sky-800 border border-sky-300 hover:bg-sky-50 rounded-lg"
+                      className="px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-200 hover:bg-gray-50 rounded-lg"
                     >
                       Descartar
                     </button>
@@ -1301,14 +1301,14 @@ export function NovoCrmSyncPanel() {
             )}
           </div>
 
-          <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-violet-900">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
+            <p className="text-xs font-semibold text-gray-900">
               4. Dedupe incompletos/duplicados
             </p>
-            <p className="text-[11px] text-violet-800/80 flex-1">
+            <p className="text-[11px] text-gray-500 flex-1">
               Incompletos só preenchem CPF/RGM (e irmãos fracos vão a Perdido). Duplicados: 2+ cartões → mantém 1. Leads novos ficam no card 3.
             </p>
-            <label className="flex flex-col gap-0.5 text-[11px] text-violet-900">
+            <label className="flex flex-col gap-0.5 text-[11px] text-gray-700">
               <span className="font-medium">Escopo</span>
               <select
                 value={dedupeScope}
@@ -1316,14 +1316,14 @@ export function NovoCrmSyncPanel() {
                 onChange={(e) =>
                   setDedupeScope(e.target.value as 'incomplete' | 'duplicates' | 'both')
                 }
-                className="rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-xs text-violet-950 disabled:opacity-50"
+                className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-900 disabled:opacity-50"
               >
                 <option value="incomplete">Incompletos (CPF/RGM) — default</option>
                 <option value="duplicates">Duplicados → Perdido</option>
                 <option value="both">Tudo (incompletos + duplicados)</option>
               </select>
             </label>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 mt-auto">
               <button
                 type="button"
                 onClick={() => void runDedupePreview()}
@@ -1354,8 +1354,8 @@ export function NovoCrmSyncPanel() {
               )}
             </div>
             {lastDedupe?.finished_at && !dedupeRunning && (
-              <div className="text-[12px] space-y-0.5 rounded-md border border-violet-400/60 dark:border-violet-400/50 bg-violet-100/90 dark:bg-violet-950/70 px-2.5 py-2 text-violet-950 dark:text-[#e6edf6]">
-                <p className="font-semibold text-violet-950 dark:text-violet-200">
+              <div className="text-[12px] space-y-0.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2 text-gray-800">
+                <p className="font-semibold text-gray-900">
                   Última {lastDedupe.dry_run ? 'prévia' : 'apply'}
                   {lastDedupe.cancelled
                     ? ' · cancelada (parcial)'
@@ -1395,10 +1395,10 @@ export function NovoCrmSyncPanel() {
               </div>
             )}
             {dedupeMsg && !dedupeRunning && (
-              <p className="text-[11px] font-medium text-violet-900 dark:text-violet-200">{dedupeMsg}</p>
+              <p className="text-[11px] font-medium text-gray-700">{dedupeMsg}</p>
             )}
             {dedupePreview && (
-              <div className="mt-1 text-[11px] text-violet-900 space-y-0.5">
+              <div className="mt-1 text-[11px] text-gray-700 space-y-0.5">
                 <p>
                   Sem negócio no espelho: <strong>{dedupePreview.orphans_total.toLocaleString('pt-BR')}</strong> ·
                   já tinham negócio no CRM: <strong>{(dedupePreview.skipped_already_has_deal_live ?? 0).toLocaleString('pt-BR')}</strong>
@@ -1435,7 +1435,7 @@ export function NovoCrmSyncPanel() {
                     : ''}
                 </p>
                 <p>Casados por e-mail: {dedupePreview.matched_email.toLocaleString('pt-BR')} · por telefone: {dedupePreview.matched_phone.toLocaleString('pt-BR')}</p>
-                <p className="text-violet-700/80">
+                <p className="text-gray-500">
                   Barrados pela conferência: {(dedupePreview.incomplete_live_already_ok ?? 0).toLocaleString('pt-BR')} já
                   preenchidos no CRM · {(dedupePreview.incomplete_ambiguous ?? 0).toLocaleString('pt-BR')} e-mail/telefone de
                   mais de um aluno · {(dedupePreview.incomplete_name_mismatch ?? 0).toLocaleString('pt-BR')} nome divergente
@@ -1444,7 +1444,7 @@ export function NovoCrmSyncPanel() {
                     : ''}
                 </p>
                 {dedupeApplied ? (
-                  <p className="pt-1 font-semibold text-violet-900">
+                  <p className="pt-1 font-semibold text-gray-900">
                     Aplicado:{' '}
                     {(
                       (dedupePreview.deals_moved_perdido ?? 0) +
@@ -1473,7 +1473,7 @@ export function NovoCrmSyncPanel() {
                     <button
                       type="button"
                       onClick={dismissDedupePreview}
-                      className="px-3 py-1.5 text-xs font-medium text-violet-800 border border-violet-300 hover:bg-violet-50 rounded-lg"
+                      className="px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-200 hover:bg-gray-50 rounded-lg"
                     >
                       Descartar
                     </button>
