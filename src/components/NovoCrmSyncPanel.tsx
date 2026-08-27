@@ -22,6 +22,11 @@ import {
   type OrphanDedupeJobStatusResponse,
   type OrphanDedupePreviewResponse,
 } from '../services/maintenanceApi';
+import {
+  NOVO_CRM_SYNC_QUEUE_DEFAULT,
+  NovoCrmSyncQueueCarousel,
+  type NovoCrmSyncKind,
+} from './NovoCrmSyncQueueCarousel';
 function fmtDt(iso: string | null | undefined) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('pt-BR', {
@@ -32,6 +37,17 @@ function fmtDt(iso: string | null | undefined) {
     minute: '2-digit',
   });
 }
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+const SYNC_KIND_LABEL: Record<NovoCrmSyncKind, string> = {
+  full: 'Full Sync',
+  provision: 'Leads novos',
+  flags: 'Att de etapas',
+  dedupe: 'Dedupe',
+};
 
 function fmtDurationMs(ms: number) {
   if (!Number.isFinite(ms) || ms < 0) return '—';
@@ -167,7 +183,14 @@ export function NovoCrmSyncPanel() {
   const [provisionMode, setProvisionMode] = useState<'preview' | 'apply'>('preview');
   const [provisionApplied, setProvisionApplied] = useState(false);
 
+  const [queueOrder, setQueueOrder] = useState<NovoCrmSyncKind[]>([]);
+  const [queueRunning, setQueueRunning] = useState(false);
+  const [queueIndex, setQueueIndex] = useState(-1);
+  const [queueMsg, setQueueMsg] = useState<string | null>(null);
+  const [queueConfirm, setQueueConfirm] = useState(false);
+
   const pollRef = useRef<number | null>(null);
+  const queueStopRef = useRef(false);
 
   const stopPoll = useCallback(() => {
     if (pollRef.current != null) {
@@ -304,7 +327,9 @@ export function NovoCrmSyncPanel() {
   }, [loadStatus, stopPoll]);
 
   useEffect(() => {
-    const needPoll = Boolean(status?.running || flagsJobId || dedupeJobId || provisionJobId);
+    const needPoll = Boolean(
+      status?.running || flagsJobId || dedupeJobId || provisionJobId || queueRunning
+    );
     if (needPoll) {
       stopPoll();
       pollRef.current = window.setInterval(() => {
@@ -420,7 +445,7 @@ export function NovoCrmSyncPanel() {
       stopPoll();
     }
     return () => stopPoll();
-  }, [status?.running, flagsJobId, dedupeJobId, provisionJobId, dedupeMode, loadStatus, stopPoll]);
+  }, [status?.running, flagsJobId, dedupeJobId, provisionJobId, queueRunning, dedupeMode, loadStatus, stopPoll]);
 
   const last = status?.last_sync || null;
   const lastFlags = status?.last_flags_sync || null;
@@ -684,6 +709,179 @@ export function NovoCrmSyncPanel() {
     setProvisionJob(null);
   };
 
+  const queueKindRef = useRef<NovoCrmSyncKind | null>(null);
+
+  const waitFullSyncDone = async (): Promise<'ok' | 'cancelled' | 'failed'> => {
+    const before = await maintenanceApi.getNovoCrmCacheStatus();
+    setStatus(before);
+    const prevFinish = before.last_sync?.finished_at || null;
+    let seenRunning = Boolean(before.running);
+    const t0 = Date.now();
+    while (!queueStopRef.current) {
+      const s = await maintenanceApi.getNovoCrmCacheStatus();
+      setStatus(s);
+      if (s.running) seenRunning = true;
+      const newFinish = s.last_sync?.finished_at || null;
+      const done = (seenRunning && !s.running) || (!s.running && newFinish && newFinish !== prevFinish);
+      if (done) {
+        if (queueStopRef.current) return 'cancelled';
+        if (s.last_sync?.status === 'ok') return 'ok';
+        if (String(s.last_sync?.error_message || '').includes('cancelado')) return 'cancelled';
+        return s.last_sync?.status === 'error' ? 'failed' : 'ok';
+      }
+      if (!seenRunning && Date.now() - t0 > 60_000 && !s.running) {
+        throw new Error('Full Sync não iniciou');
+      }
+      if (Date.now() - t0 > 10 * 60 * 60 * 1000) throw new Error('Full Sync excedeu 10h');
+      await sleep(2500);
+    }
+    return 'cancelled';
+  };
+
+  const waitNamedJob = async (
+    jobId: string,
+    fetchJob: (
+      id: string
+    ) => Promise<{ running?: boolean; job: { status: string; error?: string | null } | null }>
+  ): Promise<'ok' | 'cancelled' | 'failed'> => {
+    const t0 = Date.now();
+    while (!queueStopRef.current) {
+      const r = await fetchJob(jobId);
+      const st = r.job?.status;
+      if (st && st !== 'running') {
+        if (st === 'completed') return 'ok';
+        if (st === 'cancelled') return 'cancelled';
+        throw new Error(r.job?.error || 'Job falhou');
+      }
+      if (Date.now() - t0 > 10 * 60 * 60 * 1000) throw new Error('Job excedeu 10h');
+      await sleep(2500);
+    }
+    return 'cancelled';
+  };
+
+  const runQueuedStep = async (kind: NovoCrmSyncKind): Promise<'ok' | 'cancelled' | 'failed'> => {
+    queueKindRef.current = kind;
+    if (kind === 'full') {
+      setSyncBusy(true);
+      setSyncMsg('Fila: iniciando Full Sync…');
+      try {
+        await maintenanceApi.startNovoCrmCacheSync({ mode: 'full' });
+        setSyncMsg('Full Sync em andamento…');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!/já em andamento/i.test(msg)) throw e;
+        setSyncMsg('Full Sync já em andamento — aguardando terminar…');
+      }
+      const out = await waitFullSyncDone();
+      setSyncBusy(false);
+      return out;
+    }
+    if (kind === 'flags') {
+      setFlagsBusy(true);
+      setFlagsJob(null);
+      setFlagsMsg('Fila: iniciando Att de etapas…');
+      let jobId = '';
+      try {
+        const started = await maintenanceApi.startNovoCrmFlagsStage({ mode: 'flags_stage' });
+        jobId = started.jobId;
+      } catch (e) {
+        const st = await maintenanceApi.getNovoCrmFlagsStageStatus();
+        if (!st.job?.jobId) throw e;
+        jobId = st.job.jobId;
+        setFlagsMsg('Att já em andamento — aguardando terminar…');
+      }
+      setFlagsJobId(jobId);
+      setFlagsMsg('Att de etapas em andamento…');
+      return waitNamedJob(jobId, (id) => maintenanceApi.getNovoCrmFlagsStageStatus(id));
+    }
+    if (kind === 'provision') {
+      setProvisionBusy(true);
+      setProvisionMode('apply');
+      setProvisionMsg('Fila: criando leads novos…');
+      let jobId = '';
+      try {
+        const started = await maintenanceApi.startNovoCrmProvision({
+          mode: 'new',
+          max: PROVISION_NEW_MAX,
+        });
+        jobId = started.jobId;
+      } catch (e) {
+        const st = await maintenanceApi.getNovoCrmProvisionStatus();
+        if (!st.job?.jobId) throw e;
+        jobId = st.job.jobId;
+        setProvisionMsg('Criação já em andamento — aguardando terminar…');
+      }
+      setProvisionJobId(jobId);
+      return waitNamedJob(jobId, (id) => maintenanceApi.getNovoCrmProvisionStatus(id));
+    }
+    setDedupeBusy(true);
+    setDedupeMode('apply');
+    setDedupeApplied(false);
+    setDedupePreview(null);
+    setDedupeJob(null);
+    setDedupeMsg(`Fila: aplicando dedupe (${dedupeScope})…`);
+    let jobId = '';
+    try {
+      const started = await maintenanceApi.startOrphanDedupe({ scope: dedupeScope });
+      jobId = started.jobId;
+    } catch (e) {
+      const st = await maintenanceApi.getOrphanDedupeStatus();
+      if (!st.job?.jobId) throw e;
+      jobId = st.job.jobId;
+      setDedupeMsg('Dedupe já em andamento — aguardando terminar…');
+    }
+    setDedupeJobId(jobId);
+    return waitNamedJob(jobId, (id) => maintenanceApi.getOrphanDedupeStatus(id));
+  };
+
+  const stopQueue = async () => {
+    queueStopRef.current = true;
+    setQueueMsg('Parando fila…');
+    const kind = queueKindRef.current;
+    try {
+      if (kind === 'full') await maintenanceApi.stopNovoCrmCacheSync();
+      else if (kind === 'flags') await maintenanceApi.stopNovoCrmFlagsStage(flagsJobId || undefined);
+      else if (kind === 'dedupe') await maintenanceApi.stopOrphanDedupe(dedupeJobId || undefined);
+    } catch {
+      /* o wait loop encerra mesmo se o stop HTTP falhar */
+    }
+  };
+
+  const runQueue = async () => {
+    const plan = [...queueOrder];
+    if (plan.length === 0) return;
+    queueStopRef.current = false;
+    setQueueConfirm(false);
+    setQueueRunning(true);
+    setQueueIndex(0);
+    const parts: string[] = [];
+    try {
+      for (let i = 0; i < plan.length; i++) {
+        if (queueStopRef.current) break;
+        const kind = plan[i];
+        setQueueIndex(i);
+        setQueueMsg(`Fila ${i + 1}/${plan.length}: ${SYNC_KIND_LABEL[kind]}…`);
+        const out = await runQueuedStep(kind);
+        parts.push(`${SYNC_KIND_LABEL[kind]}: ${out === 'ok' ? 'ok' : out}`);
+        if (out !== 'ok') break;
+      }
+      if (queueStopRef.current) {
+        setQueueMsg(`Fila interrompida. ${parts.join(' · ')}`);
+      } else if (parts.some((p) => !p.endsWith(': ok'))) {
+        setQueueMsg(`Fila parou. ${parts.join(' · ')}`);
+      } else {
+        setQueueMsg(`Fila concluída. ${parts.join(' · ')}`);
+      }
+    } catch (e) {
+      setQueueMsg(e instanceof Error ? e.message : 'Falha na fila');
+    } finally {
+      queueKindRef.current = null;
+      setQueueRunning(false);
+      setQueueIndex(-1);
+      void loadStatus();
+    }
+  };
+
   const running = status?.running_sync || null;
   const total = running?.contacts_total ?? null;
   const seen = running?.contacts_seen ?? 0;
@@ -844,7 +1042,37 @@ export function NovoCrmSyncPanel() {
         <p className="mt-5 text-xs font-semibold text-gray-700 uppercase tracking-wide">
           Ações manuais
         </p>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="mt-2">
+          <NovoCrmSyncQueueCarousel
+            order={queueOrder}
+            running={queueRunning}
+            currentIndex={queueIndex}
+            message={queueMsg}
+            confirmOpen={queueConfirm}
+            dedupeScopeLabel={dedupeScope}
+            disabled={
+              Boolean(status?.running) ||
+              flagsRunning ||
+              provisionRunning ||
+              dedupeRunning
+            }
+            onToggle={(id) =>
+              setQueueOrder((prev) =>
+                prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+              )
+            }
+            onSelectAll={() => setQueueOrder([...NOVO_CRM_SYNC_QUEUE_DEFAULT])}
+            onClear={() => {
+              setQueueOrder([]);
+              setQueueConfirm(false);
+            }}
+            onAskRun={() => setQueueConfirm(true)}
+            onConfirmRun={() => void runQueue()}
+            onCancelConfirm={() => setQueueConfirm(false)}
+            onStop={() => void stopQueue()}
+          />
+        </div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 flex flex-col gap-2">
             <p className="text-xs font-semibold text-indigo-900">1. Full Sync</p>
             <p className="text-[11px] text-indigo-800/80 flex-1">
@@ -854,7 +1082,7 @@ export function NovoCrmSyncPanel() {
               <button
                 type="button"
                 onClick={() => void runFullSync()}
-                disabled={Boolean(status?.running) || syncBusy}
+                disabled={Boolean(status?.running) || syncBusy || queueRunning}
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {status?.running || syncBusy ? (
@@ -947,7 +1175,7 @@ export function NovoCrmSyncPanel() {
               <button
                 type="button"
                 onClick={() => void runFlagsStageSync()}
-                disabled={flagsBusy || flagsRunning}
+                disabled={flagsBusy || flagsRunning || queueRunning}
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {flagsBusy || flagsRunning ? (
@@ -982,7 +1210,7 @@ export function NovoCrmSyncPanel() {
               <button
                 type="button"
                 onClick={() => void runProvisionPreview()}
-                disabled={provisionBusy || provisionRunning}
+                disabled={provisionBusy || provisionRunning || queueRunning}
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {provisionBusy || provisionRunning ? (
@@ -1084,7 +1312,7 @@ export function NovoCrmSyncPanel() {
               <span className="font-medium">Escopo</span>
               <select
                 value={dedupeScope}
-                disabled={dedupeBusy || dedupeRunning}
+                disabled={dedupeBusy || dedupeRunning || queueRunning}
                 onChange={(e) =>
                   setDedupeScope(e.target.value as 'incomplete' | 'duplicates' | 'both')
                 }
@@ -1099,7 +1327,7 @@ export function NovoCrmSyncPanel() {
               <button
                 type="button"
                 onClick={() => void runDedupePreview()}
-                disabled={dedupeBusy || dedupeRunning}
+                disabled={dedupeBusy || dedupeRunning || queueRunning}
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-violet-700 hover:bg-violet-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {dedupeBusy || dedupeRunning ? (
