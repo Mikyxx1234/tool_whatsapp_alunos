@@ -10,7 +10,8 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 - **Fato:** UI/API passaram de `crm.eduit.com.br` (503) para `https://cruzeiro-ead.bwipo.com`. Mesma org (`cmrmbn2lh0uz2nm016beqgbwb`); o token atual autentica em `/api/tags`.
 - **Ops Easypanel:** `NOVO_CRM_API_BASE_URL=https://cruzeiro-ead.bwipo.com` (sem path `/pipeline`). Manter `NOVO_CRM_API_TOKEN` e `NOVO_CRM_PROVISION_ALLOW_PROD=1`. `NOVO_CRM_DATABASE_URL` é outro Postgres — só muda se o banco também migrou.
 - **Código:** `isProdCrmHost()` aceita o host novo **e** o antigo, para carregar `data/novo-crm-prod-ids.json` (sem isso a Att cairia nos IDs de DEV). Gate de escrita PROD sem ALLOW_PROD continua bloqueado.
-- **Não mudou:** IDs de etapa/campo; cron FLAGS off; rate 2 rps.
+- **Catch-up (dump de domingo):** Full Sync **antes** de criação/Att. Ritmo: `NOVO_CRM_CACHE_FETCH_DEAL_FIELDS=0` (pula GET por deal — maior ganho) · `NOVO_CRM_API_RATE_PER_SECOND=5` · `NOVO_CRM_CACHE_BATCH_DELAY_MS=50`. Teto do código **6** (era 3). Depois do catch-up voltar rate **2**. Não repetir 8 rps + 5 workers da Att de 25/08.
+- **Não mudou:** IDs de etapa/campo; cron FLAGS off.
 
 ### 2026-08-26 — Dedupe: tag no catálogo antes de mover para Perdido
 - **Modelo usado:** Grok.
@@ -30,7 +31,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 - **Modelo usado:** Grok.
 - **Incidente:** Att `flags_stage` 25/08 ~11:03 BRT (backfill CAA Sim, fila 5509) com 5 workers + ~4 rps deixou o CRM EduIT lento/travado. Progresso congelou em 4300/5509 (fetch sem timeout). Cancel cooperativo às 11:41: `flags_updated=3707` · `stages_moved=76` · `cancelled=true`. ~1.8k restantes — próxima Att retoma (Sim já gravado não reescreve).
 - **Decisão:**
-  1. `NOVO_CRM_API_RATE_PER_SECOND` default **2**, teto **3** (env 8+ não passa).
+  1. `NOVO_CRM_API_RATE_PER_SECOND` default **2**, teto **6** (era 3; catch-up Full Sync 27/08). Env 8+ ainda não passa. Dia-a-dia: **2**.
   2. Att concurrency default **2**, teto **4** (era 5/24).
   3. Dedupe/órfão concurrency default **2**, teto **4**.
   4. `fetch` com `AbortSignal.timeout` **15s** (`NOVO_CRM_API_TIMEOUT_MS`) — worker não fica preso; Parar consegue encerrar.

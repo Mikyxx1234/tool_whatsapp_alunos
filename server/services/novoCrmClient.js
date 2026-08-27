@@ -39,9 +39,9 @@ function apiToken() {
   return String(process.env.NOVO_CRM_API_TOKEN || '').trim();
 }
 
-/** Teto global de req/s para toda a API Novo CRM (sync, enrich, tags). Default 2; teto 3 (não estoura o CRM). */
+/** Teto global de req/s (sync, enrich, tags). Default 2; teto 6 (catch-up Full Sync). Att no dia-a-dia: 2. */
 function apiRatePerSecond() {
-  return Math.max(1, Math.min(3, Number(process.env.NOVO_CRM_API_RATE_PER_SECOND) || 2));
+  return Math.max(1, Math.min(6, Number(process.env.NOVO_CRM_API_RATE_PER_SECOND) || 2));
 }
 
 function apiTimeoutMs() {
