@@ -51,13 +51,22 @@ function sleep(ms) {
 /** Cancel cooperativo do Full/Incremental espelho (operador no painel). */
 let cacheSyncCancelRequested = false;
 
-export function requestCancelNovoCrmCacheSync() {
-  if (!activeSyncPromise) {
-    return { ok: false, error: 'Nenhum Full Sync em andamento' };
+export async function requestCancelNovoCrmCacheSync() {
+  if (activeSyncPromise) {
+    cacheSyncCancelRequested = true;
+    console.log('[novo-crm-cache-sync] cancel requested by operator');
+    return { ok: true, status: 'cancelling' };
   }
-  cacheSyncCancelRequested = true;
-  console.log('[novo-crm-cache-sync] cancel requested by operator');
-  return { ok: true };
+  // Rebuild/restart mata o processo mas deixa a linha `running` no Postgres.
+  // Parar precisa fechar o fantasma, senão o próximo Full Sync dá 409.
+  const closed = await cacheRepo.forceFinishRunningSyncs(
+    'cancelado pelo operador (job não estava em memória)'
+  );
+  if (closed > 0) {
+    console.log(`[novo-crm-cache-sync] closed ${closed} stale running log(s)`);
+    return { ok: true, status: 'closed_stale', closed };
+  }
+  return { ok: false, error: 'Nenhum Full Sync em andamento' };
 }
 
 export function isNovoCrmCacheSyncCancelRequested() {

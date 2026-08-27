@@ -481,7 +481,6 @@ export function NovoCrmSyncPanel() {
 
   const stopFullSync = async () => {
     if (syncStopping) return;
-    if (!window.confirm('Interromper o Full Sync? O espelho fica parcial (sem markDeleted).')) return;
     setSyncStopping(true);
     try {
       await maintenanceApi.stopNovoCrmCacheSync();

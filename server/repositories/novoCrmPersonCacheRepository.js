@@ -101,6 +101,19 @@ export async function recordSyncFinish(
   );
 }
 
+export async function forceFinishRunningSyncs(errorMessage = 'sync interrompido (timeout/restart)') {
+  const { rowCount } = await query(
+    `update novo_crm_cache_sync_log
+        set status = 'error',
+            finished_at = now(),
+            error_message = $1
+      where status = 'running'
+        and finished_at is null`,
+    [errorMessage]
+  );
+  return rowCount ?? 0;
+}
+
 /**
  * Fecha syncs órfãos. Não mata sync que ainda reporta progresso recente
  * (full noturno pode passar de 1h; orçamento aceito ~2–3h).

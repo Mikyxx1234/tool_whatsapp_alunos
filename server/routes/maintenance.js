@@ -669,9 +669,9 @@ router.post('/sync-flags-stage-novo-crm-stop', requireApiKey, async (req, res) =
  */
 router.post('/sync-novo-crm-cache-stop', requireApiKey, async (_req, res) => {
   try {
-    const r = requestCancelNovoCrmCacheSync();
+    const r = await requestCancelNovoCrmCacheSync();
     if (!r.ok) return res.status(409).json(r);
-    res.json({ ok: true, status: 'cancelling' });
+    res.json({ ok: true, status: r.status || 'cancelling', closed: r.closed });
   } catch (err) {
     console.error('[sync-novo-crm-cache-stop]', err);
     res.status(500).json({ error: err?.message || String(err) });
