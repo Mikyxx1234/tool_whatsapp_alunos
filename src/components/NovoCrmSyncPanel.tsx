@@ -1066,8 +1066,6 @@ export function NovoCrmSyncPanel() {
                   ) : null}
                 </ul>
               </div>
-                </ul>
-              </div>
               <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2">
                 <p className="font-semibold text-indigo-900">De dia (manual)</p>
                 <ul className="mt-1 space-y-0.5 list-disc list-inside">
