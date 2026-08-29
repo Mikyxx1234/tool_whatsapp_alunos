@@ -240,12 +240,39 @@ export async function getOrphanDedupePlan() {
 
 async function loadExisting(contactId) {
   const { rows } = await query(
-    `select contact_id, primary_deal_id, raw_data, filled_field_count, content_hash, is_deleted
+    `select contact_id, primary_deal_id, raw_data, filled_field_count, content_hash, is_deleted,
+            cpf_norm, rgm_norm
        from novo_crm_person_cache
       where contact_id = $1`,
     [contactId]
   );
   return rows[0] || null;
+}
+
+const CPF_FIELD_NAMES = new Set(['cpf', 'documento', 'taxid']);
+const RGM_FIELD_NAMES = new Set(['rgm']);
+const CPF_FIELD_IDS = new Set(['cmrnpd33ekm5snm01jecpmevp']);
+const RGM_FIELD_IDS = new Set(['cmrmexurt18tfnm01e6krzug6']);
+
+function extractCpfRgmFromRaw(rawData) {
+  const deals = rawData?.dealsById;
+  if (!deals || typeof deals !== 'object') return { cpf: null, rgm: null };
+  let cpf = null;
+  let rgm = null;
+  for (const deal of Object.values(deals)) {
+    const fields = deal?.customFields;
+    if (!Array.isArray(fields)) continue;
+    for (const field of fields) {
+      const name = String(field?.name || '').trim().toLowerCase();
+      const id = String(field?.id || '').trim();
+      const val = field?.value;
+      if (val == null || String(val).trim() === '') continue;
+      if (!cpf && (CPF_FIELD_NAMES.has(name) || CPF_FIELD_IDS.has(id))) cpf = val;
+      if (!rgm && (RGM_FIELD_NAMES.has(name) || RGM_FIELD_IDS.has(id))) rgm = val;
+    }
+    if (cpf && rgm) break;
+  }
+  return { cpf, rgm };
 }
 
 function diffRemovedFields(oldRaw, nextRaw) {
@@ -320,8 +347,6 @@ function incomingLacksDealCustomFields(rawData) {
 
 function mergePreserveIdentity(snapshot, existing) {
   if (!existing) return snapshot;
-  const cpfNorm = snapshot.cpfNorm || existing.cpf_norm || null;
-  const rgmNorm = snapshot.rgmNorm || existing.rgm_norm || null;
   const rawData = snapshot.rawData && typeof snapshot.rawData === 'object' ? { ...snapshot.rawData } : {};
   if (incomingLacksDealCustomFields(rawData) && existing.raw_data?.dealsById) {
     const nextDeals = { ...(rawData.dealsById || {}) };
@@ -344,7 +369,11 @@ function mergePreserveIdentity(snapshot, existing) {
     }
     rawData.dealsById = nextDeals;
   }
-  return { ...snapshot, cpfNorm, rgmNorm, rawData };
+  const fromRaw = extractCpfRgmFromRaw(rawData);
+  const cpfNorm = snapshot.cpfNorm || existing.cpf_norm || normalizeCpf(fromRaw.cpf) || null;
+  const rgmNorm = snapshot.rgmNorm || existing.rgm_norm || normalizeRgm(fromRaw.rgm) || null;
+  const filledFieldCount = collectFilledBusinessPaths(rawData).size;
+  return { ...snapshot, cpfNorm, rgmNorm, rawData, filledFieldCount };
 }
 
 export async function upsertSnapshot(snapshot, { syncLogId = null, fullSeenAt = null } = {}) {

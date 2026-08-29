@@ -5,6 +5,14 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-29 — Full #57 FETCH=0 zerou colunas CPF/RGM (JSON intacto)
+- **Modelo usado:** Grok.
+- **Fato:** Full `id=57` 29/08 02:00–02:53 BRT (`FETCH_DEAL_FIELDS=0`, 53 min, `seen=42961/42961`, `deleted=0`, `status=ok`). KPI: 42.965 ativos · Sem CPF/RGM 42.962 · 58.701 alertas. Não é o #54: o Full completou e não marcou apagados.
+- **Causa:** `mergePreserveIdentity` lia `existing.cpf_norm`, mas `loadExisting` **não selecionava** essas colunas → incoming vazio ganhava. O JSON `raw_data.dealsById.*.customFields` do #56 **foi preservado** (~36,6k CPF / ~36,5k RGM).
+- **Código:** `loadExisting` passa a ler `cpf_norm`/`rgm_norm`; após o merge, se a coluna ainda estiver vazia, extrai do JSON (nome ou id PROD). Recalcula `filled_field_count` do raw mesclado.
+- **Ops:** restore SQL `scripts/novo-crm-restore-cache-identity-from-raw.mjs` (só Postgres). Merge `raphael` + rebuild **antes** do Full 02:00 — senão quem mudar nome/etapa no CRM muda o hash e o upsert FETCH=0 zera de novo. Não clicar Full com FETCH=0 até o rebuild. Fields 05:00 já rodou no CRM (não depende do KPI). Alertas 58k = residual #55 (FETCH=0 não gerou data-loss novo).
+- **Não mudou:** cron FLAGS/provision off; `FETCH_DEAL_FIELDS=0` + rate 2 no dia-a-dia.
+
 ### 2026-08-28 — CAA e Data Rematrícula sumiram do CRM; PUT de campos recusa o lote
 - **Modelo usado:** Grok.
 - **Fato:** criação de 26 leads novos (28/08): contato + negócio nasceram; `PUT /api/deals/:id/custom-fields` 500 Prisma `deal_custom_field_values_customFieldId_fkey`. Catálogo live (`GET /api/custom-fields?entity=deal`, 30 campos) **não tem** `caa` (`cmt7ndc0k00nnp801ngjfqf98`) nem `data_de_rematricula` (`cmt7bc5opxal0la01nad5ahj5`). O provision mandava CAA=Não em todo deal novo → FK derruba CPF/RGM/data.
