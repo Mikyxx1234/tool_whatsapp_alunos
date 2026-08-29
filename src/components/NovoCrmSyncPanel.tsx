@@ -1329,9 +1329,15 @@ export function NovoCrmSyncPanel() {
                     : ''}
                 </p>
                 {provisionPreview.errors ? (
-                  <p className="text-rose-700">
-                    {Number(provisionPreview.errors).toLocaleString('pt-BR')} erros
-                  </p>
+                  <div className="text-rose-700 space-y-0.5">
+                    <p>{Number(provisionPreview.errors).toLocaleString('pt-BR')} erros</p>
+                    {(provisionPreview.error_samples || []).slice(0, 5).map((s, i) => (
+                      <p key={`${s.cpf || i}-${s.error}`} className="text-[10px] font-normal break-all">
+                        {s.cpf ? `cpf ${s.cpf}: ` : ''}
+                        {s.error}
+                      </p>
+                    ))}
+                  </div>
                 ) : null}
                 {provisionApplied ? (
                   <p className="pt-1 font-semibold text-gray-900">Aplicado no CRM.</p>

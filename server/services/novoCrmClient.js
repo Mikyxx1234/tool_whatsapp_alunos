@@ -515,6 +515,8 @@ export async function activateDealByCategoryTag(dealId, category) {
 
 /** @type {Map<string, {id:string,name:string,label?:string,type?:string,options?:unknown[]}>|null} */
 let dealCustomFieldsByName = null;
+/** @type {Set<string>|null} */
+let dealCustomFieldIds = null;
 let dealCustomFieldsLoadedAt = 0;
 const CF_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -531,13 +533,16 @@ export async function getDealCustomFieldsByName() {
   const items = Array.isArray(raw) ? raw : Array.isArray(raw?.items) ? raw.items : [];
   /** @type {Map<string, {id:string,name:string,label?:string,type?:string,options?:unknown[]}>} */
   const map = new Map();
+  const ids = new Set();
   for (const f of items) {
+    const id = f?.id ? String(f.id) : '';
+    if (id) ids.add(id);
     const name = String(f?.name || '')
       .trim()
       .toLowerCase();
-    if (!name || !f?.id) continue;
+    if (!name || !id) continue;
     map.set(name, {
-      id: String(f.id),
+      id,
       name,
       label: f.label != null ? String(f.label) : undefined,
       type: f.type != null ? String(f.type) : undefined,
@@ -545,6 +550,7 @@ export async function getDealCustomFieldsByName() {
     });
   }
   dealCustomFieldsByName = map;
+  dealCustomFieldIds = ids;
   dealCustomFieldsLoadedAt = now;
   return map;
 }
@@ -562,9 +568,40 @@ export async function updateDealCustomFields(dealId, values, opts = {}) {
     err.status = 400;
     throw err;
   }
-  const list = Array.isArray(values) ? values.filter((v) => v?.fieldId) : [];
+  let list = Array.isArray(values) ? values.filter((v) => v?.fieldId) : [];
   if (!list.length) {
     const err = new Error('values obrigatório');
+    err.status = 400;
+    throw err;
+  }
+  // Um fieldId morto (campo apagado no CRM, env/JSON stale) faz o Prisma
+  // recusar o PUT inteiro (FK deal_custom_field_values_customFieldId_fkey)
+  // e o deal fica sem CPF/RGM/data. Descarta só o ID desconhecido.
+  try {
+    await getDealCustomFieldsByName();
+    const known = dealCustomFieldIds;
+    if (known && known.size) {
+      const dropped = [];
+      list = list.filter((v) => {
+        const fid = String(v.fieldId);
+        if (known.has(fid)) return true;
+        dropped.push(fid);
+        return false;
+      });
+      if (dropped.length) {
+        console.warn(
+          `[novo-crm-api] drop unknown customFieldId on deal ${id}: ${[...new Set(dropped)].join(',')}`
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[novo-crm-api] catálogo de campos indisponível; PUT segue com a lista original:',
+      err?.message || err
+    );
+  }
+  if (!list.length) {
+    const err = new Error('values obrigatório (nenhum fieldId existe neste CRM)');
     err.status = 400;
     throw err;
   }

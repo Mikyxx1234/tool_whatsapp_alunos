@@ -22,7 +22,6 @@
     "NOVO_CRM_FIELD_CPF": "cmrnpd33ekm5snm01jecpmevp",
     "NOVO_CRM_FIELD_CURSO": "cmrmextum18srnm0168l8c9al",
     "NOVO_CRM_FIELD_DATA_MATRICULA": "cmrmexu0818sxnm01mhippjli",
-    "NOVO_CRM_FIELD_DATA_REMATRICULA": "cmt7bc5opxal0la01nad5ahj5",
     "NOVO_CRM_FIELD_DOC_PENDENTES": "cmrwtcinz00fzpf015c4o0o1c",
     "NOVO_CRM_FIELD_INADIMPLENTE": "cmrwtc7xp00fnpf015srkz771",
     "NOVO_CRM_FIELD_EMAIL_AD": "cmrmexu5t18sznm016s1hc9xv",
@@ -33,7 +32,8 @@
     "NOVO_CRM_FIELD_RGM": "cmrmexurt18tfnm01e6krzug6",
     "NOVO_CRM_FIELD_SITUACAO": "cmrmexuw818tjnm01igvkevn1",
     "NOVO_CRM_FIELD_MARCO": "cmst97c9q01a7mp019n6671ji",
-    "NOVO_CRM_FIELD_CAA": "cmt7ndc0k00nnp801ngjfqf98"
+    "NOVO_CRM_FIELD_CAA": "cmtdlx1kr0phlmp01equyxx8s",
+    "NOVO_CRM_FIELD_DATA_REMATRICULA": "cmtdlxb4z0phvmp01u7o3oji1"
   },
   "stagesByName": {
     "Lead de Entrada": "cmrwd95sx01mfpd01axkzjhm8",

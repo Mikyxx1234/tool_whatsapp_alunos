@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-28 — CAA e Data Rematrícula sumiram do CRM; PUT de campos recusa o lote
+- **Modelo usado:** Grok.
+- **Fato:** criação de 26 leads novos (28/08): contato + negócio nasceram; `PUT /api/deals/:id/custom-fields` 500 Prisma `deal_custom_field_values_customFieldId_fkey`. Catálogo live (`GET /api/custom-fields?entity=deal`, 30 campos) **não tem** `caa` (`cmt7ndc0k00nnp801ngjfqf98`) nem `data_de_rematricula` (`cmt7bc5opxal0la01nad5ahj5`). O provision mandava CAA=Não em todo deal novo → FK derruba CPF/RGM/data.
+- **Código:** `updateDealCustomFields` consulta o catálogo e **descarta** fieldId desconhecido (o resto do PUT segue). JSON PROD sem esses dois IDs. Apply em contact já existente preenche o deal vazio (não cria outro).
+- **Ops:** campos recriados 28/08 (ids novos). CAA = Texto `caa` `cmtdlx1kr0phlmp01equyxx8s`. Data Rematricula = DATE `data_rematricula` `cmtdlxb4z0phvmp01u7o3oji1`. Easypanel: esses ids (não os velhos, não `-`). Não clicar Criar até rebuild — os 26 já existem vazios; a apply preenche. EMAIL/NASC continuam sem campo no deal (`-`).
+- **Não mudou:** cron FLAGS/provision off; Marco/Dia 10/Atualizado? continuam no catálogo.
+
 ### 2026-08-27 — Full #54 incompleto marcou 25k como apagados
 - **Modelo usado:** Grok.
 - **Fato:** Full 27/08 13:50 BRT (`id=54`) `contacts_total=42715` · `contacts_seen=17000` · `status=ok` · `contacts_deleted=25811`. Parou cedo (página curta) e o `markDeleted` rodou. KPI: 18k ativos, 16k sem CPF/RGM, 340k alertas (FETCH=0 apagando customFields no upsert).

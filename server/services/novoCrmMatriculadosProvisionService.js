@@ -45,6 +45,7 @@ import { tipoMatriculaFromRow } from '../utils/matriculadosTipoMatricula.js';
 import {
   createContact,
   createDeal,
+  findDealForContact,
   isNovoCrmApiConfigured,
   searchContacts,
   updateDealCustomFields,
@@ -628,6 +629,23 @@ export async function runMatriculadosProvision(opts = {}) {
     if (existing?.id) {
       updatedExisting += 1;
       skippedExisting += 1;
+      // Cartão nasceu mas o PUT de campos falhou (fieldId morto). Retry
+      // não cria de novo — preenche o deal vazio que já existe.
+      if (!dryRun && classifications[0]) {
+        try {
+          const deal = await findDealForContact(existing.id);
+          if (deal?.id) {
+            const c = classifications[0];
+            await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
+          }
+        } catch (err) {
+          noteError({ cpf, error: `fill_existing: ${err?.message || err}` });
+          console.warn(
+            `[novo-crm-provision] FAIL fill contact=${existing.id} cpf=${cpf}:`,
+            err?.message || err
+          );
+        }
+      }
       try {
         await warmExistingContactCache(existing);
         warmedCache += 1;

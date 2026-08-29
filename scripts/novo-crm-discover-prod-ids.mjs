@@ -109,6 +109,7 @@ const EXACT_FIELD = {
   datadematricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   data_matricula: 'NOVO_CRM_FIELD_DATA_MATRICULA',
   data_de_rematricula: 'NOVO_CRM_FIELD_DATA_REMATRICULA',
+  data_rematricula: 'NOVO_CRM_FIELD_DATA_REMATRICULA',
   datarematricula: 'NOVO_CRM_FIELD_DATA_REMATRICULA',
   marco: 'NOVO_CRM_FIELD_MARCO',
   marco_regulatorio: 'NOVO_CRM_FIELD_MARCO',
