@@ -189,7 +189,7 @@ function apiBaseHost() {
 /**
  * Gate de escrita CRM (provision + fields sync + flags/etapa).
  * DEV hosts na allowlist; PROD só com NOVO_CRM_PROVISION_ALLOW_PROD=1 e
- * NOVO_CRM_API_BASE_URL explícita (ex. https://cruzeiro-ead.bwipo.com).
+ * NOVO_CRM_API_BASE_URL explícita (ex. https://integrations.bwipo.com).
  */
 export function isProvisionAllowedOnThisHost() {
   if (String(process.env.NOVO_CRM_PROVISION_ALLOW_PROD || '').trim() === '1') {

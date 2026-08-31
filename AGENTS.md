@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-31 — API PROD: integrations.bwipo.com (token só nesse host)
+- **Modelo usado:** Grok.
+- **Fato:** token novo `eduit_…` autentica em `https://integrations.bwipo.com`. O host antigo `cruzeiro-ead.bwipo.com` responde 401: tokens de API só são aceitos no domínio de integrações. Mesma org (`cmrmbn2lh0uz2nm016beqgbwb`); `/api/tags` 232 · deals 42.797 · contacts 43.282 · IDs de etapa/campo iguais (CPF/CAA/Situação/Marco ok).
+- **Ops Easypanel:** `NOVO_CRM_API_BASE_URL=https://integrations.bwipo.com` (sem path `/pipeline`) e o token novo em `NOVO_CRM_API_TOKEN`. Manter `NOVO_CRM_PROVISION_ALLOW_PROD=1`. `NOVO_CRM_DATABASE_URL` só muda se o banco também migrou. Sem rebuild + env, Att/Full/Sync no host velho quebram com 401.
+- **Código:** `isProdCrmHost()` aceita `integrations.bwipo.com` (e os hosts antigos) para carregar `data/novo-crm-prod-ids.json`. Token não vai pro repo.
+- **Não mudou:** IDs de etapa/campo; cron FLAGS/provision off; rate 2.
+
 ### 2026-08-31 — Fora da Relação → Perdido (A/B/D); Acolhimento por turma (C)
 - **Modelo usado:** Grok.
 - **Pedido:** residual no funil (Juliana/Eliana/Anas + cards sem identidade). Relação do dia = ainda é aluno. Fixa só prova histórico; **não** é gate — A e B ambos vão a Perdido.
