@@ -5,6 +5,14 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-31 — Fields da madrugada só grava SIAA se o cache divergir
+- **Modelo usado:** Grok.
+- **Fato:** cron `mode=fields` 31/08 05:00–10:24 BRT (após Full #59 FETCH=0) `matched=38342` · `fields_updated=38338` · `skipped_unchanged=0` · `flags=0` · `stages=7` · 5 h 23 min. A UI de Att mostrava isso como “Att rodando” (mesmo job).
+- **Causa:** `doFields` empilhava CPF/RGM/curso/polo/situação/Marco/datas em **todo** match, sem comparar com o deal do espelho. Flags já tinham política vazio/diverge; fields não.
+- **Código:** `pushChangedField` — vazio→preenche, igual (normalizado)→skip, diverge→corrige. Não limpa campo vazio. Curso/polo/data/CPF comparam forma canônica pra não regravar “Pedagogia” vs “PEDAGOGIA (…)”. Etapa e flags não mudam.
+- **Ops:** merge `raphael` + rebuild **antes** das 05:00. Sem rebuild a madrugada repeate 38k PUTs. Não clicar Att por causa do fields.
+- **Não mudou:** cron FLAGS/provision off; FETCH=0 + rate 2; Fixa vence Relação nas datas.
+
 ### 2026-08-29 — Full #57 FETCH=0 zerou colunas CPF/RGM (JSON intacto)
 - **Modelo usado:** Grok.
 - **Fato:** Full `id=57` 29/08 02:00–02:53 BRT (`FETCH_DEAL_FIELDS=0`, 53 min, `seen=42961/42961`, `deleted=0`, `status=ok`). KPI: 42.965 ativos · Sem CPF/RGM 42.962 · 58.701 alertas. Não é o #54: o Full completou e não marcou apagados.

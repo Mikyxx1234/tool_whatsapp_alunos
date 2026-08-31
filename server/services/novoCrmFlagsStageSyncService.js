@@ -3,13 +3,15 @@
  *
  * Modes:
  *   flags_stage — atualiza as 4 flags (Sim/Não) + move etapa (respeitando intocáveis)
- *   fields      — sobrescreve campos SIAA + alinha etapa (remat/cancel/SIAA) + Situação
+ *   fields      — grava campos SIAA só se o cache divergir + alinha etapa + Situação
  *   both        — fields + flags_stage
  *
  * Intocáveis (não move etapa): Ganho, Cancelado; Retenção sem CAA open (manual).
  * CAA open ≤72h → Retenção; após 72h segue SIAA (pode sair de Retenção).
  * Apply otimizado: só reescreve flag quando (a) valor conhecido diverge, ou
  * (b) campo vazio e próximo=Sim (não grava vazio→Não — evita flood de PUTs).
+ * mode=fields usa a mesma ideia nos campos SIAA: vazio→preenche, igual→skip,
+ * diverge→corrige. Sem isso o cron das 05:00 regrava ~38k deals toda noite.
  *
  * Entrada + saída (31/07/2026): o relatório do dia é a verdade. Matriculados
  * é a base "sim": satélites (evasão/docs/…) enriquecem identidade via
@@ -57,6 +59,9 @@ import {
 } from '../utils/novoCrmCacheNormalize.js';
 import {
   extractMatriculadosMappedValues,
+  formatDataMatriculaCrm,
+  normalizeCursoCrm,
+  normalizeNivelCrm,
   normalizeSituacaoCrm,
   resolveSituacaoCrm,
   SITUACAO_CRM_SEM_REMATRICULA,
@@ -294,6 +299,62 @@ function readDealField(deal, fieldId, names = []) {
     }
   }
   return '';
+}
+
+function foldFieldText(v) {
+  return String(v ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * true = não grava. Compara o valor que iríamos mandar com o do cache
+ * (mesma fonte das flags). Nunca trata alvo vazio como “limpar”.
+ */
+function fieldValueUnchanged(kind, cur, next) {
+  const nxt = String(next ?? '').trim();
+  if (!nxt) return true;
+  const curS = String(cur ?? '').trim();
+  if (!curS) return false;
+  switch (kind) {
+    case 'cpf':
+      return (normalizeCpf(curS) || '') === (normalizeCpf(nxt) || '');
+    case 'rgm':
+      return (normalizeRgm(curS) || digits(curS)) === (normalizeRgm(nxt) || digits(nxt));
+    case 'date':
+      return (
+        (formatDataMatriculaCrm(curS) || foldFieldText(curS)) ===
+        (formatDataMatriculaCrm(nxt) || foldFieldText(nxt))
+      );
+    case 'situacao':
+      return normalizeSituacaoCrm(curS) === normalizeSituacaoCrm(nxt);
+    case 'nivel':
+      return (normalizeNivelCrm(curS) || foldFieldText(curS)) ===
+        (normalizeNivelCrm(nxt) || foldFieldText(nxt));
+    case 'email':
+      return (normalizeEmail(curS) || foldFieldText(curS)) ===
+        (normalizeEmail(nxt) || foldFieldText(nxt));
+    case 'curso':
+      return foldFieldText(normalizeCursoCrm(curS) || curS) ===
+        foldFieldText(normalizeCursoCrm(nxt) || nxt);
+    case 'polo':
+      return foldFieldText(titleCasePolo(curS) || curS) ===
+        foldFieldText(titleCasePolo(nxt) || nxt);
+    default:
+      return foldFieldText(curS) === foldFieldText(nxt);
+  }
+}
+
+function pushChangedField(list, deal, fieldId, value, names, kind) {
+  const id = String(fieldId || '').trim();
+  const next = value == null ? '' : String(value).trim();
+  if (!id || !next) return;
+  const cur = readDealField(deal, id, names);
+  if (fieldValueUnchanged(kind, cur, next)) return;
+  list.push({ fieldId: id, value: next });
 }
 
 function situacaoRank(row) {
@@ -764,55 +825,86 @@ export async function runFlagsStageSync(opts = {}) {
       /** @type {Array<{fieldId:string,value:string}>} */
       const fieldValues = [];
       if (doFields) {
-        if (digits(mapped.cpf) && fieldIds.cpf) {
-          fieldValues.push({ fieldId: fieldIds.cpf, value: digits(mapped.cpf) });
-        }
-        if (digits(mapped.rgm) && fieldIds.rgm) {
-          fieldValues.push({ fieldId: fieldIds.rgm, value: digits(mapped.rgm) });
-        }
-        if (mapped.curso && fieldIds.curso) {
-          fieldValues.push({ fieldId: fieldIds.curso, value: mapped.curso });
-        }
+        pushChangedField(fieldValues, deal, fieldIds.cpf, digits(mapped.cpf), ['cpf', 'documento', 'taxid'], 'cpf');
+        pushChangedField(fieldValues, deal, fieldIds.rgm, digits(mapped.rgm), ['rgm'], 'rgm');
+        pushChangedField(fieldValues, deal, fieldIds.curso, mapped.curso, ['curso'], 'curso');
         const fixaDates = fixaDateFieldPairs(fieldIds, digits(mapped.rgm));
         if (fixaDates.length) {
-          fieldValues.push(...fixaDates);
-        } else if (mapped.data_matricula && fieldIds.data_matricula) {
-          fieldValues.push({
-            fieldId: fieldIds.data_matricula,
-            value: mapped.data_matricula,
-          });
+          for (const pair of fixaDates) {
+            const isRemat = pair.fieldId === String(fieldIds.data_rematricula || '').trim();
+            pushChangedField(
+              fieldValues,
+              deal,
+              pair.fieldId,
+              pair.value,
+              isRemat
+                ? ['data_rematricula', 'data_de_rematricula', 'data rematricula']
+                : ['data_de_matricula', 'data matricula', 'data de matricula'],
+              'date'
+            );
+          }
+        } else {
+          pushChangedField(
+            fieldValues,
+            deal,
+            fieldIds.data_matricula,
+            mapped.data_matricula,
+            ['data_de_matricula', 'data matricula', 'data de matricula'],
+            'date'
+          );
         }
         {
           const marco = marcoFieldPair(fieldIds, matRow);
-          if (marco) fieldValues.push(marco);
+          if (marco) {
+            pushChangedField(
+              fieldValues,
+              deal,
+              marco.fieldId,
+              marco.value,
+              ['marco_regulatorio_2', 'marco regulatorio', 'marco'],
+              'text'
+            );
+          }
         }
-        if (mapped.polo && fieldIds.polo) {
-          fieldValues.push({
-            fieldId: fieldIds.polo,
-            value: titleCasePolo(mapped.polo) || mapped.polo,
-          });
-        }
+        pushChangedField(
+          fieldValues,
+          deal,
+          fieldIds.polo,
+          titleCasePolo(mapped.polo) || mapped.polo,
+          ['polo'],
+          'polo'
+        );
         const situacao = resolveSituacaoCrm(
           mapped.situacao || matRow['Situação Matrícula'],
           { inRematricula: identityInIndex(remat, identity) }
         );
-        if (situacao && fieldIds.situacao) {
-          fieldValues.push({ fieldId: fieldIds.situacao, value: situacao });
-        }
-        if (mapped.nivel && fieldIds.nivel) {
-          fieldValues.push({ fieldId: fieldIds.nivel, value: mapped.nivel });
-        }
-        if (mapped._email && fieldIds.email) {
-          fieldValues.push({ fieldId: fieldIds.email, value: mapped._email });
-        }
-        if (mapped.e_mail_ad && fieldIds.email_ad) {
-          fieldValues.push({ fieldId: fieldIds.email_ad, value: mapped.e_mail_ad });
-        }
+        pushChangedField(
+          fieldValues,
+          deal,
+          fieldIds.situacao,
+          situacao,
+          ['situação', 'situacao', 'situação matrícula'],
+          'situacao'
+        );
+        pushChangedField(fieldValues, deal, fieldIds.nivel, mapped.nivel, ['nivel', 'nível'], 'nivel');
+        pushChangedField(fieldValues, deal, fieldIds.email, mapped._email, ['email', 'e-mail'], 'email');
+        pushChangedField(
+          fieldValues,
+          deal,
+          fieldIds.email_ad,
+          mapped.e_mail_ad,
+          ['e_mail_ad', 'email academico', 'email acadêmico'],
+          'email'
+        );
         if (matRow['Data Nascimento'] && fieldIds.nasc) {
-          fieldValues.push({
-            fieldId: fieldIds.nasc,
-            value: String(matRow['Data Nascimento']).slice(0, 10),
-          });
+          pushChangedField(
+            fieldValues,
+            deal,
+            fieldIds.nasc,
+            String(matRow['Data Nascimento']).slice(0, 10),
+            ['data_nascimento', 'nascimento', 'data nascimento'],
+            'date'
+          );
         }
       }
 
