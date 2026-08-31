@@ -203,9 +203,42 @@ function pick(row, keys) {
 }
 
 /**
- * 1ª mensalidade por ciclo (YYYY-MM-DD). Em Acolhimento enquanto nowUtc <= cutoff (inclusive).
- * Ciclos sem entrada caem no fallback: dia 25 do mês da Data Matrícula.
+ * Turmas de ingresso → 1ª mensalidade. Em Acolhimento enquanto hoje (BRT) ≤ vencimento.
+ * Duas turmas podem coexistir na coluna (ex. 17–25/08: agosto ainda + setembro já).
+ * A partir de 18/11/2026 o ingresso é 2027/1 (turma ainda sem cutoff).
  */
+export const ACOLHIMENTO_TURMAS = [
+  {
+    ciclo: '2026/2',
+    turma: 'agosto',
+    matriculaDe: '2026-05-13',
+    matriculaAte: '2026-08-16',
+    acolhimentoAte: '2026-08-25',
+  },
+  {
+    ciclo: '2026/2',
+    turma: 'setembro',
+    matriculaDe: '2026-08-17',
+    matriculaAte: '2026-09-13',
+    acolhimentoAte: '2026-09-25',
+  },
+  {
+    ciclo: '2026/2',
+    turma: 'outubro',
+    matriculaDe: '2026-09-14',
+    matriculaAte: '2026-10-11',
+    acolhimentoAte: '2026-10-25',
+  },
+  {
+    ciclo: '2026/2',
+    turma: 'novembro',
+    matriculaDe: '2026-10-12',
+    matriculaAte: '2026-11-17',
+    acolhimentoAte: '2026-11-25',
+  },
+];
+
+/** @deprecated cutoff único por ciclo — 2026/2 não é mais 25/08 para todo mundo. */
 export const ACOLHIMENTO_PRIMEIRA_MENSALIDADE_POR_CICLO = {
   '2026/2': '2026-08-25',
 };
@@ -219,46 +252,54 @@ export function normalizeCicloSlash(raw) {
   return `${m[1]}/${m[2]}`;
 }
 
-function parseIsoDateUtc(iso) {
-  const s = String(iso || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  const [y, mo, d] = s.split('-').map(Number);
-  return Date.UTC(y, mo - 1, d);
+function todayYmdSaoPaulo(now = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+function parseDataMatriculaYmd(raw) {
+  const dmRaw = String(raw ?? '').trim();
+  if (!dmRaw) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(dmRaw)) return dmRaw.slice(0, 10);
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dmRaw)) {
+    const [dd, mm, yyyy] = dmRaw.split('/');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  const dm = excelSerialToDate(dmRaw);
+  if (!dm) return null;
+  return dm.toISOString().slice(0, 10);
+}
+
+export function findAcolhimentoTurma(dataMatriculaYmd) {
+  const ymd = String(dataMatriculaYmd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  return (
+    ACOLHIMENTO_TURMAS.find((t) => ymd >= t.matriculaDe && ymd <= t.matriculaAte) || null
+  );
 }
 
 /**
- * Janela de Acolhimento: cutoff por ciclo (1ª mensalidade) ou fallback dia 25 do mês da matrícula.
- * @returns {{ inAcolhimento: boolean, acolhimentoAte: string|null, cicloNorm: string }}
+ * Janela de Acolhimento por turma (Data Matrícula → 1º vencimento).
+ * Sem data / fora das faixas / ingresso ≥ 18/11/2026 (2027/1) → não é Acolhimento.
+ * @returns {{ inAcolhimento: boolean, acolhimentoAte: string|null, cicloNorm: string, turma: string|null }}
  */
 export function resolveAcolhimentoWindow(matRow, now = new Date()) {
   const cicloNorm = normalizeCicloSlash(pick(matRow, ['Ciclo', 'ciclo', 'CICLO']));
-  const cutoffIso = ACOLHIMENTO_PRIMEIRA_MENSALIDADE_POR_CICLO[cicloNorm] || null;
-  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-
-  if (cutoffIso) {
-    const limit = parseIsoDateUtc(cutoffIso);
-    return {
-      inAcolhimento: limit != null && nowUtc <= limit,
-      acolhimentoAte: cutoffIso,
-      cicloNorm,
-    };
-  }
-
-  const dmRaw = pick(matRow, ['Data Matrícula', 'Data Matricula']);
-  let dm = excelSerialToDate(dmRaw);
-  if (!dm && /^\d{4}-\d{2}-\d{2}/.test(dmRaw)) dm = new Date(`${dmRaw.slice(0, 10)}T00:00:00Z`);
-  if (!dm && /^\d{2}\/\d{2}\/\d{4}$/.test(dmRaw)) {
-    const [dd, mm, yyyy] = dmRaw.split('/').map(Number);
-    dm = new Date(Date.UTC(yyyy, mm - 1, dd));
-  }
-  if (!dm) {
-    return { inAcolhimento: false, acolhimentoAte: null, cicloNorm };
-  }
-  const limit = Date.UTC(dm.getUTCFullYear(), dm.getUTCMonth(), 25);
+  const empty = { inAcolhimento: false, acolhimentoAte: null, cicloNorm, turma: null };
+  const ymd = parseDataMatriculaYmd(pick(matRow, ['Data Matrícula', 'Data Matricula']));
+  if (!ymd) return empty;
+  const turma = findAcolhimentoTurma(ymd);
+  if (!turma) return empty;
+  const today = todayYmdSaoPaulo(now);
   return {
-    inAcolhimento: nowUtc <= limit,
-    acolhimentoAte: new Date(limit).toISOString().slice(0, 10),
-    cicloNorm,
+    inAcolhimento: today <= turma.acolhimentoAte,
+    acolhimentoAte: turma.acolhimentoAte,
+    cicloNorm: turma.ciclo || cicloNorm,
+    turma: turma.turma,
   };
 }
 
@@ -297,7 +338,8 @@ export function classifyMatriculado(matRow, ctx) {
   const isGrad = negocio.includes('GRAD') && !isPos;
 
   const now = ctx.now || new Date();
-  const { inAcolhimento, acolhimentoAte, cicloNorm } = resolveAcolhimentoWindow(matRow, now);
+  const { inAcolhimento, acolhimentoAte, cicloNorm, turma: acolhimentoTurma } =
+    resolveAcolhimentoWindow(matRow, now);
   // Retenção só com CAA open dentro da janela (default 72h). Callers novos
   // passam inCaaFresh; inCaa legado só conta se inCaaFresh não veio.
   const inCaaFresh =
@@ -316,7 +358,7 @@ export function classifyMatriculado(matRow, ctx) {
   //   1. CANCELADO/TRANCADO (SIAA) → Perdido (já perdido; vence CAA)
   //   2. CAA open ≤72h → Retenção
   //   3. rematrícula → Sem Rematricula
-  //   4. acolhimento por ciclo/cutoff
+  //   4. acolhimento por turma (Data Matrícula → 1ª mensalidade)
   //   5. Pós / Graduação
   // Após 72h: não força Retenção — segue SIAA (Em curso → funil; Cancel→Perdido).
   // Quem já está em Retenção sem CAA open permanece (manual) no sync de flags.
@@ -350,6 +392,7 @@ export function classifyMatriculado(matRow, ctx) {
       isGrad,
       inAcolhimento,
       acolhimentoAte,
+      acolhimentoTurma,
       inRematricula: Boolean(ctx.inRematricula),
       inCaa: inCaaOpen,
       inCaaOpen,

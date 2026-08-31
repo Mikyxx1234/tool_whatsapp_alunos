@@ -1,4 +1,4 @@
-import { getPool, query } from '../db/client.js';
+import { getPool, query, withTransaction } from '../db/client.js';
 import {
   collectFilledBusinessPaths,
   hashObject,
@@ -333,6 +333,92 @@ export async function markPrimaryDealId(contactId, dealId) {
         and (primary_deal_id is null or btrim(primary_deal_id) = '')`,
     [cid, did]
   );
+}
+
+/**
+ * Espelha no JSON do cache o que acabou de ir no PUT do CRM.
+ * Sem isso a próxima Att vê flag vazia e regrava os mesmos ~11k.
+ * Não mexe em content_hash (Full FETCH=0 continua podendo skip).
+ */
+export async function applyDealCustomFieldWrites(contactId, dealId, pairs) {
+  const did = String(dealId || '').trim();
+  if (!did || !Array.isArray(pairs) || !pairs.length) return false;
+  const cid = String(contactId || '').trim();
+
+  return withTransaction(async (client) => {
+    let row = null;
+    if (cid) {
+      const { rows } = await client.query(
+        `select contact_id, raw_data, cpf_norm, rgm_norm
+           from novo_crm_person_cache
+          where contact_id = $1
+          for update`,
+        [cid]
+      );
+      row = rows[0] || null;
+    }
+    if (!row) {
+      const { rows } = await client.query(
+        `select contact_id, raw_data, cpf_norm, rgm_norm
+           from novo_crm_person_cache
+          where is_deleted = false
+            and (primary_deal_id = $1 or raw_data->'dealsById' ? $1)
+          limit 1
+          for update`,
+        [did]
+      );
+      row = rows[0] || null;
+    }
+    if (!row?.raw_data) return false;
+
+    const raw = typeof row.raw_data === 'object' ? { ...row.raw_data } : {};
+    const deals =
+      raw.dealsById && typeof raw.dealsById === 'object' ? { ...raw.dealsById } : {};
+    const existingDeal = deals[did];
+    if (!existingDeal || typeof existingDeal !== 'object') return false;
+    const deal = { ...existingDeal };
+    const fields = Array.isArray(deal.customFields)
+      ? deal.customFields.map((f) => ({ ...f }))
+      : [];
+
+    let nextCpf = row.cpf_norm || null;
+    let nextRgm = row.rgm_norm || null;
+    for (const pair of pairs) {
+      const id = String(pair?.fieldId || '').trim();
+      if (!id) continue;
+      const value = pair?.value == null ? '' : String(pair.value);
+      const idx = fields.findIndex((f) => String(f?.id || f?.fieldId || '').trim() === id);
+      if (idx >= 0) {
+        fields[idx] = { ...fields[idx], id: fields[idx].id || id, value };
+      } else {
+        fields.push({ id, name: '', value });
+      }
+      const name = String((idx >= 0 ? fields[idx] : fields[fields.length - 1])?.name || '')
+        .trim()
+        .toLowerCase();
+      if (CPF_FIELD_IDS.has(id) || CPF_FIELD_NAMES.has(name)) {
+        nextCpf = normalizeCpf(value) || nextCpf;
+      }
+      if (RGM_FIELD_IDS.has(id) || RGM_FIELD_NAMES.has(name)) {
+        nextRgm = normalizeRgm(value) || nextRgm;
+      }
+    }
+
+    deal.customFields = fields;
+    deals[did] = deal;
+    raw.dealsById = deals;
+
+    await client.query(
+      `update novo_crm_person_cache
+          set raw_data = $2::jsonb,
+              cpf_norm = $3,
+              rgm_norm = $4,
+              last_synced_at = now()
+        where contact_id = $1`,
+      [row.contact_id, JSON.stringify(raw), nextCpf, nextRgm]
+    );
+    return true;
+  });
 }
 
 function incomingLacksDealCustomFields(rawData) {

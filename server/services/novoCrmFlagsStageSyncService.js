@@ -10,6 +10,8 @@
  * CAA open ≤72h → Retenção; após 72h segue SIAA (pode sair de Retenção).
  * Apply otimizado: só reescreve flag quando (a) valor conhecido diverge, ou
  * (b) campo vazio e próximo=Sim (não grava vazio→Não — evita flood de PUTs).
+ * Após PUT, writeback no JSON do espelho (applyDealCustomFieldWrites) — Full
+ * FETCH=0 não relê flags; sem isso a Att seguinte regrava os mesmos Sim.
  * mode=fields usa a mesma ideia nos campos SIAA: vazio→preenche, igual→skip,
  * diverge→corrige. Sem isso o cron das 05:00 regrava ~38k deals toda noite.
  *
@@ -40,6 +42,12 @@
  * Atualizado?=Sim (04/08): só se o PUT inclui campo SIAA core com valor
  * (hasSiaaFieldWrite). Stage-only / flags-only / clear vazio / orphan sem
  * mat NÃO marcam — filtro Kanban espera deals preenchidos.
+ *
+ * Fora da Relação (31/08): sem match SIAA (já tentou RGM/CPF/e-mail/fone) e
+ * etapa mexível → Perdido. Tem CPF/RGM ou não tem (D: telefone já foi
+ * buscado). Quem está no relatório remat vai pra Sem Rematrícula, não Perdido.
+ * Relação <10k linhas ou <70% do snapshot anterior → não limpa (sanity).
+ * Acolhimento continua por turma (Data Matrícula → 1ª mensalidade).
  *
  * Multi-curso (06/08): CPF com 2+ RGMs no SIAA NÃO casa só por CPF/email/fone
  * para sobrescrever RGM/curso/nível/polo/situação/etapa. Match canônico = RGM
@@ -314,6 +322,28 @@ function foldFieldText(v) {
  * true = não grava. Compara o valor que iríamos mandar com o do cache
  * (mesma fonte das flags). Nunca trata alvo vazio como “limpar”.
  */
+function dataMatriculaYmdFromDeal(deal, fieldIds) {
+  const raw = readDealField(deal, fieldIds?.data_matricula, [
+    'data_de_matricula',
+    'data matricula',
+    'data de matricula',
+  ]);
+  const s = String(raw || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('/');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return '';
+}
+
+function isRecentIsoDate(ymd, days, now = new Date()) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) return false;
+  const t = Date.parse(`${ymd}T12:00:00-03:00`);
+  if (!Number.isFinite(t)) return false;
+  return now.getTime() - t <= days * 86400000;
+}
+
 function fieldValueUnchanged(kind, cur, next) {
   const nxt = String(next ?? '').trim();
   if (!nxt) return true;
@@ -548,6 +578,11 @@ export async function runFlagsStageSync(opts = {}) {
     err.status = 400;
     throw err;
   }
+  const matSnapPrev = (await baseUploadRepo.listSnapshots('matriculados', { limit: 2 }))[1] || null;
+  const curMatRows = Number(matSnap.row_count) || 0;
+  const prevMatRows = Number(matSnapPrev?.row_count) || 0;
+  const foraRelacaoAllowed =
+    curMatRows >= 10000 && (prevMatRows === 0 || curMatRows >= 0.7 * prevMatRows);
 
   patchJob({ phase: 'loading_bases', status_message: 'Carregando matriculados + bases…' });
 
@@ -652,6 +687,9 @@ export async function runFlagsStageSync(opts = {}) {
   let flagsExitCleared = 0;
   let stagesExitRemat = 0;
   let stagesExitRematOrphan = 0;
+  let stagesForaRelacao = 0;
+  let stagesSemIdentidade = 0;
+  let stagesRematSemRelacao = 0;
   /** Identificados na varredura (ainda não gravados no apply). */
   let flagsQueued = 0;
   let stagesQueued = 0;
@@ -693,7 +731,11 @@ export async function runFlagsStageSync(opts = {}) {
 
     const cpfCache = normalizeCpf(row.cpf_norm);
     const emailCache = normalizeEmail(row.email_norm);
-    const phoneCache = normalizePhone(row.phone_norm);
+    const phoneCache =
+      normalizePhone(row.phone_norm) ||
+      normalizePhone(row.raw_data?.contact?.phone) ||
+      normalizePhone(row.raw_data?.contact?.mobilePhone) ||
+      normalizePhone(row.raw_data?.contact?.whatsapp);
 
     for (const deal of deals) {
       if (aborted || checkCancel() || scanned >= maxDeals) break outer;
@@ -734,8 +776,116 @@ export async function runFlagsStageSync(opts = {}) {
       });
       const matRow = resolved.matRow;
       if (!matRow) {
-        if (resolved.multiStrict) skippedMultiStrict += 1;
-        else skippedNoMatch += 1;
+        if (resolved.multiStrict) {
+          skippedMultiStrict += 1;
+          continue;
+        }
+        const currentStageId = String(deal.stageId || '').trim() || null;
+        const identityLoose = {
+          cpf: cpfDeal,
+          rgm: rgmDeal,
+          email: emailCache,
+          phone: phoneCache,
+        };
+        const inRemat = identityInIndex(remat, identityLoose);
+        const hasId = Boolean(cpfDeal || rgmDeal);
+        const caaT0Loose = caaProtocolsRepo.lookupCaaT0(caaT0Map, cpfDeal, rgmDeal);
+        const inCaaFreshLoose = isCaaWithinRetencaoWindow(caaT0Loose);
+        // Só o botão Att (flags_stage/both). O cron fields das 05:00 não manda
+        // Perdido em massa — Relação D−1 + sanity frouxa seria perigoso.
+        const foraRelacaoEnabled = doFlags && foraRelacaoAllowed;
+        if (!foraRelacaoEnabled) {
+          if (doFlags && !foraRelacaoAllowed) {
+            exitSkippedSanity.fora_relacao = (exitSkippedSanity.fora_relacao || 0) + 1;
+          }
+          skippedNoMatch += 1;
+          continue;
+        }
+        if (!currentStageId) {
+          stagesSkippedUnknown += 1;
+          continue;
+        }
+        if (isUntouchableStageId(currentStageId) || currentStageId === perdidoStageId) {
+          if (isUntouchableStageId(currentStageId)) stagesSkippedUntouchable += 1;
+          else skippedUnchanged += 1;
+          continue;
+        }
+        if (retencaoStageId && currentStageId === retencaoStageId) {
+          stagesSkippedUntouchable += 1;
+          continue;
+        }
+        if (hasLimpezaDuplicataTag(deal)) {
+          stagesSkippedLimpezaDuplicata += 1;
+          continue;
+        }
+        if (!inRemat && !inCaaFreshLoose && isRecentIsoDate(dataMatriculaYmdFromDeal(deal, fieldIds), 5)) {
+          skippedNoMatch += 1;
+          continue;
+        }
+        const targetName = inCaaFreshLoose
+          ? 'Retenção'
+          : inRemat
+            ? 'Sem Rematricula'
+            : 'Perdido';
+        const targetId = inCaaFreshLoose
+          ? retencaoStageId
+          : inRemat
+            ? semRematStageId
+            : perdidoStageId;
+        if (!targetId) {
+          skippedNoMatch += 1;
+          continue;
+        }
+        if (currentStageId === targetId) {
+          skippedUnchanged += 1;
+          continue;
+        }
+        if (inCaaFreshLoose) {
+          /* Retenção: não conta como limpeza Perdido */
+        } else if (inRemat) stagesRematSemRelacao += 1;
+        else if (hasId) stagesForaRelacao += 1;
+        else stagesSemIdentidade += 1;
+        stagesByTarget[targetName] = (stagesByTarget[targetName] || 0) + 1;
+        if (dryRun) {
+          stagesMoved += 1;
+          if (samples.length < 20) {
+            samples.push({
+              dry_run: true,
+              fora_relacao: true,
+              reason: inCaaFreshLoose
+                ? 'caa_retencao'
+                : inRemat
+                  ? 'remat_sem_relacao'
+                  : hasId
+                    ? 'fora_relacao'
+                    : 'sem_identidade',
+              dealId,
+              cpf: cpfDeal,
+              rgm: rgmDeal,
+              from: stageNameFromId(currentStageId) || currentStageId,
+              to: targetName,
+            });
+          }
+          continue;
+        }
+        workQueue.push({
+          contactId: String(row.contact_id || '').trim(),
+          dealId,
+          cpf: cpfDeal,
+          rgm: rgmDeal,
+          inCaaOpen: inCaaFreshLoose,
+          inCaaFresh: inCaaFreshLoose,
+          classification: { stageName: targetName, stageId: targetId },
+          values: [],
+          needsFlagWrite: false,
+          needsFieldWrite: false,
+          needsSemRematSituacao: false,
+          needsMove: true,
+          needsLiveStage: true,
+          fromStageId: currentStageId,
+          isForaRelacao: !inRemat,
+        });
+        stagesQueued += 1;
         continue;
       }
       matched += 1;
@@ -1002,8 +1152,9 @@ export async function runFlagsStageSync(opts = {}) {
       const needsSemRematSituacao = semRematSituacaoValues.length > 0;
       const needsMove = Boolean(cacheDecide.move && classification.stageId);
       // Etapa desconhecida no cache: só getDeal se LIVE_STAGE=1; senão skip move.
+      const contactId = String(row.contact_id || '').trim();
       const enqueue = (item) => {
-        workQueue.push(item);
+        workQueue.push({ ...item, contactId: item.contactId || contactId });
         if (item.needsFlagWrite) flagsQueued += 1;
         if (item.needsMove) stagesQueued += 1;
       };
@@ -1177,6 +1328,7 @@ export async function runFlagsStageSync(opts = {}) {
           if (!identityInIndex(def.index, identity)) {
             flagExitCandidates.push({
               dealId,
+              contactId: String(row.contact_id || '').trim(),
               fieldId: def.fieldId,
               key: def.key,
               cpf: identity.cpf,
@@ -1194,6 +1346,7 @@ export async function runFlagsStageSync(opts = {}) {
           if (noCpfRgm) {
             semRematExitCandidates.push({
               dealId,
+              contactId: String(row.contact_id || '').trim(),
               deal,
               cpf: identity.cpf,
               rgm: identity.rgm,
@@ -1205,6 +1358,7 @@ export async function runFlagsStageSync(opts = {}) {
           } else if (!identityInIndex(remat, identity)) {
             semRematExitCandidates.push({
               dealId,
+              contactId: String(row.contact_id || '').trim(),
               deal,
               cpf: identity.cpf,
               rgm: identity.rgm,
@@ -1259,6 +1413,7 @@ export async function runFlagsStageSync(opts = {}) {
         if (!item) {
           item = {
             dealId: c.dealId,
+            contactId: c.contactId || '',
             cpf: c.cpf,
             rgm: c.rgm,
             inCaaOpen: false,
@@ -1274,6 +1429,8 @@ export async function runFlagsStageSync(opts = {}) {
           };
           workQueueByDealId.set(c.dealId, item);
           workQueue.push(item);
+        } else if (c.contactId && !item.contactId) {
+          item.contactId = c.contactId;
         }
         if (!item.values.some((v) => v.fieldId === def.fieldId)) {
           item.values.push({ fieldId: def.fieldId, value: 'Não' });
@@ -1327,6 +1484,7 @@ export async function runFlagsStageSync(opts = {}) {
           if (!item) {
             item = {
               dealId: c.dealId,
+              contactId: c.contactId || '',
               cpf: c.cpf,
               rgm: c.rgm,
               inCaaOpen: false,
@@ -1345,6 +1503,7 @@ export async function runFlagsStageSync(opts = {}) {
             workQueueByDealId.set(c.dealId, item);
             workQueue.push(item);
           } else {
+            if (c.contactId && !item.contactId) item.contactId = c.contactId;
             item.classification = classification;
             item.needsMove = true;
             item.needsLiveStage = true;
@@ -1426,6 +1585,7 @@ export async function runFlagsStageSync(opts = {}) {
         if (!item) {
           item = {
             dealId: c.dealId,
+            contactId: c.contactId || '',
             cpf,
             rgm,
             inCaaOpen,
@@ -1442,6 +1602,7 @@ export async function runFlagsStageSync(opts = {}) {
           workQueueByDealId.set(c.dealId, item);
           workQueue.push(item);
         } else {
+          if (c.contactId && !item.contactId) item.contactId = c.contactId;
           item.classification = classification;
           item.inCaaOpen = inCaaOpen;
           item.inCaaFresh = inCaaFresh;
@@ -1507,6 +1668,18 @@ export async function runFlagsStageSync(opts = {}) {
           }
           if (item.values?.length) {
             await updateDealCustomFields(item.dealId, item.values);
+            try {
+              await cacheRepo.applyDealCustomFieldWrites(
+                item.contactId,
+                item.dealId,
+                item.values
+              );
+            } catch (err) {
+              console.warn(
+                `[novo-crm-flags-sync] cache writeback fail deal=${item.dealId}:`,
+                err?.message || err
+              );
+            }
             if (item.needsFlagWrite) flagsUpdated += 1;
             if (item.needsFieldWrite) fieldsUpdated += 1;
             if (item.needsSemRematSituacao) situacaoSemRematUpdated += 1;
@@ -1622,6 +1795,9 @@ export async function runFlagsStageSync(opts = {}) {
     stages_queued: workQueue.filter((i) => i.needsMove).length,
     stages_exit_remat: stagesExitRemat,
     stages_exit_remat_orphan: stagesExitRematOrphan,
+    stages_fora_relacao: stagesForaRelacao,
+    stages_sem_identidade: stagesSemIdentidade,
+    stages_remat_sem_relacao: stagesRematSemRelacao,
     stages_skipped_untouchable: stagesSkippedUntouchable,
     stages_skipped_limpeza_duplicata: stagesSkippedLimpezaDuplicata,
     stages_skipped_unknown: stagesSkippedUnknown,
@@ -1701,6 +1877,9 @@ export async function runFlagsStageSync(opts = {}) {
         stages_queued: workQueue.filter((i) => i.needsMove).length,
         stages_exit_remat: stagesExitRemat,
         stages_exit_remat_orphan: stagesExitRematOrphan,
+        stages_fora_relacao: stagesForaRelacao,
+        stages_sem_identidade: stagesSemIdentidade,
+        stages_remat_sem_relacao: stagesRematSemRelacao,
         stages_skipped_untouchable: stagesSkippedUntouchable,
         stages_skipped_limpeza_duplicata: stagesSkippedLimpezaDuplicata,
         exit_skipped_sanity: exitSkippedSanity,

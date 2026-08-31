@@ -5,6 +5,42 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-08-31 — Fora da Relação → Perdido (A/B/D); Acolhimento por turma (C)
+- **Modelo usado:** Grok.
+- **Pedido:** residual no funil (Juliana/Eliana/Anas + cards sem identidade). Relação do dia = ainda é aluno. Fixa só prova histórico; **não** é gate — A e B ambos vão a Perdido.
+- **Regra na Att/fields** (após tentar RGM/CPF/e-mail/telefone único na Relação):
+  - **A/B:** tem CPF ou RGM, etapa mexível, fora da Relação → **Perdido**.
+  - **C:** quem **está** na Relação segue `classifyMatriculado` (Acolhimento por turma 2026/2: ago→25/08, set→25/09, out→25/10, nov→25/11).
+  - **D:** sem CPF/RGM → busca celular (e e-mail) na Relação; achou = aluno (classifica); não achou → **Perdido** (igual Lead de Entrada).
+  - No relatório remat e fora da Relação → **Sem Rematrícula** (não Perdido).
+  - Intocáveis / já em Retenção / tag `limpeza_duplicata_*` / já Perdido = não mexe.
+  - CAA open ≤72h fora da Relação → **Retenção**, não Perdido.
+  - Data Matrícula no card nos últimos **5 dias** e fora da Relação → **não** Perdido (Relação pode atrasar).
+  - Limpeza Perdido **só no Att** (`flags_stage`/`both`). Cron `mode=fields` 05:00 **não** faz essa limpeza.
+- **Sanity:** Relação `< 10k` linhas ou `< 70%` do snapshot anterior → não limpa (`exit_skipped_sanity.fora_relacao`).
+- **Ops:** não rebuild enquanto Att atual escreve. Depois do `ok`: merge + rebuild; próxima Att aplica. Contadores `stages_fora_relacao` / `stages_sem_identidade` / `stages_remat_sem_relacao`.
+- **Não mudou:** cron FLAGS off; Fixa continua só datas; CAA 72h / Cancel-Tranc.
+
+### 2026-08-31 — Acolhimento por turma (1ª mensalidade), não cutoff único do ciclo
+- **Modelo usado:** Grok.
+- **Fato:** `2026/2` → `2026-08-25` tirava **todo mundo** de Acolhimento no dia 25. A janela não acaba: cada turma de ingresso tem o próprio 1º vencimento. Duas turmas podem coexistir na coluna até a data da 1ª mensalidade de cada uma.
+- **Turmas 2026/2 (Data Matrícula → fica até):**
+  - Agosto: 13/05–16/08 → **25/08**
+  - Setembro: 17/08–13/09 → **25/09**
+  - Outubro: 14/09–11/10 → **25/10**
+  - Novembro: 12/10–17/11 → **25/11**
+- **2027/1:** ingresso a partir de **18/11/2026** — sem turma/cutoff ainda; **não** entra em Acolhimento 2026/2.
+- **Código:** `ACOLHIMENTO_TURMAS` + `resolveAcolhimentoWindow` casa a Data Matrícula na faixa; hoje BRT ≤ `acolhimentoAte`. Cai o fallback “dia 25 do mês da matrícula” e o cutoff único por ciclo. Prioridade de etapa não muda (Cancel/Tranc → CAA 72h → remat → acolhimento → Pós/Grad). Acolhimento continua **não** intocável: passou o vencimento da turma, Att move.
+- **Ops:** merge `raphael` + rebuild **depois** da Att atual. Sem isso a Att de 31/08 trata setembro como fora da janela.
+- **Não mudou:** intocáveis Ganho/Cancelado/Em Atendimento; remat vence acolhimento.
+
+### 2026-08-31 — Att inútil: writeback no espelho após PUT
+- **Modelo usado:** Grok.
+- **Fato:** Att `flags_stage` 31/08 ~11:18 BRT fila **11.846** (~2 h a 2 rps). Sábado já tinha gravado ~10k flags no CRM. O espelho não atualiza no PUT; Full FETCH=0 não relê customFields → cache ainda vazio → `vazio→Sim` de novo. PUT inútil, CRM já estava certo.
+- **Código:** após `updateDealCustomFields` ok, `applyDealCustomFieldWrites` grava os mesmos pares em `raw_data.dealsById[dealId].customFields` (e CPF/RGM se for o caso). Sem GET extra. `content_hash` intacto (FETCH=0 skip continua). Fila leva `contactId`. Falha de writeback só loga.
+- **Ops:** **não rebuild** enquanto a Att atual escreve. Esta run não pega o fix. Depois do `ok`: merge `raphael` + rebuild. A **próxima** Att ainda pode ser ~11k (cache desta run continua velho); a seguinte fica pequena. Opcional após `ok` e 0 erros: carimbar o cache das flags já gravadas (sem PUT) pra pular esse 11k.
+- **Não mudou:** política vazio→Sim / vazio→Não skip; cron FLAGS off; rate 2; não aquecer deal a deal com GET.
+
 ### 2026-08-31 — Fields da madrugada só grava SIAA se o cache divergir
 - **Modelo usado:** Grok.
 - **Fato:** cron `mode=fields` 31/08 05:00–10:24 BRT (após Full #59 FETCH=0) `matched=38342` · `fields_updated=38338` · `skipped_unchanged=0` · `flags=0` · `stages=7` · 5 h 23 min. A UI de Att mostrava isso como “Att rodando” (mesmo job).
